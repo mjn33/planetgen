@@ -4,4 +4,5 @@ version = "0.1.0"
 authors = ["Matthew Nicholls <matthew.nicholls95@hotmail.co.uk>"]
 
 [dependencies]
-glium = "*"
+glium = "0.15"
+cgmath = "0.11"

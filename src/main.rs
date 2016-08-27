@@ -1,6 +1,9 @@
+extern crate cgmath;
 #[macro_use]
 extern crate glium;
 
+use cgmath::prelude::*;
+use cgmath::{Deg, Euler, Matrix4, Quaternion, Vector3};
 use glium::Surface;
 
 #[derive(Copy, Clone)]
@@ -146,9 +149,9 @@ fn gen_indices(size: u16, l: bool, r: bool, t: bool, b: bool) -> Vec<u16> {
     if t {
         for j in 1..adj_size-1 {
             if (j % 2) == 1 {
-                let ta = vert_off(size, j - 1);
-                let tb = vert_off(size - 1, j);
-                let tc = vert_off(size, j + 1);
+                let ta = vert_off(j - 1, size);
+                let tb = vert_off(j, size - 1);
+                let tc = vert_off(j + 1, size);
 
                 indices.push(ta);
                 indices.push(tb);
@@ -351,8 +354,10 @@ fn main() {
 
 in vec3 position;
 
+uniform mat4 cam_matrix;
+
 void main() {
-    gl_Position = vec4(position, 1.0);
+    gl_Position = cam_matrix * vec4(position, 1.0);
 }
 "#;
 
@@ -367,10 +372,39 @@ void main() {
 "#;
 
     let program = glium::Program::from_source(&display, vertex_shader_src, fragment_shader_src, None).unwrap();
-
+    let mut once = false;
     loop {
         let mut target = display.draw();
         target.clear_color_and_depth((0.8, 0.8, 0.8, 1.0), 1.0);
+
+        let (width, height) = target.get_dimensions();
+        //let aspect = height as f32 / width as f32;
+        let aspect = width as f32 / height as f32;
+        let fovy = Deg(90f32);
+        let cam_pos = Vector3::new(0f32, 0f32, 1.5f32);
+        let cam_rot = Quaternion::from(Euler {
+            x: Deg(0f32),
+            y: Deg(45f32),
+            z: Deg(0f32),
+        });
+        let cam_perspective = cgmath::perspective(fovy, aspect, 0.1f32, 100f32);
+        let cam_matrix =
+            cam_perspective *
+            Matrix4::from(cam_rot.invert()) *
+            Matrix4::from_translation(-cam_pos);
+
+        let cam_matrix = [
+            [cam_matrix.x.x, cam_matrix.x.y, cam_matrix.x.z, cam_matrix.x.w],
+            [cam_matrix.y.x, cam_matrix.y.y, cam_matrix.y.z, cam_matrix.y.w],
+            [cam_matrix.z.x, cam_matrix.z.y, cam_matrix.z.z, cam_matrix.z.w],
+            [cam_matrix.w.x, cam_matrix.w.y, cam_matrix.w.z, cam_matrix.w.w]
+        ];
+
+        if !once {
+            println!("{:?}", cam_matrix);
+            println!("=======");
+            once = true;
+        }
 
         let params = glium::DrawParameters {
             backface_culling: glium::draw_parameters::BackfaceCullingMode::CullClockwise,
@@ -383,7 +417,7 @@ void main() {
             .. Default::default()
         };
 
-        target.draw(&vertex_buffer, &indices, &program, &glium::uniforms::EmptyUniforms,
+        target.draw(&vertex_buffer, &indices, &program, &uniform! { cam_matrix: cam_matrix },
                     &params).unwrap();
         target.finish().unwrap();
 
