@@ -1,17 +1,27 @@
+#![allow(dead_code)]
+
 extern crate cgmath;
 #[macro_use]
 extern crate glium;
 
 use cgmath::prelude::*;
 use cgmath::{Deg, Euler, Matrix4, Quaternion, Vector3};
-use glium::Surface;
+use glium::{Frame, IndexBuffer, Program, Surface, VertexBuffer};
+use glium::index::PrimitiveType;
+use glium::uniforms::UniformBuffer;
+use glium::backend::glutin_backend::GlutinFacade;
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::{Rc, Weak};
+use std::slice::Iter;
 
 #[derive(Copy, Clone)]
 struct Vertex {
-    position: [f32; 3],
+    vert_pos: [f32; 3],
 }
 
-implement_vertex!(Vertex, position);
+implement_vertex!(Vertex, vert_pos);
 
 /// Generate a `Vec` containing a `size + 1` by `size + 1` grid of vertices.
 fn gen_vertices(size: u16) -> Vec<Vertex> {
@@ -20,7 +30,7 @@ fn gen_vertices(size: u16) -> Vec<Vertex> {
     let diff = 2.0 / size as f32;
     for i in 0..adj_size {
         for j in 0..adj_size {
-            vertices.push(Vertex { position: [-1.0 + i as f32 * diff, -1.0 + j as f32 * diff, 0.0] });
+            vertices.push(Vertex { vert_pos: [-1.0 + i as f32 * diff, -1.0 + j as f32 * diff, 0.0] });
         }
     }
     vertices
@@ -258,7 +268,6 @@ fn gen_indices(size: u16, l: bool, r: bool, t: bool, b: bool) -> Vec<u16> {
     }
 
     if r {
-        let offset = adj_size * (adj_size - 2);
         for i in 1..adj_size-1 {
             if (i % 2) == 1 {
                 //          *
@@ -335,78 +344,190 @@ fn gen_indices(size: u16, l: bool, r: bool, t: bool, b: bool) -> Vec<u16> {
     indices
 }
 
-fn main() {
-    use glium::DisplayBuild;
-    let display = glium::glutin::WindowBuilder::new()
-        .with_multisampling(8)
-        .with_depth_buffer(24)
-        .build_glium().unwrap();
-
-    let vertices = gen_vertices(16);
-    let indices = gen_indices(16, true, true, true, true);
-
-    let vertex_buffer = glium::VertexBuffer::new(&display, &vertices).unwrap();
-    let indices = glium::IndexBuffer::new(&display, glium::index::PrimitiveType::TrianglesList,
-                                          &indices).unwrap();
-
-    let vertex_shader_src = r#"
-#version 140
-
-in vec3 position;
-
-uniform mat4 cam_matrix;
-
-void main() {
-    gl_Position = cam_matrix * vec4(position, 1.0);
+pub struct ObjectData {
+    rot: Quaternion<f32>,
+    pos: Vector3<f32>,
+    children: Vec<Rc<RefCell<Object>>>,
+    //mesh: Option<Mesh>
 }
-"#;
 
-    let fragment_shader_src = r#"
-#version 140
-
-out vec4 color;
-
-void main() {
-    color = vec4(1.0, 0.0, 0.0, 1.0);
+pub struct ChildrenIter<'a> {
+    iter: Iter<'a, Rc<RefCell<Object>>>,
 }
-"#;
 
-    let program = glium::Program::from_source(&display, vertex_shader_src, fragment_shader_src, None).unwrap();
-    let mut once = false;
-    loop {
-        let mut target = display.draw();
-        target.clear_color_and_depth((0.8, 0.8, 0.8, 1.0), 1.0);
+impl<'a> Iterator for ChildrenIter<'a> {
+    type Item = std::cell::Ref<'a, Object>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().map(|child| child.borrow())
+    }
+}
 
-        let (width, height) = target.get_dimensions();
-        //let aspect = height as f32 / width as f32;
-        let aspect = width as f32 / height as f32;
-        let fovy = Deg(90f32);
-        let cam_pos = Vector3::new(0f32, 0f32, 1.5f32);
-        let cam_rot = Quaternion::from(Euler {
-            x: Deg(0f32),
-            y: Deg(45f32),
-            z: Deg(0f32),
-        });
-        let cam_perspective = cgmath::perspective(fovy, aspect, 0.1f32, 100f32);
+pub trait Object {
+    //fn on_start(&self);
+    fn on_frame(&self, scene: &Scene, display: &GlutinFacade,
+                target: &mut Frame, draw_params: &glium::DrawParameters,
+                camera_ubo: &UniformBuffer<CameraBufData>);
+    fn object_data(&self) -> &ObjectData;
+    fn children(&self) -> ChildrenIter;
+}
+
+struct Quad {
+    data: ObjectData,
+    vertex_buf: VertexBuffer<Vertex>,
+    indices_buf: IndexBuffer<u16>,
+    program: Rc<Program>,
+    parent: Option<Weak<RefCell<Quad>>>,
+    //// The child quads if this quad has been subdivided
+    // TODO: this requires Copy, would rather not implement Copy
+    //children: [Option<Rc<RefCell<Quad>>>; 4],
+}
+
+// TODO: impl Object for Quad
+impl Object for Quad {
+    fn on_frame(&self, scene: &Scene, display: &GlutinFacade,
+                target: &mut Frame, draw_params: &glium::DrawParameters,
+                camera_ubo: &UniformBuffer<CameraBufData>) {
+        // TODO: only recalc when necessary
+        let tmp_matrix =
+            Matrix4::from(self.data.rot) *
+            Matrix4::from_translation(self.data.pos);
+        let tmp_matrix: [[f32; 4]; 4] = tmp_matrix.clone().into();
+        target.draw(&self.vertex_buf, &self.indices_buf, &self.program,
+                    &uniform! {
+                        CamBuffer: camera_ubo,
+                        obj_matrix: tmp_matrix,
+                    },
+                    draw_params).unwrap();
+    }
+
+    fn object_data(&self) -> &ObjectData {
+        &self.data
+    }
+
+    fn children(&self) -> ChildrenIter {
+        ChildrenIter { iter: self.data.children.iter() }
+    }
+}
+
+impl Quad {
+    fn new(scene: &Scene, display: &GlutinFacade, pos: Vector3<f32>, rot: Quaternion<f32>) -> Quad {
+        let vertices = gen_vertices(16);
+        let indices = gen_indices(16, false, false, false, false);
+        Quad {
+            data: ObjectData {
+                pos: pos,
+                rot: rot,
+                children: Vec::new()
+            },
+            vertex_buf: VertexBuffer::new(display, &vertices).unwrap(),
+            indices_buf: IndexBuffer::new(display, PrimitiveType::TrianglesList, &indices).unwrap(),
+            program: scene.program("default").clone(),
+            parent: None
+            //children: [None; 4]
+        }
+    }
+}
+
+struct QuadSphere {
+    /// The six faces of the cube
+    faces: [Option<Rc<RefCell<Quad>>>; 6],
+}
+
+// TODO: impl Object for QuadSphere
+
+struct QuadSphereManager {
+    quad_stack: Vec<Rc<RefCell<Quad>>>,
+}
+
+// TODO: impl Object for QuadSphereManager
+
+#[derive(Copy, Clone)]
+pub struct CameraBufData {
+    cam_matrix: [[f32; 4]; 4],
+}
+
+//implement_buffer_content!(CameraBufData);
+implement_uniform_block!(CameraBufData, cam_matrix);
+
+struct Camera {
+    rot: Quaternion<f32>,
+    pos: Vector3<f32>,
+    fovy: Deg<f32>,
+    aspect: f32,
+    near_clip: f32,
+    far_clip: f32,
+    buf: UniformBuffer<CameraBufData>
+}
+
+impl Camera {
+    fn new(display: &GlutinFacade) -> Camera {
+        Camera {
+            rot: Quaternion::from(Euler {
+                x: Deg(0f32),
+                y: Deg(0f32),
+                z: Deg(0f32)
+            }),
+            pos: Vector3::new(0f32, 0f32, 0f32),
+            fovy: Deg(90f32),
+            aspect: 1f32,
+            near_clip: 1f32,
+            far_clip: 1000f32,
+            buf: UniformBuffer::new(display, CameraBufData {
+                cam_matrix: Default::default(),
+            }).unwrap()
+        }
+    }
+
+    fn update_matrix(&mut self) {
+        let cam_perspective = cgmath::perspective(self.fovy, self.aspect, self.near_clip, self.far_clip);
         let cam_matrix =
             cam_perspective *
-            Matrix4::from(cam_rot.invert()) *
-            Matrix4::from_translation(-cam_pos);
+            Matrix4::from(self.rot.invert()) *
+            Matrix4::from_translation(-self.pos);
+        self.buf.map().cam_matrix = cam_matrix.clone().into();
+    }
+}
 
-        let cam_matrix = [
-            [cam_matrix.x.x, cam_matrix.x.y, cam_matrix.x.z, cam_matrix.x.w],
-            [cam_matrix.y.x, cam_matrix.y.y, cam_matrix.y.z, cam_matrix.y.w],
-            [cam_matrix.z.x, cam_matrix.z.y, cam_matrix.z.z, cam_matrix.z.w],
-            [cam_matrix.w.x, cam_matrix.w.y, cam_matrix.w.z, cam_matrix.w.w]
-        ];
+// TODO: impl Object for Camera
 
-        if !once {
-            println!("{:?}", cam_matrix);
-            println!("=======");
-            once = true;
-        }
+#[derive(Default)]
+pub struct Scene {
+    cameras: Vec<Camera>,
+    children: Vec<Rc<RefCell<Object>>>,
+    programs: HashMap<String, Rc<Program>>,
+}
 
-        let params = glium::DrawParameters {
+
+
+impl Scene {
+    fn new() -> Scene {
+        Default::default()
+    }
+
+    fn add_camera(&mut self, cam: Camera) {
+        self.cameras.push(cam);
+    }
+
+    fn add_object<T: Object + 'static>(&mut self, obj: T) {
+        self.children.push(Rc::new(RefCell::new(obj)));
+    }
+
+    fn add_program(&mut self, prog_name: &str, prog: Program) {
+        self.programs.insert(prog_name.to_owned(), Rc::new(prog));
+    }
+
+    fn camera_ubo(&self, cam_idx: usize) -> &UniformBuffer<CameraBufData> {
+        &self.cameras[cam_idx].buf
+    }
+
+    fn program(&self, prog_name: &str) -> &Rc<Program> {
+        &self.programs[prog_name]
+    }
+
+    fn on_frame(&mut self, display: &GlutinFacade, target: &mut Frame) {
+        target.clear_color_and_depth((0.8, 0.8, 0.8, 1.0), 1.0);
+
+        let draw_params = glium::DrawParameters {
             backface_culling: glium::draw_parameters::BackfaceCullingMode::CullClockwise,
             polygon_mode: glium::draw_parameters::PolygonMode::Line,
             depth: glium::Depth {
@@ -417,8 +538,48 @@ void main() {
             .. Default::default()
         };
 
-        target.draw(&vertex_buffer, &indices, &program, &uniform! { cam_matrix: cam_matrix },
-                    &params).unwrap();
+        let (width, height) = target.get_dimensions();
+        let aspect = width as f32 / height as f32;
+        for cam in &mut self.cameras {
+            if cam.aspect != aspect {
+                cam.aspect = aspect;
+                cam.update_matrix();
+            }
+        }
+        // TODO: support multiple cameras
+        for c in &self.children {
+            c.borrow().on_frame(&self, display, target, &draw_params, self.camera_ubo(0));
+        }
+    }
+}
+
+fn main() {
+    use glium::DisplayBuild;
+    let display = glium::glutin::WindowBuilder::new()
+        .with_multisampling(8)
+        .with_depth_buffer(24)
+        .build_glium().unwrap();
+
+    let mut scene = Scene::new();
+    let default_vs = include_str!("default_vs.glsl");
+    let default_fs = include_str!("default_fs.glsl");
+    let default_prog = Program::from_source(&display, default_vs, default_fs, None).unwrap();
+    scene.add_program("default", default_prog);
+    let mut camera = Camera::new(&display);
+    camera.near_clip = 0.1f32;
+    camera.far_clip = 1000f32;
+    scene.add_camera(camera);
+
+    let q1 = Quad::new(&scene, &display, Vector3::new(0f32, 0f32, -1.5), Quaternion::from(Euler {
+        x: Deg(0f32),
+        y: Deg(0f32),
+        z: Deg(0f32)
+    }));
+    scene.add_object(q1);
+
+    loop {
+        let mut target = display.draw();
+        scene.on_frame(&display, &mut target);
         target.finish().unwrap();
 
         for ev in display.poll_events() {
