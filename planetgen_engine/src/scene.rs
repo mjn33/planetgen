@@ -34,6 +34,11 @@ pub struct Camera {
     idx: Cell<Option<usize>>
 }
 
+impl Camera {
+    pub fn is_valid(&self) -> bool {
+        self.idx.get().is_some()
+    }
+}
 pub struct Scene {
     /// The display used for rendering, None if in headless mode.
     display: Option<GlutinFacade>,
