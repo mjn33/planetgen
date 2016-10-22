@@ -3,7 +3,37 @@ use cgmath::{Deg, Euler, Quaternion, Vector3};
 use glium::backend::glutin_backend::GlutinFacade;
 
 use std::cell::{Cell, RefCell, UnsafeCell};
+use std::error;
+use std::fmt;
 use std::rc::Rc;
+
+pub type Result<T> = ::std::result::Result<T, Error>;
+
+#[derive(Debug)]
+pub enum Error {
+    /// Indicates the operation failed since the underlying object was already
+    /// destroyed.
+    ObjectDestroyed,
+    /// Other unspecified error.
+    Other
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // For now just use error description, may change later with more enum
+        // variants.
+        write!(f, "{}", <Error as error::Error>::description(&self))
+    }
+}
+
+impl error::Error for Error {
+    fn description(&self) -> &str {
+        match *self {
+            Error::ObjectDestroyed => "Cannot perform operation on a destroyed object",
+            Error::Other => "Unspecified error"
+        }
+    }
+}
 
 struct CameraData {
     /// Reference to the camera object.
@@ -76,6 +106,12 @@ pub struct Object {
 }
 
 impl Object {
+    pub fn num_children(&self, scene: &Scene) -> Result<usize> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| unsafe { (*scene.object_data[i].get()).children.len() })
+    }
+
     pub fn is_valid(&self) -> bool {
         self.idx.get().is_some()
     }
