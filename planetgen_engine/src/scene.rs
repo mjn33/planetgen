@@ -6,6 +6,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 struct CameraData {
+    /// Reference to the camera object.
+    object: Rc<Camera>,
     /// True when this camera should be used for rendering.
     enabled: bool,
     /// True when the camera has been marked for destruction at the end of the
@@ -61,6 +63,7 @@ impl Scene {
     pub fn create_camera(&mut self) -> Rc<Camera> {
         let rv = Rc::new(Camera { idx: Cell::new(None) });
         let data = CameraData {
+            object: rv.clone(),
             enabled: true,
             marked: false,
             rot: Quaternion::from(Euler {
@@ -95,5 +98,36 @@ impl Scene {
             self.destroyed_cameras.push(camera_idx);
             camera_data.marked = true;
         }
+    }
+
+    fn do_frame(&mut self) {
+        unsafe {
+            Scene::cleanup_destroyed(
+                &mut self.camera_data, &mut self.destroyed_cameras,
+                |x| x.marked,
+                |x, idx| x.object.idx.set(idx));
+        }
+    }
+
+    unsafe fn cleanup_destroyed<T, F, G>(items: &mut Vec<T>,
+                                         destroyed_items: &mut Vec<usize>,
+                                         is_destroyed: F,
+                                         set_idx: G)
+        where F: Fn(&T) -> bool, G: Fn(&T, Option<usize>) {
+        for &idx in destroyed_items.iter() {
+            // Remove destroyed objects at the back of the list
+            while items.last().map_or(false, |x| is_destroyed(x)) {
+                let removed = items.pop().unwrap();
+                set_idx(&removed, None);
+            }
+            if idx >= items.len() {
+                continue
+            }
+            let removed = items.swap_remove(idx);
+            set_idx(&removed, None);
+            let swapped = items.get_unchecked(idx);
+            set_idx(&swapped, Some(idx));
+        }
+        destroyed_items.clear();
     }
 }
