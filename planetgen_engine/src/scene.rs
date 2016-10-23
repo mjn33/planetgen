@@ -37,7 +37,7 @@ impl error::Error for Error {
 
 struct CameraData {
     /// Reference to the camera object.
-    object: Rc<Camera>,
+    camera: Rc<Camera>,
     /// True when this camera should be used for rendering.
     enabled: bool,
     /// True when the camera has been marked for destruction at the end of the
@@ -88,7 +88,7 @@ struct ObjectData {
     /// Local position.
     pos: Vector3<f32>,
     /// Reference to the object behaviour.
-    object: Rc<RefCell<Behaviour>>, // TODO: rename to something better?
+    behaviour: Rc<RefCell<Behaviour>>,
     /// List of indices of the children of this object.
     children: Vec<usize>,
     /// Index of this object's parent.
@@ -152,7 +152,7 @@ impl Scene {
     pub fn create_camera(&mut self) -> Rc<Camera> {
         let rv = Rc::new(Camera { idx: Cell::new(None) });
         let data = CameraData {
-            object: rv.clone(),
+            camera: rv.clone(),
             enabled: true,
             marked: false,
             rot: Quaternion::from(Euler {
@@ -181,7 +181,7 @@ impl Scene {
                 z: Deg(0.0)
             }),
             pos: Vector3::new(0.0, 0.0, 0.0),
-            object: rv.clone(),
+            behaviour: rv.clone(),
             children: Vec::new(),
             parent_idx: None,
             marked: false,
@@ -243,13 +243,13 @@ impl Scene {
         //   * The index corresponds to the correct data entry
         for i in 0..self.camera_data.len() {
             let data = unsafe { self.camera_data.get_unchecked(i) };
-            let idx = data.object.idx.get();
+            let idx = data.camera.idx.get();
             assert!(idx.is_some(), "Invalid object handle found!");
             assert_eq!(idx.unwrap(), i);
         }
         for i in 0..self.object_data.len() {
             let data = unsafe { &*self.object_data.get_unchecked(i).get() };
-            let idx = data.object.borrow().object().idx.get();
+            let idx = data.behaviour.borrow().object().idx.get();
             assert!(idx.is_some(), "Invalid object handle found!");
             assert_eq!(idx.unwrap(), i);
         }
@@ -277,7 +277,7 @@ impl Scene {
                         println!("Skipping object {} because it's marked.", idx);
                         continue
                     }
-                    ((*data).is_new, (&*(*data).object) as *const RefCell<Behaviour>)
+                    ((*data).is_new, (&*(*data).behaviour) as *const RefCell<Behaviour>)
                 };
                 let mut obj = (*cell).borrow_mut();
                 if is_new {
@@ -301,7 +301,7 @@ impl Scene {
                 let idx = *self.destroyed_objects.get_unchecked(i);
                 let cell = {
                     let data = self.object_data.get_unchecked(idx);
-                    (&*(*data.get()).object) as *const RefCell<Behaviour>
+                    (&*(*data.get()).behaviour) as *const RefCell<Behaviour>
                 };
                 (*cell).borrow_mut().destroy(self);
             }
@@ -311,11 +311,11 @@ impl Scene {
             Scene::cleanup_destroyed(
                 &mut self.object_data, &mut self.destroyed_objects,
                 |x| (*x.get()).marked,
-                |x, idx| (&*x.get()).object.borrow().object().idx.set(idx));
+                |x, idx| (&*x.get()).behaviour.borrow().object().idx.set(idx));
             Scene::cleanup_destroyed(
                 &mut self.camera_data, &mut self.destroyed_cameras,
                 |x| x.marked,
-                |x, idx| x.object.idx.set(idx));
+                |x, idx| x.camera.idx.set(idx));
         }
     }
 
