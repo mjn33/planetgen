@@ -237,7 +237,76 @@ impl Scene {
         }
     }
 
+    fn debug_check(&self) {
+        // For all objects, check the following:
+        //   * The index is valid (i.e. `is_some()`)
+        //   * The index corresponds to the correct data entry
+        for i in 0..self.camera_data.len() {
+            let data = unsafe { self.camera_data.get_unchecked(i) };
+            let idx = data.object.idx.get();
+            assert!(idx.is_some(), "Invalid object handle found!");
+            assert_eq!(idx.unwrap(), i);
+        }
+        for i in 0..self.object_data.len() {
+            let data = unsafe { &*self.object_data.get_unchecked(i).get() };
+            let idx = data.object.borrow().object().idx.get();
+            assert!(idx.is_some(), "Invalid object handle found!");
+            assert_eq!(idx.unwrap(), i);
+        }
+    }
+
     fn do_frame(&mut self) {
+        fn post_add<T: Copy + ::std::ops::Add<Output=T>>(a: &mut T, b: T) -> T {
+            let c = *a;
+            *a = *a + b;
+            c
+        }
+
+        if cfg!(debug_assertions) {
+            self.debug_check();
+        }
+
+        let mut idx = 0;
+        while idx < self.object_data.len() {
+            let idx = post_add(&mut idx, 1);
+            unsafe {
+                let (is_new, cell) = {
+                    let data = self.object_data.get_unchecked(idx).get();
+                    // Don't run `update()` on destroyed objects
+                    if (*data).marked {
+                        println!("Skipping object {} because it's marked.", idx);
+                        continue
+                    }
+                    ((*data).is_new, (&*(*data).object) as *const RefCell<Behaviour>)
+                };
+                let mut obj = (*cell).borrow_mut();
+                if is_new {
+                    obj.start(self);
+                    let data = self.object_data.get_unchecked(idx).get();
+                    (*data).is_new = false;
+                    // Check that the start function didn't immediately destroy the object
+                    if !(*data).marked {
+                        obj.update(self);
+                    }
+                } else {
+                    obj.update(self);
+                }
+            }
+        }
+
+        let mut i = 0;
+        while i < self.destroyed_objects.len() {
+            let i = post_add(&mut i, 1);
+            unsafe {
+                let idx = *self.destroyed_objects.get_unchecked(i);
+                let cell = {
+                    let data = self.object_data.get_unchecked(idx);
+                    (&*(*data.get()).object) as *const RefCell<Behaviour>
+                };
+                (*cell).borrow_mut().destroy(self);
+            }
+        }
+
         unsafe {
             Scene::cleanup_destroyed(
                 &mut self.object_data, &mut self.destroyed_objects,
