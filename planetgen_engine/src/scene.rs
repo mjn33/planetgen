@@ -14,6 +14,8 @@ pub enum Error {
     /// Indicates the operation failed since the underlying object was already
     /// destroyed.
     ObjectDestroyed,
+    /// The specified child index was out of bounds
+    BadChildIdx,
     /// Other unspecified error.
     Other
 }
@@ -30,6 +32,7 @@ impl error::Error for Error {
     fn description(&self) -> &str {
         match *self {
             Error::ObjectDestroyed => "Cannot perform operation on a destroyed object",
+            Error::BadChildIdx => "Child index out of bounds",
             Error::Other => "Unspecified error"
         }
     }
@@ -109,7 +112,19 @@ impl Object {
     pub fn num_children(&self, scene: &Scene) -> Result<usize> {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe { (*scene.object_data[i].get()).children.len() })
+            .map(|i| unsafe { (*scene.object_data.get_unchecked(i).get()).children.len() })
+    }
+
+    pub fn get_child(&self, scene: &Scene, n: usize) -> Result<&Rc<RefCell<Behaviour>>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .and_then(|i| unsafe {
+                (*scene.object_data.get_unchecked(i).get()).children.get(n)
+                    .ok_or(Error::BadChildIdx)
+            })
+            .map(|&i| unsafe {
+                &(*scene.object_data.get_unchecked(i).get()).behaviour
+            })
     }
 
     pub fn is_valid(&self) -> bool {
