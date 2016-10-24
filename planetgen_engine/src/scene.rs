@@ -399,7 +399,7 @@ impl Scene {
     ///   * `old_idx` - The old index of entry being removed / moved
     ///   * `new_idx` - The new index for the entry being moved, or `None` if
     ///      being removed
-    unsafe fn fix_hierarchy(object_data: &Vec<UnsafeCell<ObjectData>>,
+    unsafe fn fix_hierarchy(object_data: &[UnsafeCell<ObjectData>],
                             data: &UnsafeCell<ObjectData>,
                             old_idx: usize,
                             new_idx: Option<usize>) {
@@ -424,12 +424,12 @@ impl Scene {
     }
 
     unsafe fn cleanup_destroyed_objects(&mut self) {
-        for &idx in self.destroyed_objects.iter() {
+        for &idx in &self.destroyed_objects {
             // Remove destroyed objects at the back of the list
             while self.object_data.last().map_or(false, |x| (*x.get()).marked) {
                 let removed = self.object_data.pop().unwrap();
                 let old_idx = self.object_data.len();
-                Scene::fix_hierarchy(&mut self.object_data, &removed, old_idx, None);
+                Scene::fix_hierarchy(&self.object_data, &removed, old_idx, None);
             }
             if idx >= self.object_data.len() {
                 continue
@@ -439,8 +439,8 @@ impl Scene {
                 let removed = self.object_data.get_unchecked(idx);
                 let swapped_idx = self.object_data.len() - 1;
                 let swapped = self.object_data.get_unchecked(swapped_idx);
-                Scene::fix_hierarchy(&self.object_data, &removed, idx, None);
-                Scene::fix_hierarchy(&self.object_data, &swapped, swapped_idx, Some(idx));
+                Scene::fix_hierarchy(&self.object_data, removed, idx, None);
+                Scene::fix_hierarchy(&self.object_data, swapped, swapped_idx, Some(idx));
             }
             self.object_data.swap_remove(idx);
             self.object_data.get_unchecked(idx);
@@ -465,17 +465,14 @@ impl Scene {
             let removed = items.swap_remove(idx);
             set_idx(&removed, None);
             let swapped = items.get_unchecked(idx);
-            set_idx(&swapped, Some(idx));
+            set_idx(swapped, Some(idx));
         }
         destroyed_items.clear();
     }
 }
 
 mod test {
-    extern crate rand;
     use super::*;
-    use self::rand::Rng;
-    use std::fmt::Write;
 
     struct TestObject {
         object: Object,
@@ -493,7 +490,7 @@ mod test {
         fn start(&mut self, _scene: &mut Scene) {
         }
 
-        fn update(&mut self, scene: &mut Scene) {
+        fn update(&mut self, _scene: &mut Scene) {
         }
 
         fn destroy(&mut self, _scene: &mut Scene) {
@@ -506,8 +503,8 @@ mod test {
 
     /// Determine if two borrowed pointers point to the same thing.
     #[inline]
-    fn ref_eq<'a, 'b, T: ?Sized>(thing: &'a T, other: &'b T) -> bool {
-        (thing as *const T) == (other as *const T)
+    fn ref_eq<T: ?Sized>(a: &T, b: &T) -> bool {
+        (a as *const T) == (b as *const T)
     }
 
     /// Tests integrity of the Scene hierarchy after destroying objects.
