@@ -323,10 +323,7 @@ impl Scene {
         }
 
         unsafe {
-            Scene::cleanup_destroyed(
-                &mut self.object_data, &mut self.destroyed_objects,
-                |x| (*x.get()).marked,
-                |x, idx| (&*x.get()).behaviour.borrow().object().idx.set(idx));
+            self.cleanup_destroyed_objects();
             Scene::cleanup_destroyed(
                 &mut self.camera_data, &mut self.destroyed_cameras,
                 |x| x.marked,
@@ -393,6 +390,62 @@ impl Scene {
             parent_data.children.push(child_idx);
         }
         child_data.parent_idx = parent_idx;
+    }
+
+
+    /// Fixes the object hierarchy while removing / moving an `ObjectData` entry
+    ///   * `object_data` - The `object_data` field of the `Scene`
+    ///   * `data` - The object data entry which has been removed / moved
+    ///   * `old_idx` - The old index of entry being removed / moved
+    ///   * `new_idx` - The new index for the entry being moved, or `None` if
+    ///      being removed
+    unsafe fn fix_hierarchy(object_data: &Vec<UnsafeCell<ObjectData>>,
+                            data: &UnsafeCell<ObjectData>,
+                            old_idx: usize,
+                            new_idx: Option<usize>) {
+        let data = &*data.get();
+        data.behaviour.borrow().object().idx.set(new_idx);
+        // Update our parent's reference to us (if we have one)
+        data.parent_idx.map(|idx| {
+            let parent_data = &mut *object_data.get_unchecked(idx).get();
+            let pos = parent_data.children.iter()
+                .position(|&idx| idx == old_idx)
+                .expect("parent should contain child index");
+            match new_idx {
+                Some(new_idx) => *parent_data.children.get_unchecked_mut(pos) = new_idx,
+                None => { parent_data.children.remove(pos); }
+            }
+        });
+        // Update our children's reference to us
+        for &idx in &data.children {
+            let child_data = &mut *object_data.get_unchecked(idx).get();
+            child_data.parent_idx = new_idx;
+        }
+    }
+
+    unsafe fn cleanup_destroyed_objects(&mut self) {
+        for &idx in self.destroyed_objects.iter() {
+            // Remove destroyed objects at the back of the list
+            while self.object_data.last().map_or(false, |x| (*x.get()).marked) {
+                let removed = self.object_data.pop().unwrap();
+                let old_idx = self.object_data.len();
+                Scene::fix_hierarchy(&mut self.object_data, &removed, old_idx, None);
+            }
+            if idx >= self.object_data.len() {
+                continue
+            }
+
+            {
+                let removed = self.object_data.get_unchecked(idx);
+                let swapped_idx = self.object_data.len() - 1;
+                let swapped = self.object_data.get_unchecked(swapped_idx);
+                Scene::fix_hierarchy(&self.object_data, &removed, idx, None);
+                Scene::fix_hierarchy(&self.object_data, &swapped, swapped_idx, Some(idx));
+            }
+            self.object_data.swap_remove(idx);
+            self.object_data.get_unchecked(idx);
+        }
+        self.destroyed_objects.clear();
     }
 
     unsafe fn cleanup_destroyed<T, F, G>(items: &mut Vec<T>,
