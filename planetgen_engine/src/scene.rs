@@ -390,8 +390,6 @@ impl Scene {
             }
         }
 
-        // Safety: this scene would have to not be borrowed elsewhere for this
-        // function to be called. The `Handle` type helps enforce this.
         let old_parent_data =
             child_data.parent_idx.as_ref().map(|&i| unsafe {
                 //&mut (*self.object_data.get())[i as usize]
