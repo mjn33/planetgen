@@ -372,6 +372,24 @@ impl Scene {
             // No change
             return
         }
+
+        let mut tmp_idx = parent_data.as_ref()
+            .and_then(|parent_data| parent_data.parent_idx);
+        loop {
+            tmp_idx = match tmp_idx {
+                Some(tmp_idx) if tmp_idx == child_idx => {
+                    // Performing this parenting would create a loop, bail.
+                    // TODO: maybe be less forgiving and just panic!()?
+                    return
+                },
+                Some(tmp_idx) => {
+                    let tmp_data = unsafe { &*self.object_data[tmp_idx].get() };
+                    tmp_data.parent_idx
+                },
+                None => break,
+            }
+        }
+
         // Safety: this scene would have to not be borrowed elsewhere for this
         // function to be called. The `Handle` type helps enforce this.
         let old_parent_data =
@@ -629,5 +647,20 @@ mod test {
                    Some(true));
 
         assert_eq!(child_obj.borrow().object().num_children(&scene).ok(), Some(0));
+
+        // Set up the hierarchy
+        let obj1 = scene.create_object::<TestObject>();
+        let obj2 = scene.create_object::<TestObject>();
+        let obj3 = scene.create_object::<TestObject>();
+        let obj4 = scene.create_object::<TestObject>();
+        let obj5 = scene.create_object::<TestObject>();
+        scene.set_object_parent(obj2.borrow().object(), Some(obj1.borrow().object()));
+        scene.set_object_parent(obj3.borrow().object(), Some(obj2.borrow().object()));
+        scene.set_object_parent(obj4.borrow().object(), Some(obj3.borrow().object()));
+        scene.set_object_parent(obj5.borrow().object(), Some(obj4.borrow().object()));
+        // This should fail and do nothing
+        scene.set_object_parent(obj1.borrow().object(), Some(obj5.borrow().object()));
+
+        assert_eq!(obj5.borrow().object().num_children(&scene).ok(), Some(0));
     }
 }
