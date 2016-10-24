@@ -470,3 +470,143 @@ impl Scene {
         destroyed_items.clear();
     }
 }
+
+mod test {
+    extern crate rand;
+    use super::*;
+    use self::rand::Rng;
+    use std::fmt::Write;
+
+    struct TestObject {
+        object: Object,
+        id: u32
+    }
+
+    impl Behaviour for TestObject {
+        fn create(object: Object) -> TestObject {
+            TestObject {
+                object: object,
+                id: 0
+            }
+        }
+
+        fn start(&mut self, _scene: &mut Scene) {
+        }
+
+        fn update(&mut self, scene: &mut Scene) {
+        }
+
+        fn destroy(&mut self, _scene: &mut Scene) {
+        }
+
+        fn object(&self) -> &Object {
+            &self.object
+        }
+    }
+
+    /// Determine if two borrowed pointers point to the same thing.
+    #[inline]
+    fn ref_eq<'a, 'b, T: ?Sized>(thing: &'a T, other: &'b T) -> bool {
+        (thing as *const T) == (other as *const T)
+    }
+
+    /// Tests integrity of the Scene hierarchy after destroying objects.
+    #[test]
+    fn test_basic() {
+        let mut scene = Scene::new_headless();
+
+        // Set up the hierarchy
+        let root_obj = scene.create_object::<TestObject>();
+        root_obj.borrow_mut().id = 1;
+
+        let child1 = scene.create_object::<TestObject>();
+        child1.borrow_mut().id = 2;
+        scene.set_object_parent(child1.borrow().object(), Some(root_obj.borrow().object()));
+
+        let child2 = scene.create_object::<TestObject>();
+        child2.borrow_mut().id = 3;
+        scene.set_object_parent(child2.borrow().object(), Some(root_obj.borrow().object()));
+
+        let child11 = scene.create_object::<TestObject>();
+        child11.borrow_mut().id = 4;
+        scene.set_object_parent(child11.borrow().object(), Some(child1.borrow().object()));
+        let child12 = scene.create_object::<TestObject>();
+        child12.borrow_mut().id = 5;
+        scene.set_object_parent(child12.borrow().object(), Some(child1.borrow().object()));
+        let child13 = scene.create_object::<TestObject>();
+        child13.borrow_mut().id = 6;
+        scene.set_object_parent(child13.borrow().object(), Some(child1.borrow().object()));
+
+        let child21 = scene.create_object::<TestObject>();
+        child21.borrow_mut().id = 7;
+        scene.set_object_parent(child21.borrow().object(), Some(child2.borrow().object()));
+        let child22 = scene.create_object::<TestObject>();
+        child22.borrow_mut().id = 8;
+        scene.set_object_parent(child22.borrow().object(), Some(child2.borrow().object()));
+        let child23 = scene.create_object::<TestObject>();
+        child23.borrow_mut().id = 9;
+        scene.set_object_parent(child23.borrow().object(), Some(child2.borrow().object()));
+
+        scene.do_frame();
+
+        // Verify it is what we expect
+        assert_eq!(root_obj.borrow().object().get_child(&scene, 0)
+                   .map(|x| ref_eq(&**x, &*child1)).ok(),
+                   Some(true));
+        assert_eq!(root_obj.borrow().object().get_child(&scene, 1)
+                   .map(|x| ref_eq(&**x, &*child2)).ok(),
+                   Some(true));
+
+        assert_eq!(child1.borrow().object().get_child(&scene, 0)
+                   .map(|x| ref_eq(&**x, &*child11)).ok(),
+                   Some(true));
+        assert_eq!(child1.borrow().object().get_child(&scene, 1)
+                   .map(|x| ref_eq(&**x, &*child12)).ok(),
+                   Some(true));
+        assert_eq!(child1.borrow().object().get_child(&scene, 2)
+                   .map(|x| ref_eq(&**x, &*child13)).ok(),
+                   Some(true));
+
+        assert_eq!(child2.borrow().object().get_child(&scene, 0)
+                   .map(|x| ref_eq(&**x, &*child21)).ok(),
+                   Some(true));
+        assert_eq!(child2.borrow().object().get_child(&scene, 1)
+                   .map(|x| ref_eq(&**x, &*child22)).ok(),
+                   Some(true));
+        assert_eq!(child2.borrow().object().get_child(&scene, 2)
+                   .map(|x| ref_eq(&**x, &*child23)).ok(),
+                   Some(true));
+
+        // Destroy the objects and run a frame so the hierarchy is changed
+        scene.destroy_object(child2.borrow().object());
+        scene.destroy_object(child12.borrow().object());
+        scene.do_frame();
+
+        assert_eq!(root_obj.borrow().object().num_children(&scene).ok(), Some(1));
+        assert_eq!(root_obj.borrow().object().get_child(&scene, 0)
+                   .map(|x| ref_eq(&**x, &*child1)).ok(),
+                   Some(true));
+        assert_eq!(root_obj.borrow().object().get_child(&scene, 1)
+                   .map(|x| ref_eq(&**x, &*child2)).ok(),
+                   None);
+
+        assert_eq!(child1.borrow().object().num_children(&scene).ok(), Some(2));
+        assert_eq!(child1.borrow().object().get_child(&scene, 0)
+                   .map(|x| ref_eq(&**x, &*child11)).ok(),
+                   Some(true));
+        assert_eq!(child1.borrow().object().get_child(&scene, 1)
+                   .map(|x| ref_eq(&**x, &*child13)).ok(),
+                   Some(true));
+
+        assert_eq!(child2.borrow().object().num_children(&scene).ok(), None);
+        assert_eq!(child2.borrow().object().get_child(&scene, 0)
+                   .map(|x| ref_eq(&**x, &*child21)).ok(),
+                   None);
+        assert_eq!(child2.borrow().object().get_child(&scene, 1)
+                   .map(|x| ref_eq(&**x, &*child22)).ok(),
+                   None);
+        assert_eq!(child2.borrow().object().get_child(&scene, 2)
+                   .map(|x| ref_eq(&**x, &*child23)).ok(),
+                   None);
+    }
+}
