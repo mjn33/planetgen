@@ -319,6 +319,67 @@ impl Scene {
         }
     }
 
+    pub fn set_object_parent(&mut self, object: &Object, parent: Option<&Object>) {
+        if parent.map(|o| o.idx.get()) == Some(object.idx.get()) {
+            // Disallow parenting to self
+            return
+        }
+        if parent.map_or(false, |o| !o.is_valid()) || !object.is_valid() {
+            // Either one of these objects hasn't got a valid handle, stop.
+            // TODO: maybe be less forgiving and just panic!()?
+            return
+        }
+        let child_idx = object.idx.get().unwrap();
+        let child_data = unsafe {
+            //&mut (*self.object_data.get())[child_idx as usize]
+            &mut (*self.object_data[child_idx].get())
+        };
+        let (parent_idx, parent_data) = match parent {
+            Some(parent) => {
+                let parent_idx = parent.idx.get().unwrap();
+                let parent_data = unsafe {
+                    //&mut (*self.object_data.get())[parent_idx as usize]
+                    &mut (*self.object_data[parent_idx].get())
+                };
+                (Some(parent_idx), Some(parent_data))
+            },
+            None => {
+                //// Unparent
+                //child_data.parent_idx = None;
+                //return
+                (None, None)
+            }
+        };
+        if parent_data.as_ref().map_or(false, |x| x.marked) {
+            // Can't parent to something marked for destruction
+            // TODO: maybe be less forgiving and just panic!()?
+            return
+        }
+
+        if child_data.parent_idx == parent_idx {
+            // No change
+            return
+        }
+        // Safety: this scene would have to not be borrowed elsewhere for this
+        // function to be called. The `Handle` type helps enforce this.
+        let old_parent_data =
+            child_data.parent_idx.as_ref().map(|&i| unsafe {
+                //&mut (*self.object_data.get())[i as usize]
+                &mut (*self.object_data[i].get())
+            });
+
+        if let Some(old_parent_data) = old_parent_data {
+            old_parent_data.children.iter()
+                .position(|&idx| idx == child_idx)
+                .map(|e| old_parent_data.children.remove(e))
+                .expect("parent should contain child index");
+        }
+        if let Some(parent_data) = parent_data {
+            parent_data.children.push(child_idx);
+        }
+        child_data.parent_idx = parent_idx;
+    }
+
     unsafe fn cleanup_destroyed<T, F, G>(items: &mut Vec<T>,
                                          destroyed_items: &mut Vec<usize>,
                                          is_destroyed: F,
