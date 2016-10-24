@@ -509,7 +509,7 @@ mod test {
 
     /// Tests integrity of the Scene hierarchy after destroying objects.
     #[test]
-    fn test_basic() {
+    fn test_hierarchy_integrity() {
         let mut scene = Scene::new_headless();
 
         // Set up the hierarchy
@@ -605,5 +605,29 @@ mod test {
         assert_eq!(child2.borrow().object().get_child(&scene, 2)
                    .map(|x| ref_eq(&**x, &*child23)).ok(),
                    None);
+    }
+
+    /// Test to verify we cannot create cycles in the hierarchy.
+    #[test]
+    fn test_no_cycles() {
+        let mut scene = Scene::new_headless();
+
+        // Set up the hierarchy
+        let root_obj = scene.create_object::<TestObject>();
+        root_obj.borrow_mut().id = 1;
+
+        let child_obj = scene.create_object::<TestObject>();
+        child_obj.borrow_mut().id = 2;
+
+        scene.set_object_parent(child_obj.borrow().object(), Some(root_obj.borrow().object()));
+        // This should fail and do nothing
+        scene.set_object_parent(root_obj.borrow().object(), Some(child_obj.borrow().object()));
+
+        assert_eq!(root_obj.borrow().object().num_children(&scene).ok(), Some(1));
+        assert_eq!(root_obj.borrow().object().get_child(&scene, 0)
+                   .map(|x| ref_eq(&**x, &*child_obj)).ok(),
+                   Some(true));
+
+        assert_eq!(child_obj.borrow().object().num_children(&scene).ok(), Some(0));
     }
 }
