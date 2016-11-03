@@ -4,6 +4,8 @@ version = "0.1.0"
 authors = ["Matthew Nicholls <matthew.nicholls95@hotmail.co.uk>"]
 
 [dependencies]
+approx = "0.1"
+num = "0.1"
 glium = "0.15"
 cgmath = "0.11"
 rand = "0.3"

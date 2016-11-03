@@ -1,6 +1,8 @@
-use cgmath::{Deg, Euler, Quaternion, Vector3};
+use cgmath::{Deg, Euler, Quaternion, Rotation, Vector3};
 
 use glium::backend::glutin_backend::GlutinFacade;
+
+use num::{Zero, One};
 
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::error;
@@ -127,6 +129,84 @@ impl Object {
             })
     }
 
+    pub fn set_local_pos(&self, scene: &mut Scene, pos: Vector3<f32>) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| unsafe {
+                (*scene.object_data.get_unchecked(i).get()).pos = pos;
+            })
+    }
+
+    pub fn local_pos(&self, scene: &Scene) -> Result<Vector3<f32>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| unsafe {
+                (*scene.object_data.get_unchecked(i).get()).pos
+            })
+    }
+
+    pub fn set_local_rot(&self, scene: &mut Scene, rot: Quaternion<f32>) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| unsafe {
+                (*scene.object_data.get_unchecked(i).get()).rot = rot;
+            })
+    }
+
+    pub fn local_rot(&self, scene: &Scene) -> Result<Quaternion<f32>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| unsafe {
+                (*scene.object_data.get_unchecked(i).get()).rot
+            })
+    }
+
+    pub fn set_world_pos(&self, scene: &mut Scene, pos: Vector3<f32>) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| unsafe {
+                let data = &mut *scene.object_data.get_unchecked(i).get();
+                let parent_data = data.parent_idx
+                    .map(|idx| &*scene.object_data.get_unchecked(idx).get());
+                let local_pos = scene.world_to_local_pos(parent_data, pos);
+                data.pos = local_pos;
+            })
+    }
+
+    pub fn world_pos(&self, scene: &Scene) -> Result<Vector3<f32>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| unsafe {
+                let data = &*scene.object_data.get_unchecked(i).get();
+                let parent_data = data.parent_idx
+                    .map(|idx| &*scene.object_data.get_unchecked(idx).get());
+                scene.local_to_world_pos(parent_data, data.pos)
+            })
+    }
+
+    pub fn set_world_rot(&self, scene: &mut Scene, rot: Quaternion<f32>) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| unsafe {
+                let data = &mut *scene.object_data.get_unchecked(i).get();
+                let parent_data = data.parent_idx
+                    .map(|idx| &*scene.object_data.get_unchecked(idx).get());
+                let local_rot = scene.world_to_local_rot(parent_data, rot);
+                data.rot = local_rot;
+            })
+    }
+
+    pub fn world_rot(&self, scene: &Scene) -> Result<Quaternion<f32>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| unsafe {
+                let data = &*scene.object_data.get_unchecked(i).get();
+                let parent_data = data.parent_idx
+                    .map(|idx| &*scene.object_data.get_unchecked(idx).get());
+                scene.local_to_world_rot(parent_data, data.rot)
+            })
+    }
+
     pub fn is_valid(&self) -> bool {
         self.idx.get().is_some()
     }
@@ -138,7 +218,9 @@ pub struct Scene {
     camera_data: Vec<CameraData>,
     destroyed_cameras: Vec<usize>,
     object_data: Vec<UnsafeCell<ObjectData>>,
-    destroyed_objects: Vec<usize>
+    destroyed_objects: Vec<usize>,
+    /// Temporary vector used in `local_to_world_pos_rot()`
+    tmp_vec: UnsafeCell<Vec<(Vector3<f32>, Quaternion<f32>)>>
 }
 
 impl Scene {
@@ -148,7 +230,8 @@ impl Scene {
             camera_data: Vec::new(),
             destroyed_cameras: Vec::new(),
             object_data: Vec::new(),
-            destroyed_objects: Vec::new()
+            destroyed_objects: Vec::new(),
+            tmp_vec: UnsafeCell::new(Vec::new())
         }
     }
 
@@ -160,7 +243,8 @@ impl Scene {
             camera_data: Vec::new(),
             destroyed_cameras: Vec::new(),
             object_data: Vec::new(),
-            destroyed_objects: Vec::new()
+            destroyed_objects: Vec::new(),
+            tmp_vec: UnsafeCell::new(Vec::new())
         }
     }
 
@@ -331,6 +415,106 @@ impl Scene {
         }
     }
 
+    fn local_to_world_pos_rot(&self,
+                              parent_data: Option<&ObjectData>,
+                              input_pos: Vector3<f32>,
+                              input_rot: Quaternion<f32>)
+                              -> (Vector3<f32>, Quaternion<f32>) {
+        let mut tmp_vec = unsafe { &mut *self.tmp_vec.get() };
+        tmp_vec.clear();
+        let mut opt_data = parent_data;
+        while let Some(data) = opt_data {
+            tmp_vec.push((data.pos, data.rot));
+            opt_data = data.parent_idx
+                .map(|idx| unsafe { &*self.object_data.get_unchecked(idx).get() });
+        }
+        let mut world_pos = Vector3::new(0.0, 0.0, 0.0);
+        let mut c = Vector3::new(0.0, 0.0, 0.0);
+        let mut world_rot = Quaternion::one();
+        for &(local_pos, local_rot) in tmp_vec.iter() {
+            let add = world_rot * local_pos;
+            let y = add - c;
+            let t = world_pos + y;
+            c = (t - world_pos) - y;
+            world_pos = t;
+            world_rot = world_rot * local_rot;
+        }
+        let add = world_rot * input_pos;
+        let y = add - c;
+        let t = world_pos + y;
+        world_pos = t;
+        world_rot = world_rot * input_rot;
+        (world_pos, world_rot)
+    }
+
+    fn local_to_world_pos(&self, parent_data: Option<&ObjectData>, input_pos: Vector3<f32>)
+                          -> Vector3<f32> {
+        let (world_pos, _) = self.local_to_world_pos_rot(parent_data, input_pos, Quaternion::one());
+        world_pos
+    }
+
+    fn local_to_world_rot(&self, parent_data: Option<&ObjectData>, input_rot: Quaternion<f32>)
+                          -> Quaternion<f32> {
+        let mut opt_data = parent_data;
+        let mut world_rot = input_rot;
+        while let Some(data) = opt_data {
+            world_rot = world_rot * data.rot;
+            opt_data = data.parent_idx
+                .map(|idx| unsafe { &*self.object_data.get_unchecked(idx).get() });
+        }
+        world_rot
+    }
+
+    fn world_to_local_pos_rot(&self,
+                              parent_data: Option<&ObjectData>,
+                              input_pos: Vector3<f32>,
+                              input_rot: Quaternion<f32>)
+                              -> (Vector3<f32>, Quaternion<f32>) {
+        let (world_pos, world_rot) =
+            self.local_to_world_pos_rot(parent_data, Vector3::zero(), Quaternion::one());
+        // Cheat here by using double precision until I can figure out if there
+        // is another way to improve precision.
+        let input_rot = Quaternion::<f64>::new(input_rot.s as f64,
+                                               input_rot.v.x as f64,
+                                               input_rot.v.y as f64,
+                                               input_rot.v.z as f64);
+        let world_rot = Quaternion::<f64>::new(world_rot.s as f64,
+                                               world_rot.v.x as f64,
+                                               world_rot.v.y as f64,
+                                               world_rot.v.z as f64);
+        let input_pos = Vector3::<f64>::new(input_pos.x as f64,
+                                            input_pos.y as f64,
+                                            input_pos.z as f64);
+        let world_pos = Vector3::<f64>::new(world_pos.x as f64,
+                                            world_pos.y as f64,
+                                            world_pos.z as f64);
+        let inv_world_rot = world_rot.invert();
+        let local_pos = inv_world_rot * (input_pos - world_pos);
+        let local_rot = inv_world_rot * input_rot;
+        let local_rot = Quaternion::<f32>::new(local_rot.s as f32,
+                                               local_rot.v.x as f32,
+                                               local_rot.v.y as f32,
+                                               local_rot.v.z as f32);
+        let local_pos = Vector3::<f32>::new(local_pos.x as f32,
+                                            local_pos.y as f32,
+                                            local_pos.z as f32);
+        (local_pos, local_rot)
+    }
+
+    fn world_to_local_pos(&self, parent_data: Option<&ObjectData>, input_pos: Vector3<f32>)
+                          -> Vector3<f32> {
+        let (local_pos, _) = self.world_to_local_pos_rot(parent_data, input_pos, Quaternion::one());
+        local_pos
+    }
+
+    fn world_to_local_rot(&self, parent_data: Option<&ObjectData>, input_rot: Quaternion<f32>)
+                          -> Quaternion<f32> {
+        let world_rot = self.local_to_world_rot(parent_data, Quaternion::one());
+        let inv_world_rot = world_rot.invert();
+        let local_rot = inv_world_rot * input_rot;
+        local_rot
+    }
+
     pub fn set_object_parent(&mut self, object: &Object, parent: Option<&Object>) {
         if parent.map(|o| o.idx.get()) == Some(object.idx.get()) {
             // Disallow parenting to self
@@ -487,8 +671,11 @@ impl Scene {
     }
 }
 
+#[cfg(test)]
 mod test {
     use super::*;
+    use cgmath::{Deg, Euler, Quaternion, Vector3};
+    use num::{Zero, One};
 
     struct TestObject {
         object: Object,
@@ -660,5 +847,67 @@ mod test {
         scene.set_object_parent(obj1.borrow().object(), Some(obj5.borrow().object()));
 
         assert_eq!(obj5.borrow().object().num_children(&scene).ok(), Some(0));
+    }
+
+    /// Tests objects are transformed correctly
+    #[test]
+    fn test_obj_transforms() {
+        let mut scene = Scene::new_headless();
+
+        let obj1 = scene.create_object::<TestObject>();
+        let obj2 = scene.create_object::<TestObject>();
+        let obj3 = scene.create_object::<TestObject>();
+        let obj4 = scene.create_object::<TestObject>();
+        let obj5 = scene.create_object::<TestObject>();
+        scene.set_object_parent(obj2.borrow().object(), Some(obj1.borrow().object()));
+        scene.set_object_parent(obj3.borrow().object(), Some(obj2.borrow().object()));
+        scene.set_object_parent(obj4.borrow().object(), Some(obj3.borrow().object()));
+        scene.set_object_parent(obj5.borrow().object(), Some(obj4.borrow().object()));
+
+        fn angles(x: f32, y: f32, z: f32) -> Quaternion<f32> {
+            Quaternion::from(Euler { x: Deg(x), y: Deg(y), z: Deg(z) })
+        }
+        obj1.borrow().object().set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
+        obj1.borrow().object().set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
+
+        obj2.borrow().object().set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
+        obj2.borrow().object().set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
+
+        obj3.borrow().object().set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
+        obj3.borrow().object().set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
+
+        obj4.borrow().object().set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
+        obj4.borrow().object().set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
+
+        obj5.borrow().object().set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
+        obj5.borrow().object().set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
+
+        obj4.borrow().object().set_world_pos(&mut scene, Vector3::zero()).unwrap();
+        obj4.borrow().object().set_world_rot(&mut scene, Quaternion::one()).unwrap();
+
+        let tmp = obj1.borrow().object().world_pos(&scene).unwrap();
+        assert_relative_eq!(tmp.x, 10.0);
+        assert_relative_eq!(tmp.y, 0.0);
+        assert_relative_eq!(tmp.z, 0.0);
+
+        let tmp = obj2.borrow().object().world_pos(&scene).unwrap();
+        assert_relative_eq!(tmp.x, 17.071067812);
+        assert_relative_eq!(tmp.y, 7.071067812);
+        assert_relative_eq!(tmp.z, 0.0);
+
+        let tmp = obj3.borrow().object().world_pos(&scene).unwrap();
+        assert_relative_eq!(tmp.x, 17.071067812);
+        assert_relative_eq!(tmp.y, 17.071067812);
+        assert_relative_eq!(tmp.z, 0.0);
+
+        let tmp = obj4.borrow().object().world_pos(&scene).unwrap();
+        assert_relative_eq!(tmp.x, 0.0);
+        assert_relative_eq!(tmp.y, 0.0);
+        assert_relative_eq!(tmp.z, 0.0);
+
+        let tmp = obj5.borrow().object().world_pos(&scene).unwrap();
+        assert_relative_eq!(tmp.x, 10.0, max_relative = 1.05);
+        assert_relative_eq!(tmp.y, 0.0, max_relative = 1.05);
+        assert_relative_eq!(tmp.z, 0.0);
     }
 }
