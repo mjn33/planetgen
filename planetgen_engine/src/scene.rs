@@ -1,5 +1,6 @@
 use cgmath::{Deg, Euler, Quaternion, Rotation, Vector3};
 
+use glium::Program;
 use glium::backend::glutin_backend::GlutinFacade;
 
 use num::{Zero, One};
@@ -70,6 +71,25 @@ pub struct Camera {
 }
 
 impl Camera {
+    pub fn is_valid(&self) -> bool {
+        self.idx.get().is_some()
+    }
+}
+
+struct ShaderData {
+    /// Reference to the shader object.
+    object: Rc<Shader>,
+    /// True when the shader has been marked for destruction at the end of the
+    /// frame.
+    marked: bool,
+    program: Program,
+}
+
+pub struct Shader {
+    idx: Cell<Option<usize>>
+}
+
+impl Shader {
     pub fn is_valid(&self) -> bool {
         self.idx.get().is_some()
     }
@@ -217,6 +237,8 @@ pub struct Scene {
     display: Option<GlutinFacade>,
     camera_data: Vec<CameraData>,
     destroyed_cameras: Vec<usize>,
+    shader_data: Vec<ShaderData>,
+    destroyed_shaders: Vec<usize>,
     object_data: Vec<UnsafeCell<ObjectData>>,
     destroyed_objects: Vec<usize>,
     /// Temporary vector used in `local_to_world_pos_rot()`
@@ -229,6 +251,8 @@ impl Scene {
             display: Some(display),
             camera_data: Vec::new(),
             destroyed_cameras: Vec::new(),
+            shader_data: Vec::new(),
+            destroyed_shaders: Vec::new(),
             object_data: Vec::new(),
             destroyed_objects: Vec::new(),
             tmp_vec: UnsafeCell::new(Vec::new())
@@ -242,6 +266,8 @@ impl Scene {
             display: None,
             camera_data: Vec::new(),
             destroyed_cameras: Vec::new(),
+            shader_data: Vec::new(),
+            destroyed_shaders: Vec::new(),
             object_data: Vec::new(),
             destroyed_objects: Vec::new(),
             tmp_vec: UnsafeCell::new(Vec::new())
@@ -267,6 +293,26 @@ impl Scene {
         };
         self.camera_data.push(data);
         rv.idx.set(Some(self.camera_data.len() - 1));
+        rv
+    }
+
+    pub fn create_shader(&mut self, vs_src: &str, fs_src: &str, gs_src: Option<&str>) -> Rc<Shader> {
+        let display = match self.display {
+            Some(ref display) => display,
+            None => {
+                // TODO: In the future implement some kind of dummy shader?
+                panic!("Tried to create shader in headless mode.");
+            }
+        };
+        let rv = Rc::new(Shader { idx: Cell::new(None) });
+        let program = Program::from_source(display, vs_src, fs_src, gs_src).unwrap();
+        let data = ShaderData {
+            object: rv.clone(),
+            marked: false,
+            program: program,
+        };
+        self.shader_data.push(data);
+        rv.idx.set(Some(self.shader_data.len() - 1));
         rv
     }
 
@@ -306,6 +352,24 @@ impl Scene {
         if !camera_data.marked {
             self.destroyed_cameras.push(camera_idx);
             camera_data.marked = true;
+        }
+    }
+
+    pub fn destroy_shader(&mut self, shader: &Shader) {
+        let shader_idx = match shader.idx.get() {
+            Some(shader_idx) => shader_idx,
+            None => {
+                println!("[WARNING] destroy_shader called on a shader without a valid handle!");
+                return
+            }
+        };
+        let shader_data = unsafe {
+            self.shader_data.get_unchecked_mut(shader_idx)
+        };
+
+        if !shader_data.marked {
+            self.destroyed_shaders.push(shader_idx);
+            shader_data.marked = true;
         }
     }
 
@@ -412,6 +476,10 @@ impl Scene {
                 &mut self.camera_data, &mut self.destroyed_cameras,
                 |x| x.marked,
                 |x, idx| x.camera.idx.set(idx));
+            Scene::cleanup_destroyed(
+                &mut self.shader_data, &mut self.destroyed_shaders,
+                |x| x.marked,
+                |x, idx| x.object.idx.set(idx));
         }
     }
 
