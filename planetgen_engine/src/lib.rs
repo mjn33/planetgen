@@ -4,6 +4,7 @@
 extern crate approx;
 
 extern crate cgmath;
+#[macro_use]
 extern crate glium;
 extern crate num;
 

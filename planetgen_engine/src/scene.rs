@@ -1,6 +1,6 @@
 use cgmath::{Deg, Euler, Quaternion, Rotation, Vector3};
 
-use glium::Program;
+use glium::{IndexBuffer, Program, VertexBuffer};
 use glium::backend::glutin_backend::GlutinFacade;
 
 use num::{Zero, One};
@@ -19,6 +19,8 @@ pub enum Error {
     ObjectDestroyed,
     /// The specified child index was out of bounds
     BadChildIdx,
+    /// Data given doesn't match size of buffer
+    WrongBufferLength,
     /// Other unspecified error.
     Other
 }
@@ -36,6 +38,7 @@ impl error::Error for Error {
         match *self {
             Error::ObjectDestroyed => "Cannot perform operation on a destroyed object",
             Error::BadChildIdx => "Child index out of bounds",
+            Error::WrongBufferLength => "Data given doesn't match size of buffer",
             Error::Other => "Unspecified error"
         }
     }
@@ -73,6 +76,60 @@ pub struct Camera {
 impl Camera {
     pub fn is_valid(&self) -> bool {
         self.idx.get().is_some()
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct Vertex {
+    vert_pos: [f32; 3],
+}
+implement_vertex!(Vertex, vert_pos);
+
+struct MeshData {
+    /// Reference to the mesh object.
+    object: Rc<Mesh>,
+    /// True when the mesh has been marked for destruction at the end of the
+    /// frame.
+    marked: bool,
+    vertex_buf: VertexBuffer<Vertex>,
+    indices_buf: IndexBuffer<u16>,
+}
+
+pub struct Mesh {
+    idx: Cell<Option<usize>>
+}
+
+impl Mesh {
+    pub fn set_indices(&self, scene: &mut Scene, indices: &[u16]) -> Result<()> {
+        let indices_buf = try!(self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .and_then(|i| unsafe {
+                let indices_buf = &scene.mesh_data.get_unchecked(i).indices_buf;
+                if indices.len() != indices_buf.len() {
+                    Err(Error::WrongBufferLength)
+                } else {
+                    Ok(indices_buf)
+                }
+            }));
+
+        indices_buf.write(indices);
+        Ok(())
+    }
+
+    pub fn set_verts(&self, scene: &mut Scene, verts: &[Vertex]) -> Result<()> {
+        let vertex_buf = try!(self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .and_then(|i| unsafe {
+                let vertex_buf = &scene.mesh_data.get_unchecked(i).vertex_buf;
+                if verts.len() != vertex_buf.len() {
+                    Err(Error::WrongBufferLength)
+                } else {
+                    Ok(vertex_buf)
+                }
+            }));
+
+        vertex_buf.write(verts);
+        Ok(())
     }
 }
 
@@ -123,7 +180,6 @@ struct ObjectData {
     marked: bool,
     /// True if the object has been newly created this current frame.
     is_new: bool
-    //mesh: Option<Mesh>
 }
 
 pub struct Object {
@@ -237,6 +293,8 @@ pub struct Scene {
     display: Option<GlutinFacade>,
     camera_data: Vec<CameraData>,
     destroyed_cameras: Vec<usize>,
+    mesh_data: Vec<MeshData>,
+    destroyed_meshes: Vec<usize>,
     shader_data: Vec<ShaderData>,
     destroyed_shaders: Vec<usize>,
     object_data: Vec<UnsafeCell<ObjectData>>,
@@ -251,6 +309,8 @@ impl Scene {
             display: Some(display),
             camera_data: Vec::new(),
             destroyed_cameras: Vec::new(),
+            mesh_data: Vec::new(),
+            destroyed_meshes: Vec::new(),
             shader_data: Vec::new(),
             destroyed_shaders: Vec::new(),
             object_data: Vec::new(),
@@ -266,6 +326,8 @@ impl Scene {
             display: None,
             camera_data: Vec::new(),
             destroyed_cameras: Vec::new(),
+            mesh_data: Vec::new(),
+            destroyed_meshes: Vec::new(),
             shader_data: Vec::new(),
             destroyed_shaders: Vec::new(),
             object_data: Vec::new(),
@@ -293,6 +355,26 @@ impl Scene {
         };
         self.camera_data.push(data);
         rv.idx.set(Some(self.camera_data.len() - 1));
+        rv
+    }
+
+    pub fn create_mesh(&mut self, verts: &[Vertex], indices: &[u16]) -> Rc<Mesh> {
+        let display = match self.display {
+            Some(ref display) => display,
+            None => {
+                // TODO: In the future implement some kind of dummy mesh?
+                panic!("Tried to create mesh in headless mode.");
+            }
+        };
+        let rv = Rc::new(Mesh { idx: Cell::new(None) });
+        let data = MeshData {
+            object: rv.clone(),
+            marked: false,
+            vertex_buf: VertexBuffer::new(display, verts).unwrap(),
+            indices_buf: IndexBuffer::new(display, ::glium::index::PrimitiveType::TrianglesList, indices).unwrap(),
+        };
+        self.mesh_data.push(data);
+        rv.idx.set(Some(self.mesh_data.len() - 1));
         rv
     }
 
@@ -352,6 +434,24 @@ impl Scene {
         if !camera_data.marked {
             self.destroyed_cameras.push(camera_idx);
             camera_data.marked = true;
+        }
+    }
+
+    pub fn destroy_mesh(&mut self, mesh: &Mesh) {
+        let mesh_idx = match mesh.idx.get() {
+            Some(mesh_idx) => mesh_idx,
+            None => {
+                println!("[WARNING] destroy_mesh called on a mesh without a valid handle!");
+                return
+            }
+        };
+        let mesh_data = unsafe {
+            self.mesh_data.get_unchecked_mut(mesh_idx)
+        };
+
+        if !mesh_data.marked {
+            self.destroyed_meshes.push(mesh_idx);
+            mesh_data.marked = true;
         }
     }
 
@@ -476,6 +576,10 @@ impl Scene {
                 &mut self.camera_data, &mut self.destroyed_cameras,
                 |x| x.marked,
                 |x, idx| x.camera.idx.set(idx));
+            Scene::cleanup_destroyed(
+                &mut self.mesh_data, &mut self.destroyed_meshes,
+                |x| x.marked,
+                |x, idx| x.object.idx.set(idx));
             Scene::cleanup_destroyed(
                 &mut self.shader_data, &mut self.destroyed_shaders,
                 |x| x.marked,
