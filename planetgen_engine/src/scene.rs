@@ -81,7 +81,7 @@ impl Camera {
 
 #[derive(Copy, Clone)]
 pub struct Vertex {
-    vert_pos: [f32; 3],
+    pub vert_pos: [f32; 3],
 }
 implement_vertex!(Vertex, vert_pos);
 
