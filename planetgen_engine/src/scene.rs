@@ -1,4 +1,5 @@
-use cgmath::{Deg, Euler, Quaternion, Rotation, Vector3};
+use cgmath;
+use cgmath::{Deg, Euler, Matrix4, Quaternion, Rotation, Vector3};
 
 use glium;
 use glium::{IndexBuffer, Program, VertexBuffer};
@@ -77,6 +78,17 @@ struct CameraData {
 /// A handle to a camera object for a scene.
 pub struct Camera {
     idx: Cell<Option<usize>>
+}
+
+impl CameraData {
+    fn calc_matrix(&self) -> [[f32; 4]; 4] {
+        let cam_perspective = cgmath::perspective(self.fovy, self.aspect, self.near_clip, self.far_clip);
+        let cam_matrix =
+            cam_perspective *
+            Matrix4::from(self.rot.invert()) *
+            Matrix4::from_translation(-self.pos);
+        cam_matrix.clone().into()
+    }
 }
 
 impl Camera {
