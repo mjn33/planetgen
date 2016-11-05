@@ -6,6 +6,7 @@ use glium::backend::glutin_backend::GlutinFacade;
 use num::{Zero, One};
 
 use std::cell::{Cell, RefCell, UnsafeCell};
+use std::collections::HashMap;
 use std::error;
 use std::fmt;
 use std::rc::Rc;
@@ -21,6 +22,8 @@ pub enum Error {
     BadChildIdx,
     /// Data given doesn't match size of buffer
     WrongBufferLength,
+    /// Uniform name given not found in shader program
+    BadUniformName,
     /// Other unspecified error.
     Other
 }
@@ -39,6 +42,7 @@ impl error::Error for Error {
             Error::ObjectDestroyed => "Cannot perform operation on a destroyed object",
             Error::BadChildIdx => "Child index out of bounds",
             Error::WrongBufferLength => "Data given doesn't match size of buffer",
+            Error::BadUniformName => "Uniform name given not found in shader program",
             Error::Other => "Unspecified error"
         }
     }
@@ -147,6 +151,93 @@ pub struct Shader {
 }
 
 impl Shader {
+    pub fn is_valid(&self) -> bool {
+        self.idx.get().is_some()
+    }
+}
+
+pub enum UniformValue {
+    Int(i32),
+    UnsignedInt(u32),
+    Float(f32),
+    Mat2([[f32; 2]; 2]),
+    Mat3([[f32; 3]; 3]),
+    Mat4([[f32; 4]; 4]),
+    Vec2([f32; 2]),
+    Vec3([f32; 3]),
+    Vec4([f32; 4]),
+    IntVec2([i32; 2]),
+    IntVec3([i32; 3]),
+    IntVec4([i32; 4]),
+    UIntVec2([u32; 2]),
+    UIntVec3([u32; 3]),
+    UIntVec4([u32; 4]),
+    Bool(bool),
+    BoolVec2([bool; 2]),
+    BoolVec3([bool; 3]),
+    BoolVec4([bool; 4]),
+    Double(f64),
+    DoubleVec2([f64; 2]),
+    DoubleVec3([f64; 3]),
+    DoubleVec4([f64; 4]),
+    DoubleMat2([[f64; 2]; 2]),
+    DoubleMat3([[f64; 3]; 3]),
+    DoubleMat4([[f64; 4]; 4]),
+    Int64(i64),
+    Int64Vec2([i64; 2]),
+    Int64Vec3([i64; 3]),
+    Int64Vec4([i64; 4]),
+    UInt64(u64),
+    UInt64Vec2([u64; 2]),
+    UInt64Vec3([u64; 3]),
+    UInt64Vec4([u64; 4])
+}
+
+struct MaterialData {
+    /// Reference to the material object.
+    object: Rc<Material>,
+    /// True when the material has been marked for destruction at the end of the
+    /// frame.
+    marked: bool,
+    uniforms: HashMap<String, UnsafeCell<Option<UniformValue>>>,
+    shader: Rc<Shader>,
+    colour: (f32, f32, f32)
+}
+
+pub struct Material {
+    idx: Cell<Option<usize>>
+}
+
+impl Material {
+    fn set_colour(&self, scene: &mut Scene, colour: (f32, f32, f32)) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| unsafe { scene.material_data.get_unchecked_mut(i).colour = colour; })
+    }
+
+    fn colour(&self, scene: &Scene) -> Result<(f32, f32, f32)> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| unsafe { scene.material_data.get_unchecked(i).colour })
+    }
+
+    fn set_uniform(&self, scene: &mut Scene, name: &str, v: UniformValue) -> Result<()> {
+        let uniforms = try!(self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| unsafe { &mut scene.material_data.get_unchecked_mut(i).uniforms }));
+
+        match uniforms.get(name) {
+            Some(entry) => {
+                unsafe {
+                    *entry.get() = Some(v);
+                }
+                //entry.set_value(v);
+                Ok(())
+            },
+            None => Err(Error::BadUniformName)
+        }
+    }
+
     pub fn is_valid(&self) -> bool {
         self.idx.get().is_some()
     }
@@ -295,6 +386,8 @@ pub struct Scene {
     destroyed_cameras: Vec<usize>,
     mesh_data: Vec<MeshData>,
     destroyed_meshes: Vec<usize>,
+    material_data: Vec<MaterialData>,
+    destroyed_materials: Vec<usize>,
     shader_data: Vec<ShaderData>,
     destroyed_shaders: Vec<usize>,
     object_data: Vec<UnsafeCell<ObjectData>>,
@@ -311,6 +404,8 @@ impl Scene {
             destroyed_cameras: Vec::new(),
             mesh_data: Vec::new(),
             destroyed_meshes: Vec::new(),
+            material_data: Vec::new(),
+            destroyed_materials: Vec::new(),
             shader_data: Vec::new(),
             destroyed_shaders: Vec::new(),
             object_data: Vec::new(),
@@ -328,6 +423,8 @@ impl Scene {
             destroyed_cameras: Vec::new(),
             mesh_data: Vec::new(),
             destroyed_meshes: Vec::new(),
+            material_data: Vec::new(),
+            destroyed_materials: Vec::new(),
             shader_data: Vec::new(),
             destroyed_shaders: Vec::new(),
             object_data: Vec::new(),
@@ -376,6 +473,35 @@ impl Scene {
         self.mesh_data.push(data);
         rv.idx.set(Some(self.mesh_data.len() - 1));
         rv
+    }
+
+    pub fn create_material(&mut self, shader: Rc<Shader>) -> Result<Rc<Material>> {
+        let rv = Rc::new(Material { idx: Cell::new(None) });
+        let map = {
+            let shader_data = try!(shader.idx.get()
+                .ok_or(Error::ObjectDestroyed)
+                .map(|i| unsafe { self.shader_data.get_unchecked(i) }));
+
+            let mut map = HashMap::new();
+            for (name, _) in shader_data.program.uniforms() {
+                // Names starting with "_" are reserved for our own use
+                if name.starts_with("_") {
+                    map.insert(name.clone(), UnsafeCell::new(None));
+                }
+            }
+            map
+        };
+
+        let data = MaterialData {
+            object: rv.clone(),
+            marked: false,
+            uniforms: map,
+            shader: shader.clone(),
+            colour: (1.0, 1.0, 1.0)
+        };
+        self.material_data.push(data);
+        rv.idx.set(Some(self.material_data.len() - 1));
+        Ok(rv)
     }
 
     pub fn create_shader(&mut self, vs_src: &str, fs_src: &str, gs_src: Option<&str>) -> Rc<Shader> {
@@ -452,6 +578,24 @@ impl Scene {
         if !mesh_data.marked {
             self.destroyed_meshes.push(mesh_idx);
             mesh_data.marked = true;
+        }
+    }
+
+    pub fn destroy_material(&mut self, material: &Material) {
+        let material_idx = match material.idx.get() {
+            Some(material_idx) => material_idx,
+            None => {
+                println!("[WARNING] destroy_material called on a material without a valid handle!");
+                return
+            }
+        };
+        let material_data = unsafe {
+            self.material_data.get_unchecked_mut(material_idx)
+        };
+
+        if !material_data.marked {
+            self.destroyed_materials.push(material_idx);
+            material_data.marked = true;
         }
     }
 
@@ -578,6 +722,10 @@ impl Scene {
                 |x, idx| x.camera.idx.set(idx));
             Scene::cleanup_destroyed(
                 &mut self.mesh_data, &mut self.destroyed_meshes,
+                |x| x.marked,
+                |x, idx| x.object.idx.set(idx));
+            Scene::cleanup_destroyed(
+                &mut self.material_data, &mut self.destroyed_materials,
                 |x| x.marked,
                 |x, idx| x.object.idx.set(idx));
             Scene::cleanup_destroyed(
