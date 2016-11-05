@@ -10,5 +10,4 @@ extern crate num;
 
 mod scene;
 
-pub use self::scene::Scene;
-
+pub use self::scene::*;
