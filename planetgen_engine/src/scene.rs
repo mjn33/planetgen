@@ -1,17 +1,19 @@
 use cgmath::{Deg, Euler, Quaternion, Rotation, Vector3};
 
+use glium;
 use glium::{IndexBuffer, Program, VertexBuffer};
 use glium::backend::glutin_backend::GlutinFacade;
 
 use num::{Zero, One};
 
+use std;
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::HashMap;
 use std::error;
 use std::fmt;
 use std::rc::Rc;
 
-pub type Result<T> = ::std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Error {
@@ -468,7 +470,7 @@ impl Scene {
             object: rv.clone(),
             marked: false,
             vertex_buf: VertexBuffer::new(display, verts).unwrap(),
-            indices_buf: IndexBuffer::new(display, ::glium::index::PrimitiveType::TrianglesList, indices).unwrap(),
+            indices_buf: IndexBuffer::new(display, glium::index::PrimitiveType::TrianglesList, indices).unwrap(),
         };
         self.mesh_data.push(data);
         rv.idx.set(Some(self.mesh_data.len() - 1));
@@ -663,7 +665,7 @@ impl Scene {
     }
 
     fn do_frame(&mut self) {
-        fn post_add<T: Copy + ::std::ops::Add<Output=T>>(a: &mut T, b: T) -> T {
+        fn post_add<T: Copy + std::ops::Add<Output=T>>(a: &mut T, b: T) -> T {
             let c = *a;
             *a = *a + b;
             c
