@@ -2,7 +2,7 @@ use cgmath;
 use cgmath::{Deg, Euler, Matrix4, Quaternion, Rotation, Vector3};
 
 use glium;
-use glium::{IndexBuffer, Program, VertexBuffer};
+use glium::{IndexBuffer, Program, Surface, VertexBuffer};
 use glium::backend::glutin_backend::GlutinFacade;
 
 use num::{Zero, One};
@@ -267,6 +267,10 @@ pub trait Behaviour {
     fn destroy(&mut self, scene: &mut Scene);
 
     fn object(&self) -> &Object;
+
+    fn mesh(&self) -> Option<&Mesh>;
+
+    fn material(&self) -> Option<&Material>;
 }
 
 struct ObjectData {
@@ -676,7 +680,7 @@ impl Scene {
         }
     }
 
-    fn do_frame(&mut self) {
+    pub fn do_frame(&mut self) -> bool {
         fn post_add<T: Copy + std::ops::Add<Output=T>>(a: &mut T, b: T) -> T {
             let c = *a;
             *a = *a + b;
@@ -728,6 +732,102 @@ impl Scene {
             }
         }
 
+        let mut target = self.display.as_ref().unwrap().draw();
+        target.clear_color_and_depth((0.8, 0.8, 0.8, 1.0), 1.0);
+
+        for data in &self.object_data {
+            let behaviour = unsafe { (*data.get()).behaviour.borrow() };
+            let mesh = behaviour.mesh()
+                .and_then(|x| x.idx.get())
+                .and_then(|idx| unsafe { Some(self.mesh_data.get_unchecked(idx)) });
+            let mesh = match mesh {
+                Some(mesh) => mesh,
+                None => continue
+            };
+
+            let material = behaviour.material()
+                .and_then(|x| x.idx.get())
+                .and_then(|idx| unsafe { Some(self.material_data.get_unchecked(idx)) });
+            let material = match material {
+                Some(material) => material,
+                None => continue
+            };
+
+            let shader = material.shader.idx.get()
+                .and_then(|idx| unsafe { Some(self.shader_data.get_unchecked(idx)) });
+            let shader = match shader {
+                Some(shader) => shader,
+                None => continue
+            };
+
+            let draw_params = glium::DrawParameters {
+                backface_culling: glium::draw_parameters::BackfaceCullingMode::CullClockwise,
+                polygon_mode: glium::draw_parameters::PolygonMode::Line,
+                depth: glium::Depth {
+                    test: glium::draw_parameters::DepthTest::IfLess,
+                    write: true,
+                    .. Default::default()
+                },
+                .. Default::default()
+            };
+
+            let (world_pos, world_rot) = unsafe {
+                let data = &*data.get();
+                let parent_data = data.parent_idx
+                    .map(|idx| &*self.object_data.get_unchecked(idx).get());
+                self.local_to_world_pos_rot(parent_data, data.pos, data.rot)
+            };
+
+            // TODO: multiple cameras
+            let cam_matrix = self.camera_data[0].calc_matrix();
+
+            let local_to_world = (Matrix4::from_translation(world_pos)
+                * Matrix4::from(world_rot)).into();
+
+            let colour = [material.colour.0, material.colour.1, material.colour.2];
+
+            struct TmpUniforms<'a, 'b> {
+                scene: &'a Scene,
+                uniforms: &'b HashMap<String, UnsafeCell<Option<UniformValue>>>,
+                cam_matrix: [[f32; 4]; 4],
+                obj_matrix: [[f32; 4]; 4],
+                colour: [f32; 3]
+            }
+
+            impl<'a, 'b> glium::uniforms::Uniforms for TmpUniforms<'a, 'b> {
+                fn visit_values<'c, F: FnMut(&str, glium::uniforms::UniformValue<'c>)>(&'c self, mut f: F) {
+                    f("_obj_matrix", glium::uniforms::UniformValue::Mat4(self.obj_matrix));
+                    f("_cam_matrix", glium::uniforms::UniformValue::Mat4(self.cam_matrix));
+                    f("_colour", glium::uniforms::UniformValue::Vec3(self.colour));
+                    for (name, entry) in self.uniforms {
+                        let entry = unsafe { (&*entry.get()) };
+                        entry.as_ref()
+                            .map(|v| self.scene.to_glium_uniform_value(&v))
+                            .map(|v| f(&name, v));
+                    }
+                }
+            }
+
+            let uniforms = TmpUniforms {
+                scene: self,
+                uniforms: &material.uniforms,
+                cam_matrix: cam_matrix,
+                obj_matrix: local_to_world,
+                colour: colour
+            };
+
+            target.draw(&mesh.vertex_buf, &mesh.indices_buf, &shader.program, &uniforms, &draw_params).unwrap();
+        }
+
+        target.finish().unwrap();
+
+        for ev in self.display.as_ref().unwrap().poll_events() {
+            match ev {
+                glium::glutin::Event::Closed => return false,
+                _ => ()
+            }
+        }
+
         unsafe {
             self.cleanup_destroyed_objects();
             Scene::cleanup_destroyed(
@@ -746,6 +846,47 @@ impl Scene {
                 &mut self.shader_data, &mut self.destroyed_shaders,
                 |x| x.marked,
                 |x, idx| x.object.idx.set(idx));
+        }
+
+        true
+    }
+
+    fn to_glium_uniform_value<'a>(&self, value: &UniformValue) -> glium::uniforms::UniformValue<'a> {
+        match *value {
+            UniformValue::Int(x) => glium::uniforms::UniformValue::SignedInt(x),
+            UniformValue::UnsignedInt(x) => glium::uniforms::UniformValue::UnsignedInt(x),
+            UniformValue::Float(x) => glium::uniforms::UniformValue::Float(x),
+            UniformValue::Mat2(x) => glium::uniforms::UniformValue::Mat2(x),
+            UniformValue::Mat3(x) => glium::uniforms::UniformValue::Mat3(x),
+            UniformValue::Mat4(x) => glium::uniforms::UniformValue::Mat4(x),
+            UniformValue::Vec2(x) => glium::uniforms::UniformValue::Vec2(x),
+            UniformValue::Vec3(x) => glium::uniforms::UniformValue::Vec3(x),
+            UniformValue::Vec4(x) => glium::uniforms::UniformValue::Vec4(x),
+            UniformValue::IntVec2(x) => glium::uniforms::UniformValue::IntVec2(x),
+            UniformValue::IntVec3(x) => glium::uniforms::UniformValue::IntVec3(x),
+            UniformValue::IntVec4(x) => glium::uniforms::UniformValue::IntVec4(x),
+            UniformValue::UIntVec2(x) => glium::uniforms::UniformValue::UnsignedIntVec2(x),
+            UniformValue::UIntVec3(x) => glium::uniforms::UniformValue::UnsignedIntVec3(x),
+            UniformValue::UIntVec4(x) => glium::uniforms::UniformValue::UnsignedIntVec4(x),
+            UniformValue::Bool(x) => glium::uniforms::UniformValue::Bool(x),
+            UniformValue::BoolVec2(x) => glium::uniforms::UniformValue::BoolVec2(x),
+            UniformValue::BoolVec3(x) => glium::uniforms::UniformValue::BoolVec3(x),
+            UniformValue::BoolVec4(x) => glium::uniforms::UniformValue::BoolVec4(x),
+            UniformValue::Double(x) => glium::uniforms::UniformValue::Double(x),
+            UniformValue::DoubleVec2(x) => glium::uniforms::UniformValue::DoubleVec2(x),
+            UniformValue::DoubleVec3(x) => glium::uniforms::UniformValue::DoubleVec3(x),
+            UniformValue::DoubleVec4(x) => glium::uniforms::UniformValue::DoubleVec4(x),
+            UniformValue::DoubleMat2(x) => glium::uniforms::UniformValue::DoubleMat2(x),
+            UniformValue::DoubleMat3(x) => glium::uniforms::UniformValue::DoubleMat3(x),
+            UniformValue::DoubleMat4(x) => glium::uniforms::UniformValue::DoubleMat4(x),
+            UniformValue::Int64(x) => glium::uniforms::UniformValue::Int64(x),
+            UniformValue::Int64Vec2(x) => glium::uniforms::UniformValue::Int64Vec2(x),
+            UniformValue::Int64Vec3(x) => glium::uniforms::UniformValue::Int64Vec3(x),
+            UniformValue::Int64Vec4(x) => glium::uniforms::UniformValue::Int64Vec4(x),
+            UniformValue::UInt64(x) => glium::uniforms::UniformValue::UnsignedInt64(x),
+            UniformValue::UInt64Vec2(x) => glium::uniforms::UniformValue::UnsignedInt64Vec2(x),
+            UniformValue::UInt64Vec3(x) => glium::uniforms::UniformValue::UnsignedInt64Vec3(x),
+            UniformValue::UInt64Vec4(x) => glium::uniforms::UniformValue::UnsignedInt64Vec4(x)
         }
     }
 
@@ -1035,6 +1176,14 @@ mod test {
 
         fn object(&self) -> &Object {
             &self.object
+        }
+
+        fn mesh(&self) -> Option<&Mesh> {
+            None
+        }
+
+        fn material(&self) -> Option<&Material> {
+            None
         }
     }
 
