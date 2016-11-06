@@ -223,19 +223,19 @@ pub struct Material {
 }
 
 impl Material {
-    fn set_colour(&self, scene: &mut Scene, colour: (f32, f32, f32)) -> Result<()> {
+    pub fn set_colour(&self, scene: &mut Scene, colour: (f32, f32, f32)) -> Result<()> {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| unsafe { scene.material_data.get_unchecked_mut(i).colour = colour; })
     }
 
-    fn colour(&self, scene: &Scene) -> Result<(f32, f32, f32)> {
+    pub fn colour(&self, scene: &Scene) -> Result<(f32, f32, f32)> {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| unsafe { scene.material_data.get_unchecked(i).colour })
     }
 
-    fn set_uniform(&self, scene: &mut Scene, name: &str, v: UniformValue) -> Result<()> {
+    pub fn set_uniform(&self, scene: &mut Scene, name: &str, v: UniformValue) -> Result<()> {
         let uniforms = try!(self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| unsafe { &mut scene.material_data.get_unchecked_mut(i).uniforms }));
