@@ -2,3 +2,7 @@ target
 _scratch
 
 planetgen_engine/Cargo.lock
+
+tex/*.pdf
+tex/*.log
+tex/*.aux
