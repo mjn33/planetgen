@@ -274,21 +274,24 @@ pub trait Behaviour {
 }
 
 struct ObjectData {
-    /// Local rotation.
-    rot: Quaternion<f32>,
-    /// Local position.
-    pos: Vector3<f32>,
     /// Reference to the object behaviour.
     behaviour: Rc<RefCell<Behaviour>>,
-    /// List of indices of the children of this object.
-    children: Vec<usize>,
-    /// Index of this object's parent.
-    parent_idx: Option<usize>,
     /// True when the object has been marked for destruction at the end of the
     /// frame.
     marked: bool,
     /// True if the object has been newly created this current frame.
     is_new: bool
+}
+
+struct TransformData {
+    /// Local rotation.
+    rot: Quaternion<f32>,
+    /// Local position.
+    pos: Vector3<f32>,
+    /// List of indices of the children of this object.
+    children: Vec<usize>,
+    /// Index of this object's parent.
+    parent_idx: Option<usize>,
 }
 
 pub struct Object {
@@ -299,14 +302,14 @@ impl Object {
     pub fn num_children(&self, scene: &Scene) -> Result<usize> {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe { (*scene.object_data.get_unchecked(i).get()).children.len() })
+            .map(|i| unsafe { scene.transform_data.get_unchecked(i).children.len() })
     }
 
     pub fn get_child(&self, scene: &Scene, n: usize) -> Result<&Rc<RefCell<Behaviour>>> {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .and_then(|i| unsafe {
-                (*scene.object_data.get_unchecked(i).get()).children.get(n)
+                scene.transform_data.get_unchecked(i).children.get(n)
                     .ok_or(Error::BadChildIdx)
             })
             .map(|&i| unsafe {
@@ -318,7 +321,7 @@ impl Object {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| unsafe {
-                (*scene.object_data.get_unchecked(i).get()).pos = pos;
+                scene.transform_data.get_unchecked_mut(i).pos = pos;
             })
     }
 
@@ -326,7 +329,7 @@ impl Object {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| unsafe {
-                (*scene.object_data.get_unchecked(i).get()).pos
+                scene.transform_data.get_unchecked(i).pos
             })
     }
 
@@ -334,7 +337,7 @@ impl Object {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| unsafe {
-                (*scene.object_data.get_unchecked(i).get()).rot = rot;
+                scene.transform_data.get_unchecked_mut(i).rot = rot;
             })
     }
 
@@ -342,7 +345,7 @@ impl Object {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| unsafe {
-                (*scene.object_data.get_unchecked(i).get()).rot
+                scene.transform_data.get_unchecked(i).rot
             })
     }
 
@@ -350,10 +353,13 @@ impl Object {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| unsafe {
-                let data = &mut *scene.object_data.get_unchecked(i).get();
-                let parent_data = data.parent_idx
-                    .map(|idx| &*scene.object_data.get_unchecked(idx).get());
-                let local_pos = scene.world_to_local_pos(parent_data, pos);
+                let local_pos = {
+                    let data = scene.transform_data.get_unchecked(i);
+                    let parent_data = data.parent_idx
+                        .map(|idx| scene.transform_data.get_unchecked(idx));
+                    scene.world_to_local_pos(parent_data, pos)
+                };
+                let data = scene.transform_data.get_unchecked_mut(i);
                 data.pos = local_pos;
             })
     }
@@ -362,9 +368,9 @@ impl Object {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| unsafe {
-                let data = &*scene.object_data.get_unchecked(i).get();
+                let data = scene.transform_data.get_unchecked(i);
                 let parent_data = data.parent_idx
-                    .map(|idx| &*scene.object_data.get_unchecked(idx).get());
+                    .map(|idx| scene.transform_data.get_unchecked(idx));
                 scene.local_to_world_pos(parent_data, data.pos)
             })
     }
@@ -373,10 +379,13 @@ impl Object {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| unsafe {
-                let data = &mut *scene.object_data.get_unchecked(i).get();
-                let parent_data = data.parent_idx
-                    .map(|idx| &*scene.object_data.get_unchecked(idx).get());
-                let local_rot = scene.world_to_local_rot(parent_data, rot);
+                let local_rot = {
+                    let data = scene.transform_data.get_unchecked(i);
+                    let parent_data = data.parent_idx
+                        .map(|idx| scene.transform_data.get_unchecked(idx));
+                    scene.world_to_local_rot(parent_data, rot)
+                };
+                let data = scene.transform_data.get_unchecked_mut(i);
                 data.rot = local_rot;
             })
     }
@@ -385,9 +394,9 @@ impl Object {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| unsafe {
-                let data = &*scene.object_data.get_unchecked(i).get();
+                let data = scene.transform_data.get_unchecked(i);
                 let parent_data = data.parent_idx
-                    .map(|idx| &*scene.object_data.get_unchecked(idx).get());
+                    .map(|idx| scene.transform_data.get_unchecked(idx));
                 scene.local_to_world_rot(parent_data, data.rot)
             })
     }
@@ -401,14 +410,15 @@ pub struct Scene {
     /// The display used for rendering, None if in headless mode.
     display: Option<GlutinFacade>,
     camera_data: Vec<CameraData>,
-    destroyed_cameras: Vec<usize>,
     mesh_data: Vec<MeshData>,
-    destroyed_meshes: Vec<usize>,
     material_data: Vec<MaterialData>,
-    destroyed_materials: Vec<usize>,
     shader_data: Vec<ShaderData>,
-    destroyed_shaders: Vec<usize>,
     object_data: Vec<UnsafeCell<ObjectData>>,
+    transform_data: Vec<TransformData>,
+    destroyed_cameras: Vec<usize>,
+    destroyed_meshes: Vec<usize>,
+    destroyed_materials: Vec<usize>,
+    destroyed_shaders: Vec<usize>,
     destroyed_objects: Vec<usize>,
     /// Temporary vector used in `local_to_world_pos_rot()`
     tmp_vec: UnsafeCell<Vec<(Vector3<f32>, Quaternion<f32>)>>
@@ -419,14 +429,15 @@ impl Scene {
         Scene {
             display: Some(display),
             camera_data: Vec::new(),
-            destroyed_cameras: Vec::new(),
             mesh_data: Vec::new(),
-            destroyed_meshes: Vec::new(),
             material_data: Vec::new(),
-            destroyed_materials: Vec::new(),
             shader_data: Vec::new(),
-            destroyed_shaders: Vec::new(),
             object_data: Vec::new(),
+            transform_data: Vec::new(),
+            destroyed_cameras: Vec::new(),
+            destroyed_meshes: Vec::new(),
+            destroyed_materials: Vec::new(),
+            destroyed_shaders: Vec::new(),
             destroyed_objects: Vec::new(),
             tmp_vec: UnsafeCell::new(Vec::new())
         }
@@ -438,14 +449,15 @@ impl Scene {
         Scene {
             display: None,
             camera_data: Vec::new(),
-            destroyed_cameras: Vec::new(),
             mesh_data: Vec::new(),
-            destroyed_meshes: Vec::new(),
             material_data: Vec::new(),
-            destroyed_materials: Vec::new(),
             shader_data: Vec::new(),
-            destroyed_shaders: Vec::new(),
             object_data: Vec::new(),
+            transform_data: Vec::new(),
+            destroyed_cameras: Vec::new(),
+            destroyed_meshes: Vec::new(),
+            destroyed_materials: Vec::new(),
+            destroyed_shaders: Vec::new(),
             destroyed_objects: Vec::new(),
             tmp_vec: UnsafeCell::new(Vec::new())
         }
@@ -545,20 +557,23 @@ impl Scene {
     pub fn create_object<T: Behaviour + 'static>(&mut self) -> Rc<RefCell<T>> {
         let t: T = Behaviour::create(Object { idx: Cell::new(None) });
         let rv = Rc::new(RefCell::new(t));
-        let data = ObjectData {
+        let obj_data = ObjectData {
+            behaviour: rv.clone(),
+            marked: false,
+            is_new: true
+        };
+        let trans_data = TransformData {
             rot: Quaternion::from(Euler {
                 x: Deg(0.0),
                 y: Deg(0.0),
                 z: Deg(0.0)
             }),
             pos: Vector3::new(0.0, 0.0, 0.0),
-            behaviour: rv.clone(),
             children: Vec::new(),
             parent_idx: None,
-            marked: false,
-            is_new: true
         };
-        self.object_data.push(UnsafeCell::new(data));
+        self.object_data.push(UnsafeCell::new(obj_data));
+        self.transform_data.push(trans_data);
         rv.borrow().object().idx.set(Some(self.object_data.len() - 1));
         rv
     }
@@ -644,20 +659,25 @@ impl Scene {
             }
         };
 
-        self.destroy_object_internal(object_idx);
+        //self.destroy_object_internal(object_idx);
+        Scene::destroy_object_internal(&self.object_data,
+                                       &self.transform_data,
+                                       &mut self.destroyed_objects,
+                                       object_idx);
     }
 
-    fn destroy_object_internal(&mut self, idx: usize) {
-        let object_data = unsafe {
-            let data = self.object_data.get_unchecked(idx);
-            &mut (*data.get())
-        };
+    fn destroy_object_internal(object_data: &Vec<UnsafeCell<ObjectData>>,
+                               transform_data: &Vec<TransformData>,
+                               destroyed_objects: &mut Vec<usize>,
+                               idx: usize) {
+        let obj_data = unsafe { &mut *object_data.get_unchecked(idx).get() };
+        let trans_data = unsafe { transform_data.get_unchecked(idx) };
 
-        if !object_data.marked {
-            object_data.marked = true;
-            self.destroyed_objects.push(idx);
-            for &i in &object_data.children {
-                self.destroy_object_internal(i);
+        if !obj_data.marked {
+            obj_data.marked = true;
+            destroyed_objects.push(idx);
+            for &i in &trans_data.children {
+                Scene::destroy_object_internal(object_data, transform_data, destroyed_objects, i);
             }
         }
     }
@@ -732,11 +752,17 @@ impl Scene {
             }
         }
 
+        // TODO: don't call unwrap on this since it breaks headless mode
         let mut target = self.display.as_ref().unwrap().draw();
         target.clear_color_and_depth((0.8, 0.8, 0.8, 1.0), 1.0);
 
-        for data in &self.object_data {
-            let behaviour = unsafe { (*data.get()).behaviour.borrow() };
+        //for data in &self.object_data {
+        let mut idx = 0;
+        while idx < self.object_data.len() {
+            let idx = post_add(&mut idx, 1);
+            let obj_data = unsafe { self.object_data.get_unchecked(idx) };
+            let trans_data = unsafe { self.transform_data.get_unchecked(idx) };
+            let behaviour = unsafe { (*obj_data.get()).behaviour.borrow() };
             let mesh = behaviour.mesh()
                 .and_then(|x| x.idx.get())
                 .and_then(|idx| unsafe { Some(self.mesh_data.get_unchecked(idx)) });
@@ -772,10 +798,9 @@ impl Scene {
             };
 
             let (world_pos, world_rot) = unsafe {
-                let data = &*data.get();
-                let parent_data = data.parent_idx
-                    .map(|idx| &*self.object_data.get_unchecked(idx).get());
-                self.local_to_world_pos_rot(parent_data, data.pos, data.rot)
+                let parent_data = trans_data.parent_idx
+                    .map(|idx| self.transform_data.get_unchecked(idx));
+                self.local_to_world_pos_rot(parent_data, trans_data.pos, trans_data.rot)
             };
 
             // TODO: multiple cameras
@@ -891,7 +916,7 @@ impl Scene {
     }
 
     fn local_to_world_pos_rot(&self,
-                              parent_data: Option<&ObjectData>,
+                              parent_data: Option<&TransformData>,
                               input_pos: Vector3<f32>,
                               input_rot: Quaternion<f32>)
                               -> (Vector3<f32>, Quaternion<f32>) {
@@ -901,7 +926,7 @@ impl Scene {
         while let Some(data) = opt_data {
             tmp_vec.push((data.pos, data.rot));
             opt_data = data.parent_idx
-                .map(|idx| unsafe { &*self.object_data.get_unchecked(idx).get() });
+                .map(|idx| unsafe { self.transform_data.get_unchecked(idx) });
         }
         let mut world_pos = Vector3::new(0.0, 0.0, 0.0);
         let mut c = Vector3::new(0.0, 0.0, 0.0);
@@ -922,26 +947,26 @@ impl Scene {
         (world_pos, world_rot)
     }
 
-    fn local_to_world_pos(&self, parent_data: Option<&ObjectData>, input_pos: Vector3<f32>)
+    fn local_to_world_pos(&self, parent_data: Option<&TransformData>, input_pos: Vector3<f32>)
                           -> Vector3<f32> {
         let (world_pos, _) = self.local_to_world_pos_rot(parent_data, input_pos, Quaternion::one());
         world_pos
     }
 
-    fn local_to_world_rot(&self, parent_data: Option<&ObjectData>, input_rot: Quaternion<f32>)
+    fn local_to_world_rot(&self, parent_data: Option<&TransformData>, input_rot: Quaternion<f32>)
                           -> Quaternion<f32> {
         let mut opt_data = parent_data;
         let mut world_rot = input_rot;
         while let Some(data) = opt_data {
             world_rot = world_rot * data.rot;
             opt_data = data.parent_idx
-                .map(|idx| unsafe { &*self.object_data.get_unchecked(idx).get() });
+                .map(|idx| unsafe { self.transform_data.get_unchecked(idx) });
         }
         world_rot
     }
 
     fn world_to_local_pos_rot(&self,
-                              parent_data: Option<&ObjectData>,
+                              parent_data: Option<&TransformData>,
                               input_pos: Vector3<f32>,
                               input_rot: Quaternion<f32>)
                               -> (Vector3<f32>, Quaternion<f32>) {
@@ -976,13 +1001,13 @@ impl Scene {
         (local_pos, local_rot)
     }
 
-    fn world_to_local_pos(&self, parent_data: Option<&ObjectData>, input_pos: Vector3<f32>)
+    fn world_to_local_pos(&self, parent_data: Option<&TransformData>, input_pos: Vector3<f32>)
                           -> Vector3<f32> {
         let (local_pos, _) = self.world_to_local_pos_rot(parent_data, input_pos, Quaternion::one());
         local_pos
     }
 
-    fn world_to_local_rot(&self, parent_data: Option<&ObjectData>, input_rot: Quaternion<f32>)
+    fn world_to_local_rot(&self, parent_data: Option<&TransformData>, input_rot: Quaternion<f32>)
                           -> Quaternion<f32> {
         let world_rot = self.local_to_world_rot(parent_data, Quaternion::one());
         let inv_world_rot = world_rot.invert();
@@ -991,134 +1016,170 @@ impl Scene {
     }
 
     pub fn set_object_parent(&mut self, object: &Object, parent: Option<&Object>) {
-        if parent.map(|o| o.idx.get()) == Some(object.idx.get()) {
+        let object_idx = object.idx.get();
+        let parent_idx = parent.map(|o| o.idx.get());
+
+        if parent_idx == Some(object_idx) {
             // Disallow parenting to self
             return
         }
-        if parent.map_or(false, |o| !o.is_valid()) || !object.is_valid() {
-            // Either one of these objects hasn't got a valid handle, stop.
-            // TODO: maybe be less forgiving and just panic!()?
-            return
-        }
-        let child_idx = object.idx.get().unwrap();
-        let child_data = unsafe {
-            //&mut (*self.object_data.get())[child_idx as usize]
-            &mut (*self.object_data[child_idx].get())
-        };
-        let (parent_idx, parent_data) = match parent {
-            Some(parent) => {
-                let parent_idx = parent.idx.get().unwrap();
-                let parent_data = unsafe {
-                    //&mut (*self.object_data.get())[parent_idx as usize]
-                    &mut (*self.object_data[parent_idx].get())
-                };
-                (Some(parent_idx), Some(parent_data))
-            },
+
+        let object_idx = match object_idx {
+            Some(idx) => idx,
             None => {
-                //// Unparent
-                //child_data.parent_idx = None;
-                //return
-                (None, None)
+                // The object doesn't have a valid handle, stop.
+                // TODO: maybe be less forgiving and just panic!()?
+                return
             }
         };
-        if parent_data.as_ref().map_or(false, |x| x.marked) {
-            // Can't parent to something marked for destruction
+
+        let parent_idx = match parent_idx {
+            Some(None) => {
+                // The parent doesn't have a valid handle, stop.
+                // TODO: maybe be less forgiving and just panic!()?
+                return
+            },
+            Some(opt_idx) => opt_idx,
+            None => None,
+        };
+
+        if self.check_nop(object_idx, parent_idx) {
+            // This parenting would be a no-op.
+            return
+        }
+
+        if !self.check_parenting(object_idx, parent_idx) {
+            // Performing this parenting is not allowed.
             // TODO: maybe be less forgiving and just panic!()?
             return
         }
 
-        if child_data.parent_idx == parent_idx {
-            // No change
-            return
-        }
-
-        let mut tmp_idx = parent_data.as_ref()
-            .and_then(|parent_data| parent_data.parent_idx);
-        loop {
-            tmp_idx = match tmp_idx {
-                Some(tmp_idx) if tmp_idx == child_idx => {
-                    // Performing this parenting would create a loop, bail.
-                    // TODO: maybe be less forgiving and just panic!()?
-                    return
-                },
-                Some(tmp_idx) => {
-                    let tmp_data = unsafe { &*self.object_data[tmp_idx].get() };
-                    tmp_data.parent_idx
-                },
-                None => break,
-            }
-        }
-
-        let old_parent_data =
-            child_data.parent_idx.as_ref().map(|&i| unsafe {
-                //&mut (*self.object_data.get())[i as usize]
-                &mut (*self.object_data[i].get())
-            });
-
-        if let Some(old_parent_data) = old_parent_data {
-            old_parent_data.children.iter()
-                .position(|&idx| idx == child_idx)
-                .map(|e| old_parent_data.children.remove(e))
-                .expect("parent should contain child index");
-        }
-        if let Some(parent_data) = parent_data {
-            parent_data.children.push(child_idx);
-        }
-        child_data.parent_idx = parent_idx;
+        self.unparent(object_idx);
+        self.reparent(object_idx, parent_idx);
     }
 
+    fn check_nop(&self, object_idx: usize, parent_idx: Option<usize>) -> bool {
+        let obj_trans_data = &self.transform_data[object_idx];
+        obj_trans_data.parent_idx == parent_idx
+    }
+
+    fn check_parenting(&self, object_idx: usize, parent_idx: Option<usize>) -> bool {
+        let parent_obj_data = parent_idx.map(|idx| unsafe { &*self.object_data[idx].get() });
+        let parent_trans_data = parent_idx.map(|idx| &self.transform_data[idx]);
+        if parent_obj_data.as_ref().map_or(false, |x| x.marked) {
+            // Can't parent to something marked for destruction
+            return false
+        }
+
+        let mut opt_idx = parent_trans_data.as_ref()
+            .and_then(|parent_data| parent_data.parent_idx);
+        while let Some(idx) = opt_idx {
+            if idx == object_idx {
+                // Performing this parenting would create a loop.
+                return false
+            }
+            opt_idx = self.transform_data[idx].parent_idx;
+        }
+
+        true
+    }
+
+    fn unparent(&mut self, object_idx: usize) {
+        {
+            let old_parent_idx = self.transform_data[object_idx].parent_idx;
+            let old_parent_trans_data =
+                old_parent_idx.map(|i| &mut self.transform_data[i]);
+
+            if let Some(old_parent_trans_data) = old_parent_trans_data {
+                old_parent_trans_data.children.iter()
+                    .position(|&idx| idx == object_idx)
+                    .map(|e| old_parent_trans_data.children.remove(e))
+                    .expect("parent should contain child index");
+            }
+        }
+
+        let trans_data = &mut self.transform_data[object_idx];
+        trans_data.parent_idx = None;
+    }
+
+    fn reparent(&mut self, object_idx: usize, parent_idx: Option<usize>) {
+        // Assume we currently have no parent, if parent_idx is `None`, we can
+        // return early.
+        let parent_idx = match parent_idx {
+            Some(idx) => idx,
+            None => return,
+        };
+
+        {
+            let parent_trans_data = &mut self.transform_data[parent_idx];
+            parent_trans_data.children.push(object_idx);
+        }
+
+        let trans_data = &mut self.transform_data[object_idx];
+        trans_data.parent_idx = Some(parent_idx);
+    }
 
     /// Fixes the object hierarchy while removing / moving an `ObjectData` entry
+    ///
+    ///   * `transform_data` - The `transform_data` field of the `Scene`
     ///   * `object_data` - The `object_data` field of the `Scene`
-    ///   * `data` - The object data entry which has been removed / moved
     ///   * `old_idx` - The old index of entry being removed / moved
     ///   * `new_idx` - The new index for the entry being moved, or `None` if
     ///      being removed
-    unsafe fn fix_hierarchy(object_data: &[UnsafeCell<ObjectData>],
-                            data: &UnsafeCell<ObjectData>,
-                            old_idx: usize,
-                            new_idx: Option<usize>) {
-        let data = &*data.get();
-        data.behaviour.borrow().object().idx.set(new_idx);
+    unsafe fn fix_hierarchy(transform_data: &mut [TransformData],
+                             object_data: &[UnsafeCell<ObjectData>],
+                             old_idx: usize,
+                             new_idx: Option<usize>) {
+        // TODO: use get_unchecked more? Or less?
+        let obj_data = &*object_data[old_idx].get();
+        obj_data.behaviour.borrow().object().idx.set(new_idx);
         // Update our parent's reference to us (if we have one)
-        data.parent_idx.map(|idx| {
-            let parent_data = &mut *object_data.get_unchecked(idx).get();
-            let pos = parent_data.children.iter()
-                .position(|&idx| idx == old_idx)
-                .expect("parent should contain child index");
+        transform_data[old_idx].parent_idx.map(|idx| {
+            let parent_data = transform_data.get_unchecked_mut(idx);
+            let pos = {
+                parent_data.children.iter()
+                    .position(|&idx| idx == old_idx)
+                    .expect("parent should contain child index")
+            };
             match new_idx {
                 Some(new_idx) => *parent_data.children.get_unchecked_mut(pos) = new_idx,
                 None => { parent_data.children.remove(pos); }
             }
         });
+
+        // Swap vectors to placate the borrow checker
+        let mut tmp_children = Vec::new();
+        std::mem::swap(&mut tmp_children, &mut transform_data[old_idx].children);
+
         // Update our children's reference to us
-        for &idx in &data.children {
-            let child_data = &mut *object_data.get_unchecked(idx).get();
+        for &idx in &tmp_children {
+            let child_data = transform_data.get_unchecked_mut(idx);
             child_data.parent_idx = new_idx;
         }
+
+        std::mem::swap(&mut tmp_children, &mut transform_data[old_idx].children);
     }
 
     unsafe fn cleanup_destroyed_objects(&mut self) {
         for &idx in &self.destroyed_objects {
             // Remove destroyed objects at the back of the list
             while self.object_data.last().map_or(false, |x| (*x.get()).marked) {
-                let removed = self.object_data.pop().unwrap();
-                let old_idx = self.object_data.len();
-                Scene::fix_hierarchy(&self.object_data, &removed, old_idx, None);
+                let old_idx = self.transform_data.len() - 1;
+                Scene::fix_hierarchy(&mut self.transform_data, &self.object_data, old_idx, None);
+                self.object_data.pop();
+                self.transform_data.pop();
             }
-            if idx >= self.object_data.len() {
+            if idx >= self.transform_data.len() {
                 continue
             }
 
             {
-                let removed = self.object_data.get_unchecked(idx);
-                let swapped_idx = self.object_data.len() - 1;
-                let swapped = self.object_data.get_unchecked(swapped_idx);
-                Scene::fix_hierarchy(&self.object_data, removed, idx, None);
-                Scene::fix_hierarchy(&self.object_data, swapped, swapped_idx, Some(idx));
+                let swapped_idx = self.transform_data.len() - 1;
+                Scene::fix_hierarchy(&mut self.transform_data, &self.object_data, idx, None);
+                Scene::fix_hierarchy(&mut self.transform_data, &self.object_data, swapped_idx, Some(idx));
             }
             self.object_data.swap_remove(idx);
-            self.object_data.get_unchecked(idx);
+            self.transform_data.swap_remove(idx);
         }
         self.destroyed_objects.clear();
     }
