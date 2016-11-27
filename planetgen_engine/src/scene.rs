@@ -8,6 +8,7 @@ use glium::backend::glutin_backend::GlutinFacade;
 use num::{Zero, One};
 
 use std;
+use std::any::Any;
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::HashMap;
 use std::error;
@@ -257,8 +258,8 @@ impl Material {
     }
 }
 
-pub trait Behaviour {
-    fn create(object: Object) -> Self where Self: Sized;
+pub trait BehaviourMessages {
+    fn create(behaviour: Behaviour) -> Self where Self: Sized;
 
     fn start(&mut self, scene: &mut Scene);
 
@@ -266,21 +267,70 @@ pub trait Behaviour {
 
     fn destroy(&mut self, scene: &mut Scene);
 
-    fn object(&self) -> &Object;
+    fn behaviour(&self) -> &Behaviour;
 
     fn mesh(&self) -> Option<&Mesh>;
 
     fn material(&self) -> Option<&Material>;
 }
 
-struct ObjectData {
-    /// Reference to the object behaviour.
-    behaviour: Rc<RefCell<Behaviour>>,
+trait AnyBehaviour: Any {
+    fn as_any(&self) -> &Any;
+    fn borrow(&self) -> std::cell::Ref<BehaviourMessages>;
+    fn borrow_mut(&self) -> std::cell::RefMut<BehaviourMessages>;
+}
+
+impl<T: BehaviourMessages + 'static> AnyBehaviour for RefCell<T> {
+    fn as_any(&self) -> &Any {
+        self
+    }
+    fn borrow(&self) -> std::cell::Ref<BehaviourMessages> {
+        RefCell::borrow(self)
+    }
+
+    fn borrow_mut(&self) -> std::cell::RefMut<BehaviourMessages> {
+        RefCell::borrow_mut(self)
+    }
+}
+
+struct BehaviourData {
+    /// Reference to the behaviour implementation.
+    behaviour: Rc<AnyBehaviour>,
+    /// Reference to the object we are a component of.
+    parent: Rc<Object>,
     /// True when the object has been marked for destruction at the end of the
     /// frame.
     marked: bool,
     /// True if the object has been newly created this current frame.
     is_new: bool
+}
+
+pub struct Behaviour {
+    idx: Cell<Option<usize>>,
+}
+
+impl Behaviour {
+    pub fn object<'a>(&self, scene: &'a Scene) -> Result<&'a Rc<Object>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| unsafe {
+                &scene.behaviour_data.get_unchecked(i).parent
+            })
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.idx.get().is_some()
+    }
+}
+
+struct ObjectData {
+    /// Reference to the object.
+    object: Rc<Object>,
+    /// TODO: temporary, allow multiple behaviours / components
+    behaviour: Option<Rc<AnyBehaviour>>,
+    /// True when the object has been marked for destruction at the end of the
+    /// frame.
+    marked: bool,
 }
 
 struct TransformData {
@@ -305,7 +355,7 @@ impl Object {
             .map(|i| unsafe { scene.transform_data.get_unchecked(i).children.len() })
     }
 
-    pub fn get_child(&self, scene: &Scene, n: usize) -> Result<&Rc<RefCell<Behaviour>>> {
+    pub fn get_child<'a>(&self, scene: &'a Scene, n: usize) -> Result<&'a Rc<Object>> {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .and_then(|i| unsafe {
@@ -313,7 +363,7 @@ impl Object {
                     .ok_or(Error::BadChildIdx)
             })
             .map(|&i| unsafe {
-                &(*scene.object_data.get_unchecked(i).get()).behaviour
+                &scene.object_data.get_unchecked(i).object
             })
     }
 
@@ -413,12 +463,14 @@ pub struct Scene {
     mesh_data: Vec<MeshData>,
     material_data: Vec<MaterialData>,
     shader_data: Vec<ShaderData>,
-    object_data: Vec<UnsafeCell<ObjectData>>,
+    behaviour_data: Vec<BehaviourData>,
+    object_data: Vec<ObjectData>,
     transform_data: Vec<TransformData>,
     destroyed_cameras: Vec<usize>,
     destroyed_meshes: Vec<usize>,
     destroyed_materials: Vec<usize>,
     destroyed_shaders: Vec<usize>,
+    destroyed_behaviours: Vec<usize>,
     destroyed_objects: Vec<usize>,
     /// Temporary vector used in `local_to_world_pos_rot()`
     tmp_vec: UnsafeCell<Vec<(Vector3<f32>, Quaternion<f32>)>>
@@ -432,12 +484,14 @@ impl Scene {
             mesh_data: Vec::new(),
             material_data: Vec::new(),
             shader_data: Vec::new(),
+            behaviour_data: Vec::new(),
             object_data: Vec::new(),
             transform_data: Vec::new(),
             destroyed_cameras: Vec::new(),
             destroyed_meshes: Vec::new(),
             destroyed_materials: Vec::new(),
             destroyed_shaders: Vec::new(),
+            destroyed_behaviours: Vec::new(),
             destroyed_objects: Vec::new(),
             tmp_vec: UnsafeCell::new(Vec::new())
         }
@@ -452,12 +506,14 @@ impl Scene {
             mesh_data: Vec::new(),
             material_data: Vec::new(),
             shader_data: Vec::new(),
+            behaviour_data: Vec::new(),
             object_data: Vec::new(),
             transform_data: Vec::new(),
             destroyed_cameras: Vec::new(),
             destroyed_meshes: Vec::new(),
             destroyed_materials: Vec::new(),
             destroyed_shaders: Vec::new(),
+            destroyed_behaviours: Vec::new(),
             destroyed_objects: Vec::new(),
             tmp_vec: UnsafeCell::new(Vec::new())
         }
@@ -554,13 +610,80 @@ impl Scene {
         rv
     }
 
-    pub fn create_object<T: Behaviour + 'static>(&mut self) -> Rc<RefCell<T>> {
-        let t: T = Behaviour::create(Object { idx: Cell::new(None) });
+    pub fn add_behaviour<T: BehaviourMessages + 'static>(&mut self, object: &Object) -> Result<Rc<RefCell<T>>> {
+        let obj_idx = match object.idx.get() {
+            Some(idx) => idx,
+            None => {
+                return Err(Error::ObjectDestroyed)
+            }
+        };
+
+        let obj_data = &mut self.object_data[obj_idx];
+        {
+            let behaviour_data = &self.behaviour_data;
+            if obj_data.behaviour
+                .as_ref()
+                .and_then(|b| b.borrow().behaviour().idx.get())
+                .map_or(false, |idx| !behaviour_data[idx].marked) {
+                // TODO: dedicated error variant
+                return Err(Error::Other);
+            }
+        }
+        if obj_data.marked {
+            // TODO: dedicated error variant
+            return Err(Error::Other)
+        }
+
+
+        let t = T::create(Behaviour { idx: Cell::new(None) });
         let rv = Rc::new(RefCell::new(t));
-        let obj_data = ObjectData {
+        let data = BehaviourData {
             behaviour: rv.clone(),
+            parent: obj_data.object.clone(),
             marked: false,
-            is_new: true
+            is_new: true,
+        };
+        self.behaviour_data.push(data);
+        rv.borrow().behaviour().idx.set(Some(self.behaviour_data.len() - 1));
+
+        obj_data.behaviour = Some(rv.clone());
+
+        Ok(rv)
+    }
+
+    pub fn get_behaviour<T: BehaviourMessages + 'static>(&self, object: &Object) -> Result<Rc<RefCell<T>>> {
+        let obj_idx = match object.idx.get() {
+            Some(idx) => idx,
+            None => {
+                return Err(Error::ObjectDestroyed)
+            }
+        };
+
+        let bhav = match self.object_data[obj_idx].behaviour {
+            Some(ref behaviour) => behaviour.clone(),
+            None => {
+                // TODO: dedicated error variant
+                return Err(Error::Other)
+            }
+        };
+        if bhav.as_any().is::<RefCell<T>>() {
+            unsafe {
+                let raw: *mut AnyBehaviour = &*bhav as *const _ as *mut _;
+                std::mem::forget(bhav);
+                Ok(Rc::from_raw(raw as *mut RefCell<T>))
+            }
+        } else {
+            // TODO: dedicated error variant
+            Err(Error::Other)
+        }
+    }
+
+    pub fn create_object(&mut self) -> Rc<Object> {
+        let rv = Rc::new(Object { idx: Cell::new(None) });
+        let obj_data = ObjectData {
+            object: rv.clone(),
+            behaviour: None,
+            marked: false,
         };
         let trans_data = TransformData {
             rot: Quaternion::from(Euler {
@@ -572,9 +695,9 @@ impl Scene {
             children: Vec::new(),
             parent_idx: None,
         };
-        self.object_data.push(UnsafeCell::new(obj_data));
+        self.object_data.push(obj_data);
         self.transform_data.push(trans_data);
-        rv.borrow().object().idx.set(Some(self.object_data.len() - 1));
+        rv.idx.set(Some(self.object_data.len() - 1));
         rv
     }
 
@@ -650,6 +773,29 @@ impl Scene {
         }
     }
 
+    pub fn destroy_behaviour(&mut self, behaviour: &Behaviour) {
+        let bhav_idx = match behaviour.idx.get() {
+            Some(bhav_idx) => bhav_idx,
+            None => {
+                println!("[WARNING] destroy_behaviour called on a behaviour without a valid handle!");
+                return
+            }
+        };
+
+        self.destroy_behaviour_internal(bhav_idx);
+    }
+
+    fn destroy_behaviour_internal(&mut self, idx: usize) {
+        let bhav_data = unsafe {
+            self.behaviour_data.get_unchecked_mut(idx)
+        };
+
+        if !bhav_data.marked {
+            self.destroyed_behaviours.push(idx);
+            bhav_data.marked = true;
+        }
+    }
+
     pub fn destroy_object(&mut self, object: &Object) {
         let object_idx = match object.idx.get() {
             Some(object_idx) => object_idx,
@@ -659,27 +805,40 @@ impl Scene {
             }
         };
 
-        //self.destroy_object_internal(object_idx);
-        Scene::destroy_object_internal(&self.object_data,
-                                       &self.transform_data,
-                                       &mut self.destroyed_objects,
-                                       object_idx);
+        self.destroy_object_internal(object_idx);
     }
 
-    fn destroy_object_internal(object_data: &Vec<UnsafeCell<ObjectData>>,
-                               transform_data: &Vec<TransformData>,
-                               destroyed_objects: &mut Vec<usize>,
-                               idx: usize) {
-        let obj_data = unsafe { &mut *object_data.get_unchecked(idx).get() };
-        let trans_data = unsafe { transform_data.get_unchecked(idx) };
-
-        if !obj_data.marked {
+    fn destroy_object_internal(&mut self, idx: usize) {
+        let (was_marked, bhav_idx) = {
+            // FIXME: This is one example of many of workarounds to placate the
+            // borrow checker. If I understand correctly, non-lexically based
+            // lifetimes based on liveness should help in most cases. Update the
+            // code when NLL is implemented in Rust.
+            let obj_data = unsafe { self.object_data.get_unchecked_mut(idx) };
+            let bhav_idx = obj_data.behaviour
+                .as_ref()
+                .and_then(|b| b.borrow().behaviour().idx.get());
+            let was_marked = obj_data.marked;
             obj_data.marked = true;
-            destroyed_objects.push(idx);
-            for &i in &trans_data.children {
-                Scene::destroy_object_internal(object_data, transform_data, destroyed_objects, i);
+            (was_marked, bhav_idx)
+        };
+
+        if let Some(bhav_idx) = bhav_idx {
+            self.destroy_behaviour_internal(bhav_idx);
+        };
+
+        // Swap vectors to placate the borrow checker
+        let mut tmp_children = Vec::new();
+        std::mem::swap(&mut tmp_children, &mut self.transform_data[idx].children);
+
+        if !was_marked {
+            self.destroyed_objects.push(idx);
+            for &i in &tmp_children {
+                Scene::destroy_object_internal(self, i);
             }
         }
+
+        std::mem::swap(&mut tmp_children, &mut self.transform_data[idx].children);
     }
 
     fn debug_check(&self) {
@@ -693,8 +852,8 @@ impl Scene {
             assert_eq!(idx.unwrap(), i);
         }
         for i in 0..self.object_data.len() {
-            let data = unsafe { &*self.object_data.get_unchecked(i).get() };
-            let idx = data.behaviour.borrow().object().idx.get();
+            let data = unsafe { self.object_data.get_unchecked(i) };
+            let idx = data.object.idx.get();
             assert!(idx.is_some(), "Invalid object handle found!");
             assert_eq!(idx.unwrap(), i);
         }
@@ -712,25 +871,28 @@ impl Scene {
         }
 
         let mut idx = 0;
-        while idx < self.object_data.len() {
+        while idx < self.behaviour_data.len() {
             let idx = post_add(&mut idx, 1);
             unsafe {
                 let (is_new, cell) = {
-                    let data = self.object_data.get_unchecked(idx).get();
-                    // Don't run `update()` on destroyed objects
+                    let data = self.behaviour_data.get_unchecked(idx);
+                    // Don't run `update()` on destroyed behaviours
                     if (*data).marked {
-                        println!("Skipping object {} because it's marked.", idx);
+                        println!("Skipping behaviour {} because it's marked.", idx);
                         continue
                     }
-                    ((*data).is_new, (&*(*data).behaviour) as *const RefCell<Behaviour>)
+                    ((*data).is_new, (&*(*data).behaviour) as *const AnyBehaviour)
                 };
                 let mut obj = (*cell).borrow_mut();
                 if is_new {
                     obj.start(self);
-                    let data = self.object_data.get_unchecked(idx).get();
-                    (*data).is_new = false;
-                    // Check that the start function didn't immediately destroy the object
-                    if !(*data).marked {
+                    let marked = {
+                        let data = self.behaviour_data.get_unchecked_mut(idx);
+                        (*data).is_new = false;
+                        (*data).marked
+                    };
+                    // Check that the start function didn't immediately destroy the behaviour
+                    if !marked {
                         obj.update(self);
                     }
                 } else {
@@ -740,13 +902,13 @@ impl Scene {
         }
 
         let mut i = 0;
-        while i < self.destroyed_objects.len() {
+        while i < self.destroyed_behaviours.len() {
             let i = post_add(&mut i, 1);
             unsafe {
-                let idx = *self.destroyed_objects.get_unchecked(i);
+                let idx = *self.destroyed_behaviours.get_unchecked(i);
                 let cell = {
-                    let data = self.object_data.get_unchecked(idx);
-                    (&*(*data.get()).behaviour) as *const RefCell<Behaviour>
+                    let data = self.behaviour_data.get_unchecked(idx);
+                    (&*(*data).behaviour) as *const AnyBehaviour
                 };
                 (*cell).borrow_mut().destroy(self);
             }
@@ -762,8 +924,14 @@ impl Scene {
             let idx = post_add(&mut idx, 1);
             let obj_data = unsafe { self.object_data.get_unchecked(idx) };
             let trans_data = unsafe { self.transform_data.get_unchecked(idx) };
-            let behaviour = unsafe { (*obj_data.get()).behaviour.borrow() };
-            let mesh = behaviour.mesh()
+            // TODO: this looks a bit redundant...
+            let behaviour =  obj_data.behaviour
+                    .as_ref()
+                    .and_then(|b| b.borrow().behaviour().idx.get())
+                    .map(|idx| self.behaviour_data[idx].behaviour.borrow());
+            let mesh = behaviour
+                .as_ref()
+                .and_then(|b| b.mesh())
                 .and_then(|x| x.idx.get())
                 .and_then(|idx| unsafe { Some(self.mesh_data.get_unchecked(idx)) });
             let mesh = match mesh {
@@ -771,7 +939,9 @@ impl Scene {
                 None => continue
             };
 
-            let material = behaviour.material()
+            let material = behaviour
+                .as_ref()
+                .and_then(|b| b.material())
                 .and_then(|x| x.idx.get())
                 .and_then(|idx| unsafe { Some(self.material_data.get_unchecked(idx)) });
             let material = match material {
@@ -854,6 +1024,7 @@ impl Scene {
         }
 
         unsafe {
+            self.cleanup_destroyed_behaviours();
             self.cleanup_destroyed_objects();
             Scene::cleanup_destroyed(
                 &mut self.camera_data, &mut self.destroyed_cameras,
@@ -1064,7 +1235,7 @@ impl Scene {
     }
 
     fn check_parenting(&self, object_idx: usize, parent_idx: Option<usize>) -> bool {
-        let parent_obj_data = parent_idx.map(|idx| unsafe { &*self.object_data[idx].get() });
+        let parent_obj_data = parent_idx.map(|idx| &self.object_data[idx]);
         let parent_trans_data = parent_idx.map(|idx| &self.transform_data[idx]);
         if parent_obj_data.as_ref().map_or(false, |x| x.marked) {
             // Can't parent to something marked for destruction
@@ -1127,12 +1298,12 @@ impl Scene {
     ///   * `new_idx` - The new index for the entry being moved, or `None` if
     ///      being removed
     unsafe fn fix_hierarchy(transform_data: &mut [TransformData],
-                             object_data: &[UnsafeCell<ObjectData>],
+                             object_data: &[ObjectData],
                              old_idx: usize,
                              new_idx: Option<usize>) {
         // TODO: use get_unchecked more? Or less?
-        let obj_data = &*object_data[old_idx].get();
-        obj_data.behaviour.borrow().object().idx.set(new_idx);
+        let obj_data = &object_data[old_idx];
+        obj_data.object.idx.set(new_idx);
         // Update our parent's reference to us (if we have one)
         transform_data[old_idx].parent_idx.map(|idx| {
             let parent_data = transform_data.get_unchecked_mut(idx);
@@ -1163,7 +1334,7 @@ impl Scene {
     unsafe fn cleanup_destroyed_objects(&mut self) {
         for &idx in &self.destroyed_objects {
             // Remove destroyed objects at the back of the list
-            while self.object_data.last().map_or(false, |x| (*x.get()).marked) {
+            while self.object_data.last().map_or(false, |x| x.marked) {
                 let old_idx = self.transform_data.len() - 1;
                 Scene::fix_hierarchy(&mut self.transform_data, &self.object_data, old_idx, None);
                 self.object_data.pop();
@@ -1182,6 +1353,44 @@ impl Scene {
             self.transform_data.swap_remove(idx);
         }
         self.destroyed_objects.clear();
+    }
+
+    unsafe fn cleanup_destroyed_behaviours(&mut self) {
+        for &idx in &self.destroyed_behaviours {
+            // Remove destroyed behaviours at the back of the list
+            while self.behaviour_data.last().map_or(false, |x| x.marked) {
+                let removed = self.behaviour_data.pop().unwrap();
+                removed.behaviour.borrow().behaviour().idx.set(None);
+                // The object should not have been destroyed yet, so `unwrap()`
+                // is safe.
+                let obj_data = &mut self.object_data[removed.parent.idx.get().unwrap()];
+                let should_remove = obj_data.behaviour.as_ref()
+                    .map_or(false, |x| &**x as *const _ == &*removed.behaviour as *const _);
+                if should_remove {
+                    obj_data.behaviour = None;
+                }
+            }
+            if idx >= self.behaviour_data.len() {
+                continue
+            }
+
+            {
+                let removed = self.behaviour_data.get_unchecked(idx);
+                removed.behaviour.borrow().behaviour().idx.set(None);
+                let obj_data = &mut self.object_data[removed.parent.idx.get().unwrap()];
+                let should_remove = obj_data.behaviour.as_ref()
+                    .map_or(false, |x| &**x as *const _ == &*removed.behaviour as *const _);
+                if should_remove {
+                    obj_data.behaviour = None;
+                }
+
+                let swapped_idx = self.behaviour_data.len() - 1;
+                let swapped = &self.behaviour_data[swapped_idx];
+                swapped.behaviour.borrow().behaviour().idx.set(Some(idx));
+            }
+            self.behaviour_data.swap_remove(idx);
+        }
+        self.destroyed_behaviours.clear();
     }
 
     unsafe fn cleanup_destroyed<T, F, G>(items: &mut Vec<T>,
@@ -1213,15 +1422,15 @@ mod test {
     use cgmath::{Deg, Euler, Quaternion, Vector3};
     use num::{Zero, One};
 
-    struct TestObject {
-        object: Object,
+    struct TestBehaviour {
+        behaviour: Behaviour,
         id: u32
     }
 
-    impl Behaviour for TestObject {
-        fn create(object: Object) -> TestObject {
-            TestObject {
-                object: object,
+    impl BehaviourMessages for TestBehaviour {
+        fn create(behaviour: Behaviour) -> TestBehaviour {
+            TestBehaviour {
+                behaviour: behaviour,
                 id: 0
             }
         }
@@ -1235,8 +1444,8 @@ mod test {
         fn destroy(&mut self, _scene: &mut Scene) {
         }
 
-        fn object(&self) -> &Object {
-            &self.object
+        fn behaviour(&self) -> &Behaviour {
+            &self.behaviour
         }
 
         fn mesh(&self) -> Option<&Mesh> {
@@ -1260,96 +1469,87 @@ mod test {
         let mut scene = Scene::new_headless();
 
         // Set up the hierarchy
-        let root_obj = scene.create_object::<TestObject>();
-        root_obj.borrow_mut().id = 1;
+        let root_obj = scene.create_object();
 
-        let child1 = scene.create_object::<TestObject>();
-        child1.borrow_mut().id = 2;
-        scene.set_object_parent(child1.borrow().object(), Some(root_obj.borrow().object()));
+        let child1 = scene.create_object();
+        scene.set_object_parent(&child1, Some(&root_obj));
 
-        let child2 = scene.create_object::<TestObject>();
-        child2.borrow_mut().id = 3;
-        scene.set_object_parent(child2.borrow().object(), Some(root_obj.borrow().object()));
+        let child2 = scene.create_object();
+        scene.set_object_parent(&child2, Some(&root_obj));
 
-        let child11 = scene.create_object::<TestObject>();
-        child11.borrow_mut().id = 4;
-        scene.set_object_parent(child11.borrow().object(), Some(child1.borrow().object()));
-        let child12 = scene.create_object::<TestObject>();
-        child12.borrow_mut().id = 5;
-        scene.set_object_parent(child12.borrow().object(), Some(child1.borrow().object()));
-        let child13 = scene.create_object::<TestObject>();
-        child13.borrow_mut().id = 6;
-        scene.set_object_parent(child13.borrow().object(), Some(child1.borrow().object()));
+        let child11 = scene.create_object();
+        scene.set_object_parent(&child11, Some(&child1));
+        let child12 = scene.create_object();
+        scene.set_object_parent(&child12, Some(&child1));
+        let child13 = scene.create_object();
+        scene.set_object_parent(&child13, Some(&child1));
 
-        let child21 = scene.create_object::<TestObject>();
-        child21.borrow_mut().id = 7;
-        scene.set_object_parent(child21.borrow().object(), Some(child2.borrow().object()));
-        let child22 = scene.create_object::<TestObject>();
-        child22.borrow_mut().id = 8;
-        scene.set_object_parent(child22.borrow().object(), Some(child2.borrow().object()));
-        let child23 = scene.create_object::<TestObject>();
-        child23.borrow_mut().id = 9;
-        scene.set_object_parent(child23.borrow().object(), Some(child2.borrow().object()));
+        let child21 = scene.create_object();
+        scene.set_object_parent(&child21, Some(&child2));
+        let child22 = scene.create_object();
+        scene.set_object_parent(&child22, Some(&child2));
+        let child23 = scene.create_object();
+        scene.set_object_parent(&child23, Some(&child2));
 
         scene.do_frame();
 
         // Verify it is what we expect
-        assert_eq!(root_obj.borrow().object().get_child(&scene, 0)
+        assert_eq!(root_obj.get_child(&scene, 0)
                    .map(|x| ref_eq(&**x, &*child1)).ok(),
                    Some(true));
-        assert_eq!(root_obj.borrow().object().get_child(&scene, 1)
+        assert_eq!(root_obj.get_child(&scene, 1)
                    .map(|x| ref_eq(&**x, &*child2)).ok(),
                    Some(true));
 
-        assert_eq!(child1.borrow().object().get_child(&scene, 0)
+        assert_eq!(child1.get_child(&scene, 0)
                    .map(|x| ref_eq(&**x, &*child11)).ok(),
                    Some(true));
-        assert_eq!(child1.borrow().object().get_child(&scene, 1)
+        assert_eq!(child1.get_child(&scene, 1)
                    .map(|x| ref_eq(&**x, &*child12)).ok(),
                    Some(true));
-        assert_eq!(child1.borrow().object().get_child(&scene, 2)
+        assert_eq!(child1.get_child(&scene, 2)
                    .map(|x| ref_eq(&**x, &*child13)).ok(),
                    Some(true));
 
-        assert_eq!(child2.borrow().object().get_child(&scene, 0)
+        assert_eq!(child2.get_child(&scene, 0)
                    .map(|x| ref_eq(&**x, &*child21)).ok(),
                    Some(true));
-        assert_eq!(child2.borrow().object().get_child(&scene, 1)
+        assert_eq!(child2.get_child(&scene, 1)
                    .map(|x| ref_eq(&**x, &*child22)).ok(),
                    Some(true));
-        assert_eq!(child2.borrow().object().get_child(&scene, 2)
+        assert_eq!(child2.get_child(&scene, 2)
                    .map(|x| ref_eq(&**x, &*child23)).ok(),
                    Some(true));
 
         // Destroy the objects and run a frame so the hierarchy is changed
-        scene.destroy_object(child2.borrow().object());
-        scene.destroy_object(child12.borrow().object());
+        scene.destroy_object(&child2);
+        scene.destroy_object(&child12);
         scene.do_frame();
 
-        assert_eq!(root_obj.borrow().object().num_children(&scene).ok(), Some(1));
-        assert_eq!(root_obj.borrow().object().get_child(&scene, 0)
+        assert_eq!(root_obj.num_children(&scene).ok(), Some(1));
+        assert_eq!(root_obj.get_child(&scene, 0)
                    .map(|x| ref_eq(&**x, &*child1)).ok(),
                    Some(true));
-        assert_eq!(root_obj.borrow().object().get_child(&scene, 1)
+        assert_eq!(root_obj.get_child(&scene, 1)
                    .map(|x| ref_eq(&**x, &*child2)).ok(),
                    None);
 
-        assert_eq!(child1.borrow().object().num_children(&scene).ok(), Some(2));
-        assert_eq!(child1.borrow().object().get_child(&scene, 0)
+        assert_eq!(child1.num_children(&scene).ok(), Some(2));
+        assert_eq!(child1.get_child(&scene, 0)
                    .map(|x| ref_eq(&**x, &*child11)).ok(),
                    Some(true));
-        assert_eq!(child1.borrow().object().get_child(&scene, 1)
+        assert_eq!(child1.get_child(&scene, 1)
                    .map(|x| ref_eq(&**x, &*child13)).ok(),
                    Some(true));
 
-        assert_eq!(child2.borrow().object().num_children(&scene).ok(), None);
-        assert_eq!(child2.borrow().object().get_child(&scene, 0)
+        assert_eq!(child2.num_children(&scene).ok(), None);
+        assert_eq!(child2.get_child(&scene, 0)
                    .map(|x| ref_eq(&**x, &*child21)).ok(),
                    None);
-        assert_eq!(child2.borrow().object().get_child(&scene, 1)
+        assert_eq!(child2.get_child(&scene, 1)
                    .map(|x| ref_eq(&**x, &*child22)).ok(),
                    None);
-        assert_eq!(child2.borrow().object().get_child(&scene, 2)
+        assert_eq!(child2.get_child(&scene, 2)
                    .map(|x| ref_eq(&**x, &*child23)).ok(),
                    None);
     }
@@ -1360,37 +1560,35 @@ mod test {
         let mut scene = Scene::new_headless();
 
         // Set up the hierarchy
-        let root_obj = scene.create_object::<TestObject>();
-        root_obj.borrow_mut().id = 1;
+        let root_obj = scene.create_object();
 
-        let child_obj = scene.create_object::<TestObject>();
-        child_obj.borrow_mut().id = 2;
+        let child_obj = scene.create_object();
 
-        scene.set_object_parent(child_obj.borrow().object(), Some(root_obj.borrow().object()));
+        scene.set_object_parent(&child_obj, Some(&root_obj));
         // This should fail and do nothing
-        scene.set_object_parent(root_obj.borrow().object(), Some(child_obj.borrow().object()));
+        scene.set_object_parent(&root_obj, Some(&child_obj));
 
-        assert_eq!(root_obj.borrow().object().num_children(&scene).ok(), Some(1));
-        assert_eq!(root_obj.borrow().object().get_child(&scene, 0)
+        assert_eq!(root_obj.num_children(&scene).ok(), Some(1));
+        assert_eq!(root_obj.get_child(&scene, 0)
                    .map(|x| ref_eq(&**x, &*child_obj)).ok(),
                    Some(true));
 
-        assert_eq!(child_obj.borrow().object().num_children(&scene).ok(), Some(0));
+        assert_eq!(child_obj.num_children(&scene).ok(), Some(0));
 
         // Set up the hierarchy
-        let obj1 = scene.create_object::<TestObject>();
-        let obj2 = scene.create_object::<TestObject>();
-        let obj3 = scene.create_object::<TestObject>();
-        let obj4 = scene.create_object::<TestObject>();
-        let obj5 = scene.create_object::<TestObject>();
-        scene.set_object_parent(obj2.borrow().object(), Some(obj1.borrow().object()));
-        scene.set_object_parent(obj3.borrow().object(), Some(obj2.borrow().object()));
-        scene.set_object_parent(obj4.borrow().object(), Some(obj3.borrow().object()));
-        scene.set_object_parent(obj5.borrow().object(), Some(obj4.borrow().object()));
+        let obj1 = scene.create_object();
+        let obj2 = scene.create_object();
+        let obj3 = scene.create_object();
+        let obj4 = scene.create_object();
+        let obj5 = scene.create_object();
+        scene.set_object_parent(&obj2, Some(&obj1));
+        scene.set_object_parent(&obj3, Some(&obj2));
+        scene.set_object_parent(&obj4, Some(&obj3));
+        scene.set_object_parent(&obj5, Some(&obj4));
         // This should fail and do nothing
-        scene.set_object_parent(obj1.borrow().object(), Some(obj5.borrow().object()));
+        scene.set_object_parent(&obj1, Some(&obj5));
 
-        assert_eq!(obj5.borrow().object().num_children(&scene).ok(), Some(0));
+        assert_eq!(obj5.num_children(&scene).ok(), Some(0));
     }
 
     /// Tests objects are transformed correctly
@@ -1398,60 +1596,119 @@ mod test {
     fn test_obj_transforms() {
         let mut scene = Scene::new_headless();
 
-        let obj1 = scene.create_object::<TestObject>();
-        let obj2 = scene.create_object::<TestObject>();
-        let obj3 = scene.create_object::<TestObject>();
-        let obj4 = scene.create_object::<TestObject>();
-        let obj5 = scene.create_object::<TestObject>();
-        scene.set_object_parent(obj2.borrow().object(), Some(obj1.borrow().object()));
-        scene.set_object_parent(obj3.borrow().object(), Some(obj2.borrow().object()));
-        scene.set_object_parent(obj4.borrow().object(), Some(obj3.borrow().object()));
-        scene.set_object_parent(obj5.borrow().object(), Some(obj4.borrow().object()));
+        let obj1 = scene.create_object();
+        let obj2 = scene.create_object();
+        let obj3 = scene.create_object();
+        let obj4 = scene.create_object();
+        let obj5 = scene.create_object();
+        scene.set_object_parent(&obj2, Some(&obj1));
+        scene.set_object_parent(&obj3, Some(&obj2));
+        scene.set_object_parent(&obj4, Some(&obj3));
+        scene.set_object_parent(&obj5, Some(&obj4));
 
         fn angles(x: f32, y: f32, z: f32) -> Quaternion<f32> {
             Quaternion::from(Euler { x: Deg(x), y: Deg(y), z: Deg(z) })
         }
-        obj1.borrow().object().set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
-        obj1.borrow().object().set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
+        obj1.set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
+        obj1.set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
 
-        obj2.borrow().object().set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
-        obj2.borrow().object().set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
+        obj2.set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
+        obj2.set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
 
-        obj3.borrow().object().set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
-        obj3.borrow().object().set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
+        obj3.set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
+        obj3.set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
 
-        obj4.borrow().object().set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
-        obj4.borrow().object().set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
+        obj4.set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
+        obj4.set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
 
-        obj5.borrow().object().set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
-        obj5.borrow().object().set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
+        obj5.set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
+        obj5.set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
 
-        obj4.borrow().object().set_world_pos(&mut scene, Vector3::zero()).unwrap();
-        obj4.borrow().object().set_world_rot(&mut scene, Quaternion::one()).unwrap();
+        obj4.set_world_pos(&mut scene, Vector3::zero()).unwrap();
+        obj4.set_world_rot(&mut scene, Quaternion::one()).unwrap();
 
-        let tmp = obj1.borrow().object().world_pos(&scene).unwrap();
+        let tmp = obj1.world_pos(&scene).unwrap();
         assert_relative_eq!(tmp.x, 10.0);
         assert_relative_eq!(tmp.y, 0.0);
         assert_relative_eq!(tmp.z, 0.0);
 
-        let tmp = obj2.borrow().object().world_pos(&scene).unwrap();
+        let tmp = obj2.world_pos(&scene).unwrap();
         assert_relative_eq!(tmp.x, 17.071067812);
         assert_relative_eq!(tmp.y, 7.071067812);
         assert_relative_eq!(tmp.z, 0.0);
 
-        let tmp = obj3.borrow().object().world_pos(&scene).unwrap();
+        let tmp = obj3.world_pos(&scene).unwrap();
         assert_relative_eq!(tmp.x, 17.071067812);
         assert_relative_eq!(tmp.y, 17.071067812);
         assert_relative_eq!(tmp.z, 0.0);
 
-        let tmp = obj4.borrow().object().world_pos(&scene).unwrap();
+        let tmp = obj4.world_pos(&scene).unwrap();
         assert_relative_eq!(tmp.x, 0.0);
         assert_relative_eq!(tmp.y, 0.0);
         assert_relative_eq!(tmp.z, 0.0);
 
-        let tmp = obj5.borrow().object().world_pos(&scene).unwrap();
+        let tmp = obj5.world_pos(&scene).unwrap();
         assert_relative_eq!(tmp.x, 10.0, max_relative = 1.05);
         assert_relative_eq!(tmp.y, 0.0, max_relative = 1.05);
         assert_relative_eq!(tmp.z, 0.0);
+    }
+
+    #[test]
+    fn test_add_behaviour() {
+        let mut scene = Scene::new_headless();
+
+        let obj1 = scene.create_object();
+
+        // Test creating behaviour works
+        let bhav = scene.add_behaviour::<TestBehaviour>(&obj1).ok().unwrap();
+        bhav.borrow_mut().id = 444;
+        // Test we can retrieve the behaviour
+        let bhav2 = scene.get_behaviour::<TestBehaviour>(&obj1).ok().unwrap();
+        // These behaviours should be identical
+        assert_eq!(bhav.borrow().id, bhav2.borrow().id);
+
+        // Test we cannot overwrite the old behaviour
+        // TODO: check specific enum variant when added
+        assert!(scene.add_behaviour::<TestBehaviour>(&obj1).is_err());
+
+        scene.destroy_behaviour(bhav.borrow().behaviour());
+
+        // It should still be possible to retrieve the behaviour after it has
+        // been marked for destruction
+        scene.get_behaviour::<TestBehaviour>(&obj1).ok().unwrap();
+
+        // It should now be possible to overwrite the old behaviour
+        let bhav3 = scene.add_behaviour::<TestBehaviour>(&obj1).ok().unwrap();
+        bhav3.borrow_mut().id = 555;
+
+        // This behaviour should be different from the old one
+        assert_ne!(bhav.borrow().id, bhav3.borrow().id);
+
+        scene.destroy_behaviour(bhav3.borrow().behaviour());
+
+        scene.do_frame();
+
+        // It should no longer be possible to retrieve the behaviour in the next
+        // frame
+        // TODO: check specific enum variant when added
+        assert!(scene.get_behaviour::<TestBehaviour>(&obj1).is_err());
+
+        scene.destroy_object(&obj1);
+
+        // It should not be possible to add a new behaviour to a "marked"
+        // object.
+        // TODO: check specific enum variant when added
+        assert!(scene.add_behaviour::<TestBehaviour>(&obj1).is_err());
+
+        let obj2 = scene.create_object();
+        let bhav4 = scene.add_behaviour::<TestBehaviour>(&obj2).ok().unwrap();
+
+        scene.destroy_object(&obj2);
+
+        scene.do_frame();
+
+        // Destroying the object a component is attached to should destroy the
+        // component.
+        assert!(!bhav4.borrow().behaviour().is_valid());
     }
 }

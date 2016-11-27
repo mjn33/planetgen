@@ -1,3 +1,5 @@
+#![feature(rc_raw)]
+
 //! # Core engine
 
 #[macro_use]
