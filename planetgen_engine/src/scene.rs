@@ -17,6 +17,12 @@ use std::rc::Rc;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+fn post_add<T: Copy + std::ops::Add<Output=T>>(a: &mut T, b: T) -> T {
+    let c = *a;
+    *a = *a + b;
+    c
+}
+
 #[derive(Debug)]
 pub enum Error {
     /// Indicates the operation failed since the underlying object was already
@@ -860,12 +866,6 @@ impl Scene {
     }
 
     pub fn do_frame(&mut self) -> bool {
-        fn post_add<T: Copy + std::ops::Add<Output=T>>(a: &mut T, b: T) -> T {
-            let c = *a;
-            *a = *a + b;
-            c
-        }
-
         if cfg!(debug_assertions) {
             self.debug_check();
         }
@@ -914,7 +914,37 @@ impl Scene {
             }
         }
 
-        // TODO: don't call unwrap on this since it breaks headless mode
+        if self.display.is_some() {
+            if !self.draw() {
+                return false
+            }
+        }
+
+        unsafe {
+            self.cleanup_destroyed_behaviours();
+            self.cleanup_destroyed_objects();
+            Scene::cleanup_destroyed(
+                &mut self.camera_data, &mut self.destroyed_cameras,
+                |x| x.marked,
+                |x, idx| x.camera.idx.set(idx));
+            Scene::cleanup_destroyed(
+                &mut self.mesh_data, &mut self.destroyed_meshes,
+                |x| x.marked,
+                |x, idx| x.object.idx.set(idx));
+            Scene::cleanup_destroyed(
+                &mut self.material_data, &mut self.destroyed_materials,
+                |x| x.marked,
+                |x, idx| x.object.idx.set(idx));
+            Scene::cleanup_destroyed(
+                &mut self.shader_data, &mut self.destroyed_shaders,
+                |x| x.marked,
+                |x, idx| x.object.idx.set(idx));
+        }
+
+        true
+    }
+
+    pub fn draw(&mut self) -> bool {
         let mut target = self.display.as_ref().unwrap().draw();
         target.clear_color_and_depth((0.8, 0.8, 0.8, 1.0), 1.0);
 
@@ -1021,27 +1051,6 @@ impl Scene {
                 glium::glutin::Event::Closed => return false,
                 _ => ()
             }
-        }
-
-        unsafe {
-            self.cleanup_destroyed_behaviours();
-            self.cleanup_destroyed_objects();
-            Scene::cleanup_destroyed(
-                &mut self.camera_data, &mut self.destroyed_cameras,
-                |x| x.marked,
-                |x, idx| x.camera.idx.set(idx));
-            Scene::cleanup_destroyed(
-                &mut self.mesh_data, &mut self.destroyed_meshes,
-                |x| x.marked,
-                |x, idx| x.object.idx.set(idx));
-            Scene::cleanup_destroyed(
-                &mut self.material_data, &mut self.destroyed_materials,
-                |x| x.marked,
-                |x, idx| x.object.idx.set(idx));
-            Scene::cleanup_destroyed(
-                &mut self.shader_data, &mut self.destroyed_shaders,
-                |x| x.marked,
-                |x, idx| x.object.idx.set(idx));
         }
 
         true
