@@ -14,7 +14,7 @@ use glium::DisplayBuild;
 
 use num::One;
 
-use planetgen_engine::{Behaviour, Material, Mesh, Object, Scene, Shader, Vertex};
+use planetgen_engine::{Behaviour, BehaviourMessages, Material, Mesh, Object, Scene, Shader, Vertex};
 
 /// Generate a `Vec` containing a `size + 1` by `size + 1` grid of vertices.
 fn gen_vertices(size: u16) -> Vec<Vertex> {
@@ -350,7 +350,7 @@ impl QuadPos {
 struct VertCoord(Plane, u32, u32);
 
 struct Quad {
-    object: Object,
+    behaviour: Behaviour,
     plane: Plane,
     pos: QuadPos,
     mesh: Option<Rc<Mesh>>,
@@ -396,7 +396,10 @@ impl Quad {
         self.shader = Some(shader);
         self.material = Some(material);
 
-        scene.set_object_parent(&self.object, Some(&sphere.object()));
+        // TODO: reduce cloning
+        let self_object = self.behaviour.object(scene).unwrap().clone();
+        let sphere_object = sphere.behaviour().object(scene).unwrap().clone();
+        scene.set_object_parent(&self_object, Some(&sphere_object));
     }
 
     fn mid_coord_pos(&self, sphere: &QuadSphere) -> Vector3<f32> {
@@ -597,10 +600,14 @@ impl Quad {
     fn subdivide(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
         let half_quad_length = sphere.quad_length(self.cur_subdivision) / 2;
 
-        let upper_left = scene.create_object::<Quad>();
-        let upper_right = scene.create_object::<Quad>();
-        let lower_left = scene.create_object::<Quad>();
-        let lower_right = scene.create_object::<Quad>();
+        let upper_left_obj = scene.create_object();
+        let upper_left = scene.add_behaviour::<Quad>(&upper_left_obj).unwrap();
+        let upper_right_obj = scene.create_object();
+        let upper_right = scene.add_behaviour::<Quad>(&upper_right_obj).unwrap();
+        let lower_left_obj = scene.create_object();
+        let lower_left = scene.add_behaviour::<Quad>(&lower_left_obj).unwrap();
+        let lower_right_obj = scene.create_object();
+        let lower_right = scene.add_behaviour::<Quad>(&lower_right_obj).unwrap();
 
         let direct_north = self.direct_north();
         let direct_south = self.direct_south();
@@ -664,7 +671,9 @@ impl Quad {
 
     fn collapse(&mut self, scene: &mut Scene) {
         for q in self.children.as_ref().unwrap() {
-            scene.destroy_object(q.borrow().object());
+            // TODO: reduce cloning
+            let q_obj = q.borrow().behaviour().object(scene).unwrap().clone();
+            scene.destroy_object(&q_obj);
         }
         self.children = None;
     }
@@ -699,10 +708,10 @@ impl Quad {
     }
 }
 
-impl Behaviour for Quad {
-    fn create(object: Object) -> Quad {
+impl BehaviourMessages for Quad {
+    fn create(behaviour: Behaviour) -> Quad {
         Quad {
-            object: object,
+            behaviour: behaviour,
             plane: Plane::XP,
             pos: QuadPos::None,
             mesh: None,
@@ -730,8 +739,8 @@ impl Behaviour for Quad {
         self.shader.take().map(|shader| scene.destroy_shader(&*shader));
     }
 
-    fn object(&self) -> &Object {
-        &self.object
+    fn behaviour(&self) -> &Behaviour {
+        &self.behaviour
     }
 
     fn mesh(&self) -> Option<&Mesh> {
@@ -752,7 +761,7 @@ impl Behaviour for Quad {
 }
 
 struct QuadSphere {
-    object: Object,
+    behaviour: Behaviour,
     prev_instant: std::time::Instant,
     ninety_deg: Quaternion<f32>,
     quad_mesh_size: u16,
@@ -772,12 +781,18 @@ impl QuadSphere {
         self.max_subdivision = max_subdivision;
         self.max_coord = (1 << max_subdivision) * quad_mesh_size as u32;
 
-        let xp_quad = scene.create_object::<Quad>();
-        let xn_quad = scene.create_object::<Quad>();
-        let yp_quad = scene.create_object::<Quad>();
-        let yn_quad = scene.create_object::<Quad>();
-        let zp_quad = scene.create_object::<Quad>();
-        let zn_quad = scene.create_object::<Quad>();
+        let xp_quad_obj = scene.create_object();
+        let xp_quad = scene.add_behaviour::<Quad>(&xp_quad_obj).unwrap();
+        let xn_quad_obj = scene.create_object();
+        let xn_quad = scene.add_behaviour::<Quad>(&xn_quad_obj).unwrap();
+        let yp_quad_obj = scene.create_object();
+        let yp_quad = scene.add_behaviour::<Quad>(&yp_quad_obj).unwrap();
+        let yn_quad_obj = scene.create_object();
+        let yn_quad = scene.add_behaviour::<Quad>(&yn_quad_obj).unwrap();
+        let zp_quad_obj = scene.create_object();
+        let zp_quad = scene.add_behaviour::<Quad>(&zp_quad_obj).unwrap();
+        let zn_quad_obj = scene.create_object();
+        let zn_quad = scene.add_behaviour::<Quad>(&zn_quad_obj).unwrap();
 
         {
             let mut xp_quad = xp_quad.borrow_mut();
@@ -857,12 +872,14 @@ impl QuadSphere {
             zn_quad.init(self, scene);
         }
 
-        scene.set_object_parent(xp_quad.borrow().object(), Some(&self.object));
-        scene.set_object_parent(xn_quad.borrow().object(), Some(&self.object));
-        scene.set_object_parent(yp_quad.borrow().object(), Some(&self.object));
-        scene.set_object_parent(yn_quad.borrow().object(), Some(&self.object));
-        scene.set_object_parent(zp_quad.borrow().object(), Some(&self.object));
-        scene.set_object_parent(zn_quad.borrow().object(), Some(&self.object));
+        // TODO: reduce cloning
+        let self_object = self.behaviour().object(&scene).unwrap().clone();
+        scene.set_object_parent(&xp_quad_obj, Some(&self_object));
+        scene.set_object_parent(&xn_quad_obj, Some(&self_object));
+        scene.set_object_parent(&yp_quad_obj, Some(&self_object));
+        scene.set_object_parent(&yn_quad_obj, Some(&self_object));
+        scene.set_object_parent(&zp_quad_obj, Some(&self_object));
+        scene.set_object_parent(&zn_quad_obj, Some(&self_object));
 
         self.faces = Some([xp_quad, xn_quad, yp_quad, yn_quad, zp_quad, zn_quad]);
     }
@@ -894,10 +911,10 @@ impl QuadSphere {
     }
 }
 
-impl Behaviour for QuadSphere {
-    fn create(object: Object) -> QuadSphere {
+impl BehaviourMessages for QuadSphere {
+    fn create(behaviour: Behaviour) -> QuadSphere {
         QuadSphere {
-            object: object,
+            behaviour: behaviour,
             prev_instant: std::time::Instant::now(),
             ninety_deg: Quaternion::from(Euler { x: Deg(0.0), y: Deg(45.0), z: Deg(0.0) }),
             quad_mesh_size: 0,
@@ -920,9 +937,11 @@ impl Behaviour for QuadSphere {
         let dps = 20.0;
         let change_rot = Quaternion::one().nlerp(self.ninety_deg, (dps / 45.0) * secs);
 
-        let rot = self.object.local_rot(scene).unwrap();
+        // TODO: reduce cloning
+        let self_object = self.behaviour.object(scene).unwrap().clone();
+        let rot = self_object.local_rot(scene).unwrap();
         let rot = rot * change_rot;
-        self.object.set_local_rot(scene, rot).unwrap();
+        self_object.set_local_rot(scene, rot).unwrap();
 
         self.centre_pos = rot.invert() * Vector3::unit_z();
         for i in 0..6 {
@@ -934,8 +953,8 @@ impl Behaviour for QuadSphere {
     fn destroy(&mut self, _scene: &mut Scene) {
     }
 
-    fn object(&self) -> &Object {
-        &self.object
+    fn behaviour(&self) -> &Behaviour {
+        &self.behaviour
     }
 
     fn mesh(&self) -> Option<&Mesh> {
@@ -974,9 +993,10 @@ fn main() {
     //camera.near_clip = 0.1f32;
     //camera.far_clip = 1000f32;
 
-    let quad_sphere = scene.create_object::<QuadSphere>();
+    let quad_sphere_obj = scene.create_object();
+    let quad_sphere = scene.add_behaviour::<QuadSphere>(&quad_sphere_obj).unwrap();
     quad_sphere.borrow_mut().init(&mut scene, 8, 5);
-    quad_sphere.borrow().object().set_world_pos(&mut scene, Vector3::new(0.0, 0.0, -2.5)).unwrap();
+    quad_sphere_obj.set_world_pos(&mut scene, Vector3::new(0.0, 0.0, -2.5)).unwrap();
     //quad_sphere.borrow().object().set_world_rot(&mut scene, Quaternion::from(Euler { x: Deg(45.0), y: Deg(0.0), z: Deg(0.0) })).unwrap();
 
     loop {
