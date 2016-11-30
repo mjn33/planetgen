@@ -448,13 +448,14 @@ impl Quad {
             QuadPos::UpperLeft => {
                 let north = self.north.as_ref().unwrap().upgrade().unwrap();
                 let north_borrow = north.borrow();
-                Some(Rc::downgrade(north_borrow.get_child(QuadPos::LowerLeft).unwrap()))
+                north_borrow.get_child(QuadPos::LowerLeft)
+                    .map(Rc::downgrade)
             },
             QuadPos::UpperRight => {
                 let north = self.north.as_ref().unwrap().upgrade().unwrap();
                 let north_borrow = north.borrow();
-                // FIXME: unwrap() shouldn't be used here
-                Some(Rc::downgrade(north_borrow.get_child(QuadPos::LowerRight).unwrap()))
+                north_borrow.get_child(QuadPos::LowerRight)
+                    .map(Rc::downgrade)
             },
             QuadPos::None => self.north.clone(),
         }
@@ -466,12 +467,14 @@ impl Quad {
             QuadPos::LowerLeft => {
                 let south = self.south.as_ref().unwrap().upgrade().unwrap();
                 let south_borrow = south.borrow();
-                Some(Rc::downgrade(south_borrow.get_child(QuadPos::UpperLeft).unwrap()))
+                south_borrow.get_child(QuadPos::UpperLeft)
+                    .map(Rc::downgrade)
             },
             QuadPos::LowerRight => {
                 let south = self.south.as_ref().unwrap().upgrade().unwrap();
                 let south_borrow = south.borrow();
-                Some(Rc::downgrade(south_borrow.get_child(QuadPos::UpperRight).unwrap()))
+                south_borrow.get_child(QuadPos::UpperRight)
+                    .map(Rc::downgrade)
             },
             QuadPos::None => self.south.clone(),
         }
@@ -483,12 +486,14 @@ impl Quad {
             QuadPos::UpperRight => {
                 let east = self.east.as_ref().unwrap().upgrade().unwrap();
                 let east_borrow = east.borrow();
-                Some(Rc::downgrade(east_borrow.get_child(QuadPos::UpperLeft).unwrap()))
+                east_borrow.get_child(QuadPos::UpperLeft)
+                    .map(Rc::downgrade)
             },
             QuadPos::LowerRight => {
                 let east = self.east.as_ref().unwrap().upgrade().unwrap();
                 let east_borrow = east.borrow();
-                Some(Rc::downgrade(east_borrow.get_child(QuadPos::LowerLeft).unwrap()))
+                east_borrow.get_child(QuadPos::LowerLeft)
+                    .map(Rc::downgrade)
             },
             QuadPos::None => self.east.clone(),
         }
@@ -500,12 +505,14 @@ impl Quad {
             QuadPos::UpperLeft => {
                 let west = self.west.as_ref().unwrap().upgrade().unwrap();
                 let west_borrow = west.borrow();
-                Some(Rc::downgrade(west_borrow.get_child(QuadPos::UpperRight).unwrap()))
+                west_borrow.get_child(QuadPos::UpperRight)
+                    .map(Rc::downgrade)
             },
             QuadPos::LowerLeft => {
                 let west = self.west.as_ref().unwrap().upgrade().unwrap();
                 let west_borrow = west.borrow();
-                Some(Rc::downgrade(west_borrow.get_child(QuadPos::LowerRight).unwrap()))
+                west_borrow.get_child(QuadPos::LowerRight)
+                    .map(Rc::downgrade)
             },
             QuadPos::None => self.west.clone(),
         }
