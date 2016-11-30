@@ -358,6 +358,7 @@ struct Quad {
     material: Option<Rc<Material>>,
     base_coord: (u32, u32),
     cur_subdivision: u32,
+    mid_coord_pos: Vector3<f32>,
     children: Option<[Rc<RefCell<Quad>>; 4]>,
     north: Option<Weak<RefCell<Quad>>>,
     south: Option<Weak<RefCell<Quad>>>,
@@ -396,16 +397,19 @@ impl Quad {
         self.shader = Some(shader);
         self.material = Some(material);
 
+        self.mid_coord_pos = self.mid_coord_pos(sphere);
+
         // TODO: reduce cloning
         let self_object = self.behaviour.object(scene).unwrap().clone();
         let sphere_object = sphere.behaviour().object(scene).unwrap().clone();
         scene.set_object_parent(&self_object, Some(&sphere_object));
     }
 
+    /// Calculates the coordinates of the middle of this quad.
     fn mid_coord_pos(&self, sphere: &QuadSphere) -> Vector3<f32> {
         let half_quad_length = sphere.quad_length(self.cur_subdivision) / 2;
         let mid_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1 + half_quad_length);
-        map_vertcoord(VertCoord(self.plane, mid_coord.0, mid_coord.1), sphere.max_coord)
+        map_vertcoord(VertCoord(self.plane, mid_coord.0, mid_coord.1), sphere.max_coord).normalize()
     }
 
     fn in_subdivision_range(&self, sphere: &QuadSphere) -> bool {
@@ -413,37 +417,25 @@ impl Quad {
             return false
         }
 
-        let extra = (1.05 as f32).powf((sphere.max_subdivision - self.cur_subdivision) as f32);
-        let mid_coord_pos = self.mid_coord_pos(sphere).normalize();
+        let range = sphere.subdivide_range(self.cur_subdivision);
 
-        let centre_pos = sphere.centre_pos().normalize();
-        let theta = centre_pos.dot(mid_coord_pos).acos();
-        let r = 1.0;
-        let dist = r * theta;
+        let centre_pos = sphere.centre_pos();
+        let cur_range = centre_pos.dot(self.mid_coord_pos);
 
-        // Quad length changes when deformed into sphere
-        let pi_div_4 = std::f32::consts::PI / 4.0;
-        let quad_length = sphere.quad_length(self.cur_subdivision);
-        let real_quad_length = 2.0 * (quad_length as f32 / sphere.max_coord as f32) * pi_div_4;
-        let range = extra * 1.5 * real_quad_length;
-        dist <= range
+        // Note: comparison may seem swapped since lower values mean a greater
+        // angle / arc.
+        cur_range >= range
     }
 
     fn in_collapse_range(&self, sphere: &QuadSphere) -> bool {
-        let extra = (1.05 as f32).powf((sphere.max_subdivision - self.cur_subdivision) as f32);
-        let mid_coord_pos = self.mid_coord_pos(sphere).normalize();
+        let range = sphere.collapse_range(self.cur_subdivision);
 
         let centre_pos = sphere.centre_pos();
-        let theta = centre_pos.dot(mid_coord_pos).acos();
-        let r = 1.0;
-        let dist = r * theta;
+        let cur_range = centre_pos.dot(self.mid_coord_pos);
 
-        // Quad length changes when deformed into sphere
-        let pi_div_4 = std::f32::consts::PI / 4.0;
-        let quad_length = sphere.quad_length(self.cur_subdivision);
-        let real_quad_length = 2.0 * (quad_length as f32 / sphere.max_coord as f32) * pi_div_4;
-        let range = extra * 2.0 * 1.5 * real_quad_length;
-        dist >= range
+        // Note: comparison may seem swapped since higher values mean a smaller
+        // angle / arc.
+        cur_range <= range
     }
 
     fn get_child(&self, pos: QuadPos) -> Option<&Rc<RefCell<Quad>>> {
@@ -461,6 +453,7 @@ impl Quad {
             QuadPos::UpperRight => {
                 let north = self.north.as_ref().unwrap().upgrade().unwrap();
                 let north_borrow = north.borrow();
+                // FIXME: unwrap() shouldn't be used here
                 Some(Rc::downgrade(north_borrow.get_child(QuadPos::LowerRight).unwrap()))
             },
             QuadPos::None => self.north.clone(),
@@ -719,6 +712,7 @@ impl BehaviourMessages for Quad {
             material: None,
             base_coord: (0, 0),
             cur_subdivision: 0,
+            mid_coord_pos: Vector3::new(0.0, 0.0, 0.0),
             children: None,
             north: None,
             south: None,
@@ -767,6 +761,8 @@ struct QuadSphere {
     quad_mesh_size: u16,
     max_subdivision: u32,
     max_coord: u32,
+    collapse_ranges: Vec<f32>,
+    subdivide_ranges: Vec<f32>,
     centre_pos: Vector3<f32>,
     faces: Option<[Rc<RefCell<Quad>>; 6]>,
 }
@@ -780,6 +776,8 @@ impl QuadSphere {
         self.quad_mesh_size = quad_mesh_size;
         self.max_subdivision = max_subdivision;
         self.max_coord = (1 << max_subdivision) * quad_mesh_size as u32;
+
+        self.calc_ranges();
 
         let xp_quad_obj = scene.create_object();
         let xp_quad = scene.add_behaviour::<Quad>(&xp_quad_obj).unwrap();
@@ -884,12 +882,48 @@ impl QuadSphere {
         self.faces = Some([xp_quad, xn_quad, yp_quad, yn_quad, zp_quad, zn_quad]);
     }
 
+    fn calc_ranges(&mut self)  {
+        self.collapse_ranges = Vec::with_capacity(self.max_subdivision as usize + 1);
+        self.subdivide_ranges = Vec::with_capacity(self.max_subdivision as usize + 1);
+        for lvl in 0..(self.max_subdivision + 1) {
+            let extra = (1.05 as f32).powf((self.max_subdivision - lvl) as f32);
+
+            // Quad length changes when deformed into sphere
+            let pi_div_4 = std::f32::consts::PI / 4.0;
+            let quad_length = self.quad_length(lvl);
+            let real_quad_length = 2.0 * (quad_length as f32 / self.max_coord as f32) * pi_div_4;
+
+            let collapse_range = extra * 2.0 * 1.5 * real_quad_length;
+            let subdivide_range = extra * 1.5 * real_quad_length;
+
+            let r = 1.0;
+            let collapse_cos_theta = f32::cos(f32::min(std::f32::consts::PI, collapse_range / r));
+            let subdivide_cos_theta = f32::cos(f32::min(std::f32::consts::PI, subdivide_range / r));
+
+            self.collapse_ranges.push(collapse_cos_theta);
+            self.subdivide_ranges.push(subdivide_cos_theta);
+        }
+    }
+
     fn quad_length(&self, level: u32) -> u32 {
         (1 << (self.max_subdivision - level)) * (self.quad_mesh_size as u32)
     }
 
     fn centre_pos(&self) -> Vector3<f32> {
         self.centre_pos
+    }
+
+    /// Lookup the range required for us to try collapsing a quad for a given
+    /// subdivision level. The returned value isn't a distance, but instead the
+    /// cosine of the angle of the arc formed over that distance.
+    fn collapse_range(&self, subdivision: u32) -> f32 {
+        self.collapse_ranges[subdivision as usize]
+    }
+
+    /// Lookup the range required for us to try subdividing a quad for a given
+    /// subdivision level. See `collapse_range()` for more details.
+    fn subdivide_range(&self, subdivision: u32) -> f32 {
+        self.subdivide_ranges[subdivision as usize]
     }
 
     #[allow(dead_code)]
@@ -920,6 +954,8 @@ impl BehaviourMessages for QuadSphere {
             quad_mesh_size: 0,
             max_subdivision: 0,
             max_coord: 0,
+            collapse_ranges: Vec::new(),
+            subdivide_ranges: Vec::new(),
             centre_pos: Vector3::unit_z(),
             faces: None,
         }
