@@ -78,8 +78,8 @@ struct CameraData {
     near_clip: f32,
     /// Far clip plane distance.
     far_clip: f32,
-    // TODO: cache matrix transform for camera
-    //cam_matrix: [[f32; 4]; 4],
+    /// Cache matrix transform for camera, recomputing this is expensive.
+    cam_matrix: Cell<Option<[[f32; 4]; 4]>>,
 }
 
 /// A handle to a camera object for a scene.
@@ -89,12 +89,17 @@ pub struct Camera {
 
 impl CameraData {
     fn calc_matrix(&self) -> [[f32; 4]; 4] {
+        if let Some(cam_matrix) = self.cam_matrix.get() {
+            return cam_matrix
+        }
         let cam_perspective = cgmath::perspective(self.fovy, self.aspect, self.near_clip, self.far_clip);
         let cam_matrix =
             cam_perspective *
             Matrix4::from(self.rot.invert()) *
             Matrix4::from_translation(-self.pos);
-        cam_matrix.clone().into()
+        let cam_matrix = cam_matrix.into();
+        self.cam_matrix.set(Some(cam_matrix));
+        cam_matrix
     }
 }
 
@@ -540,7 +545,8 @@ impl Scene {
             fovy: Deg(90.0),
             aspect: 1.0,
             near_clip: 1.0,
-            far_clip: 1000.0
+            far_clip: 1000.0,
+            cam_matrix: Cell::new(None),
         };
         self.camera_data.push(data);
         rv.idx.set(Some(self.camera_data.len() - 1));
