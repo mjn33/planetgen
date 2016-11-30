@@ -1,5 +1,9 @@
 target
 _scratch
+oprofile_data
+
+cachegrind.out.*
+callgrind.out.*
 
 planetgen_engine/Cargo.lock
 
