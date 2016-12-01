@@ -104,6 +104,26 @@ impl CameraData {
 }
 
 impl Camera {
+    pub fn set_pos(&self, scene: &mut Scene, pos: Vector3<f32>) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                let data = &mut scene.camera_data[i];
+                data.pos = pos;
+                data.cam_matrix.set(None);
+            })
+    }
+
+    pub fn set_rot(&self, scene: &mut Scene, rot: Quaternion<f32>) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                let data = &mut scene.camera_data[i];
+                data.rot = rot;
+                data.cam_matrix.set(None);
+            })
+    }
+
     pub fn is_valid(&self) -> bool {
         self.idx.get().is_some()
     }
