@@ -594,6 +594,12 @@ impl Quad {
             }
         }
 
+        for q in self.children.as_ref().unwrap() {
+            if q.borrow().is_subdivided() {
+                return false
+            }
+        }
+
         true
     }
 
