@@ -373,6 +373,12 @@ struct TransformData {
     children: Vec<usize>,
     /// Index of this object's parent.
     parent_idx: Option<usize>,
+    /// Cached local-to-world matrix for this transform.
+    ltw_matrix: Cell<[[f32; 4]; 4]>,
+    /// False if our local rotation / position has been changed, or we've been
+    /// reparented this frame. False will cause this transform and our child
+    /// transforms to have their local-to-world matrix recomputed.
+    ltw_valid: Cell<bool>,
 }
 
 pub struct Object {
@@ -402,7 +408,9 @@ impl Object {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| unsafe {
-                scene.transform_data.get_unchecked_mut(i).pos = pos;
+                let data = scene.transform_data.get_unchecked_mut(i);
+                data.pos = pos;
+                data.ltw_valid.set(false);
             })
     }
 
@@ -418,7 +426,9 @@ impl Object {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| unsafe {
-                scene.transform_data.get_unchecked_mut(i).rot = rot;
+                let data = scene.transform_data.get_unchecked_mut(i);
+                data.rot = rot;
+                data.ltw_valid.set(false);
             })
     }
 
@@ -468,6 +478,7 @@ impl Object {
                 };
                 let data = scene.transform_data.get_unchecked_mut(i);
                 data.rot = local_rot;
+                data.ltw_valid.set(false);
             })
     }
 
@@ -726,6 +737,8 @@ impl Scene {
             pos: Vector3::new(0.0, 0.0, 0.0),
             children: Vec::new(),
             parent_idx: None,
+            ltw_matrix: Cell::new([[0.0; 4]; 4]),
+            ltw_valid: Cell::new(false),
         };
         self.object_data.push(obj_data);
         self.transform_data.push(trans_data);
@@ -1023,17 +1036,32 @@ impl Scene {
                 .. Default::default()
             };
 
-            let (world_pos, world_rot) = unsafe {
-                let parent_data = trans_data.parent_idx
-                    .map(|idx| self.transform_data.get_unchecked(idx));
-                self.local_to_world_pos_rot(parent_data, trans_data.pos, trans_data.rot)
-            };
+            // Check whether we need to recalculate the local-to-world matrix.
+            let mut opt_data = Some(trans_data);
+            let mut recalc = false;
+            while let Some(data) = opt_data {
+                if !trans_data.ltw_valid.get() {
+                    recalc = true;
+                    break
+                }
+                opt_data = data.parent_idx
+                    .map(|idx| unsafe { self.transform_data.get_unchecked(idx) });
+            }
+
+            if recalc {
+                let (world_pos, world_rot) = unsafe {
+                    let parent_data = trans_data.parent_idx
+                        .map(|idx| self.transform_data.get_unchecked(idx));
+                    self.local_to_world_pos_rot(parent_data, trans_data.pos, trans_data.rot)
+                };
+
+                let local_to_world = (Matrix4::from_translation(world_pos)
+                    * Matrix4::from(world_rot)).into();
+                trans_data.ltw_matrix.set(local_to_world);
+            }
 
             // TODO: multiple cameras
             let cam_matrix = self.camera_data[0].calc_matrix();
-
-            let local_to_world = (Matrix4::from_translation(world_pos)
-                * Matrix4::from(world_rot)).into();
 
             let colour = [material.colour.0, material.colour.1, material.colour.2];
 
@@ -1063,7 +1091,7 @@ impl Scene {
                 scene: self,
                 uniforms: &material.uniforms,
                 cam_matrix: cam_matrix,
-                obj_matrix: local_to_world,
+                obj_matrix: trans_data.ltw_matrix.get(),
                 colour: colour
             };
 
@@ -1071,6 +1099,12 @@ impl Scene {
         }
 
         target.finish().unwrap();
+
+        // All local-to-world matrices have been recomputed where necessary,
+        // mark as valid going in to the next frame.
+        for trans_data in &self.transform_data {
+            trans_data.ltw_valid.set(true);
+        }
 
         for ev in self.display.as_ref().unwrap().poll_events() {
             match ev {
@@ -1262,6 +1296,11 @@ impl Scene {
 
         self.unparent(object_idx);
         self.reparent(object_idx, parent_idx);
+
+        // Reparenting can change the local-to-world matrix in unpredictable
+        // ways.
+        let trans_data = &self.transform_data[object_idx];
+        trans_data.ltw_valid.set(false);
     }
 
     fn check_nop(&self, object_idx: usize, parent_idx: Option<usize>) -> bool {
