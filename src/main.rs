@@ -14,7 +14,7 @@ use glium::DisplayBuild;
 
 use num::One;
 
-use planetgen_engine::{Behaviour, BehaviourMessages, Material, Mesh, Object, Scene, Shader, Vertex};
+use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, Object, Scene, Shader, Vertex};
 
 /// Generate a `Vec` containing a `size + 1` by `size + 1` grid of vertices.
 fn gen_vertices(size: u16) -> Vec<Vertex> {
@@ -763,6 +763,8 @@ impl BehaviourMessages for Quad {
 
 struct QuadSphere {
     behaviour: Behaviour,
+    camera: Option<Rc<Camera>>,
+    old_rot: Quaternion<f32>,
     prev_instant: std::time::Instant,
     ninety_deg: Quaternion<f32>,
     quad_mesh_size: u16,
@@ -956,7 +958,9 @@ impl BehaviourMessages for QuadSphere {
     fn create(behaviour: Behaviour) -> QuadSphere {
         QuadSphere {
             behaviour: behaviour,
+            camera: None,
             prev_instant: std::time::Instant::now(),
+            old_rot: Quaternion::one(),
             ninety_deg: Quaternion::from(Euler { x: Deg(0.0), y: Deg(45.0), z: Deg(0.0) }),
             quad_mesh_size: 0,
             max_subdivision: 0,
@@ -982,15 +986,25 @@ impl BehaviourMessages for QuadSphere {
 
         // TODO: reduce cloning
         let self_object = self.behaviour.object(scene).unwrap().clone();
-        let rot = self_object.local_rot(scene).unwrap();
-        let rot = rot * change_rot;
-        self_object.set_local_rot(scene, rot).unwrap();
+        let rot = self.old_rot * change_rot;
+        self.old_rot = rot;
 
         self.centre_pos = rot.invert() * Vector3::unit_z();
         for i in 0..6 {
             let q = self.faces.as_ref().unwrap()[i].clone();
             q.borrow_mut().check_subdivision(self, scene);
         }
+
+        let cam_pos = 2.5f32 * self.centre_pos;
+
+        // Transform the centre_pos since in our world: forward = (0, 0, -1)
+        let tmp_centre_pos = Vector3::new(self.centre_pos.x, self.centre_pos.y, -self.centre_pos.z);
+
+        let cam_rot = Quaternion::look_at(-tmp_centre_pos, Vector3::unit_y());
+
+        let camera = self.camera.as_ref().unwrap();
+        camera.set_pos(scene, cam_pos);
+        camera.set_rot(scene, cam_rot);
     }
 
     fn destroy(&mut self, _scene: &mut Scene) {
@@ -1032,14 +1046,15 @@ fn main() {
         .build_glium().unwrap();
 
     let mut scene = Scene::new(display);
-    let mut _camera = scene.create_camera();
+    let mut camera = scene.create_camera();
     //camera.near_clip = 0.1f32;
     //camera.far_clip = 1000f32;
 
     let quad_sphere_obj = scene.create_object();
     let quad_sphere = scene.add_behaviour::<QuadSphere>(&quad_sphere_obj).unwrap();
+    quad_sphere.borrow_mut().camera = Some(camera);
     quad_sphere.borrow_mut().init(&mut scene, 8, 5);
-    quad_sphere_obj.set_world_pos(&mut scene, Vector3::new(0.0, 0.0, -2.5)).unwrap();
+    quad_sphere_obj.set_world_pos(&mut scene, Vector3::new(0.0, 0.0, 0.0)).unwrap();
     //quad_sphere.borrow().object().set_world_rot(&mut scene, Quaternion::from(Euler { x: Deg(45.0), y: Deg(0.0), z: Deg(0.0) })).unwrap();
 
     loop {
