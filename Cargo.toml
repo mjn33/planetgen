@@ -3,6 +3,9 @@ name = "planetgen"
 version = "0.1.0"
 authors = ["Matthew Nicholls <matthew.nicholls95@hotmail.co.uk>"]
 
+[profile.release]
+panic = "abort"
+
 [dependencies]
 bitflags = "0.7"
 cgmath = "0.11"
