@@ -901,22 +901,22 @@ impl QuadSphere {
         self.collapse_ranges = Vec::with_capacity(self.max_subdivision as usize + 1);
         self.subdivide_ranges = Vec::with_capacity(self.max_subdivision as usize + 1);
         for lvl in 0..(self.max_subdivision + 1) {
-            let extra = (1.05 as f32).powf((self.max_subdivision - lvl) as f32);
+            let extra = (1.05 as f64).powf((self.max_subdivision - lvl) as f64);
 
             // Quad length changes when deformed into sphere
-            let pi_div_4 = std::f32::consts::PI / 4.0;
+            let pi_div_4 = std::f64::consts::PI / 4.0;
             let quad_length = self.quad_length(lvl);
-            let real_quad_length = 2.0 * (quad_length as f32 / self.max_coord as f32) * pi_div_4;
+            let real_quad_length = 2.0 * (quad_length as f64 / self.max_coord as f64) * pi_div_4;
 
             let collapse_range = extra * 2.0 * 1.5 * real_quad_length;
             let subdivide_range = extra * 1.5 * real_quad_length;
 
             let r = 1.0;
-            let collapse_cos_theta = f32::cos(f32::min(std::f32::consts::PI, collapse_range / r));
-            let subdivide_cos_theta = f32::cos(f32::min(std::f32::consts::PI, subdivide_range / r));
+            let collapse_cos_theta = f64::cos(f64::min(std::f64::consts::PI, collapse_range / r));
+            let subdivide_cos_theta = f64::cos(f64::min(std::f64::consts::PI, subdivide_range / r));
 
-            self.collapse_ranges.push(collapse_cos_theta);
-            self.subdivide_ranges.push(subdivide_cos_theta);
+            self.collapse_ranges.push(collapse_cos_theta as f32);
+            self.subdivide_ranges.push(subdivide_cos_theta as f32);
         }
     }
 
@@ -995,7 +995,7 @@ impl BehaviourMessages for QuadSphere {
         let rot = self.old_rot * change_rot;
         self.old_rot = rot;
 
-        self.centre_pos = rot.invert() * Vector3::unit_z();
+        self.centre_pos = (rot.invert() * (-Vector3::unit_z())).normalize();
         for i in 0..6 {
             let q = self.faces.as_ref().unwrap()[i].clone();
             q.borrow_mut().check_subdivision(self, scene);
