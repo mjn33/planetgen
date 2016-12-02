@@ -171,7 +171,13 @@ struct MeshData {
     /// True when the mesh has been marked for destruction at the end of the
     /// frame.
     marked: bool,
+    /// The length of the vertex buffer used for rendering. Data after this is
+    /// ignored.
+    vertex_buf_len: usize,
     vertex_buf: VertexBuffer<Vertex>,
+    /// The length of the indices buffer used for rendering. Data after this is
+    /// ignored.
+    indices_buf_len: usize,
     indices_buf: IndexBuffer<u16>,
 }
 
@@ -181,35 +187,71 @@ pub struct Mesh {
 
 impl Mesh {
     pub fn set_indices(&self, scene: &mut Scene, indices: &[u16]) -> Result<()> {
+        self.set_indices_at(scene, 0, indices)
+    }
+
+    pub fn set_indices_at(&self, scene: &mut Scene, offset: usize, indices: &[u16]) -> Result<()> {
         let indices_buf = try!(self.idx.get()
             .ok_or(Error::ObjectDestroyed)
-            .and_then(|i| unsafe {
-                let indices_buf = &scene.mesh_data.get_unchecked(i).indices_buf;
-                if indices.len() != indices_buf.len() {
-                    Err(Error::WrongBufferLength)
-                } else {
-                    Ok(indices_buf)
-                }
+            .map(|i| unsafe {
+                &scene.mesh_data.get_unchecked(i).indices_buf
             }));
 
-        indices_buf.write(indices);
-        Ok(())
+        match indices_buf.slice(offset..(offset + indices.len())) {
+            Some(slice) => {
+                slice.write(indices);
+                Ok(())
+            },
+            None => Err(Error::WrongBufferLength)
+        }
     }
 
     pub fn set_verts(&self, scene: &mut Scene, verts: &[Vertex]) -> Result<()> {
+        self.set_verts_at(scene, 0, verts)
+    }
+
+    pub fn set_verts_at(&self, scene: &mut Scene, offset: usize, verts: &[Vertex]) -> Result<()> {
         let vertex_buf = try!(self.idx.get()
             .ok_or(Error::ObjectDestroyed)
-            .and_then(|i| unsafe {
-                let vertex_buf = &scene.mesh_data.get_unchecked(i).vertex_buf;
-                if verts.len() != vertex_buf.len() {
-                    Err(Error::WrongBufferLength)
-                } else {
-                    Ok(vertex_buf)
-                }
+            .map(|i| unsafe {
+                &scene.mesh_data.get_unchecked(i).vertex_buf
             }));
 
-        vertex_buf.write(verts);
-        Ok(())
+        match vertex_buf.slice(offset..(offset + verts.len())) {
+            Some(slice) => {
+                slice.write(verts);
+                Ok(())
+            },
+            None => Err(Error::WrongBufferLength)
+        }
+    }
+
+    pub fn set_indices_len(&self, scene: &mut Scene, len: usize) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .and_then(|i| {
+                let data = &mut scene.mesh_data[i];
+                if len > data.indices_buf.len() {
+                    Err(Error::WrongBufferLength)
+                } else {
+                    data.indices_buf_len = len;
+                    Ok(())
+                }
+            })
+    }
+
+    pub fn set_verts_len(&self, scene: &mut Scene, len: usize) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .and_then(|i| {
+                let data = &mut scene.mesh_data[i];
+                if len > data.vertex_buf.len() {
+                    Err(Error::WrongBufferLength)
+                } else {
+                    data.vertex_buf_len = len;
+                    Ok(())
+                }
+            })
     }
 }
 
@@ -626,7 +668,9 @@ impl Scene {
         let data = MeshData {
             object: rv.clone(),
             marked: false,
+            vertex_buf_len: verts.len(),
             vertex_buf: VertexBuffer::new(display, verts).unwrap(),
+            indices_buf_len: indices.len(),
             indices_buf: IndexBuffer::new(display, glium::index::PrimitiveType::TrianglesList, indices).unwrap(),
         };
         self.mesh_data.push(data);
@@ -1125,7 +1169,14 @@ impl Scene {
                 colour: colour
             };
 
-            target.draw(&mesh.vertex_buf, &mesh.indices_buf, &shader.program, &uniforms, &draw_params).unwrap();
+            // TODO: unsuprisingly this is the most resource intensive method,
+            // investigate ways of providing abstractions over multi-draw, etc.
+            target.draw(mesh.vertex_buf.slice(0..mesh.vertex_buf_len).unwrap(),
+                        mesh.indices_buf.slice(0..mesh.indices_buf_len).unwrap(),
+                        &shader.program,
+                        &uniforms,
+                        &draw_params)
+                .unwrap();
         }
 
         target.finish().unwrap();
