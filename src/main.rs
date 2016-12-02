@@ -1053,8 +1053,8 @@ fn main() {
 
     let mut scene = Scene::new(display);
     let mut camera = scene.create_camera();
-    //camera.near_clip = 0.1f32;
-    //camera.far_clip = 1000f32;
+    camera.set_near_clip(&mut scene, 0.01).unwrap();
+    camera.set_far_clip(&mut scene, 10.0).unwrap();
 
     let quad_sphere_obj = scene.create_object();
     let quad_sphere = scene.add_behaviour::<QuadSphere>(&quad_sphere_obj).unwrap();
