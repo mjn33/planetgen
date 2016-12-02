@@ -124,6 +124,36 @@ impl Camera {
             })
     }
 
+    pub fn set_fovy(&self, scene: &mut Scene, fovy: f32) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                let data = &mut scene.camera_data[i];
+                data.fovy = Deg(fovy);
+                data.cam_matrix.set(None);
+            })
+    }
+
+    pub fn set_near_clip(&self, scene: &mut Scene, near_clip: f32) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                let data = &mut scene.camera_data[i];
+                data.near_clip = near_clip;
+                data.cam_matrix.set(None);
+            })
+    }
+
+    pub fn set_far_clip(&self, scene: &mut Scene, far_clip: f32) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                let data = &mut scene.camera_data[i];
+                data.far_clip = far_clip;
+                data.cam_matrix.set(None);
+            })
+    }
+
     pub fn is_valid(&self) -> bool {
         self.idx.get().is_some()
     }
