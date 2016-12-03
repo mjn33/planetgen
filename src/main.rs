@@ -14,7 +14,7 @@ use glium::DisplayBuild;
 
 use num::One;
 
-use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, Object, Scene, Shader, Vertex};
+use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, Scene, Shader, Vertex};
 
 /// Generate a `Vec` containing a `size + 1` by `size + 1` grid of vertices.
 fn gen_vertices(size: u16) -> Vec<Vertex> {
@@ -991,7 +991,6 @@ impl BehaviourMessages for QuadSphere {
         let change_rot = Quaternion::one().nlerp(self.ninety_deg, (dps / 45.0) * secs);
 
         // TODO: reduce cloning
-        let self_object = self.behaviour.object(scene).unwrap().clone();
         let rot = self.old_rot * change_rot;
         self.old_rot = rot;
 
@@ -1009,8 +1008,8 @@ impl BehaviourMessages for QuadSphere {
         let cam_rot = Quaternion::look_at(-tmp_centre_pos, Vector3::unit_y());
 
         let camera = self.camera.as_ref().unwrap();
-        camera.set_pos(scene, cam_pos);
-        camera.set_rot(scene, cam_rot);
+        camera.set_pos(scene, cam_pos).unwrap();
+        camera.set_rot(scene, cam_rot).unwrap();
     }
 
     fn destroy(&mut self, _scene: &mut Scene) {
@@ -1052,7 +1051,7 @@ fn main() {
         .build_glium().unwrap();
 
     let mut scene = Scene::new(display);
-    let mut camera = scene.create_camera();
+    let camera = scene.create_camera();
     camera.set_near_clip(&mut scene, 0.01).unwrap();
     camera.set_far_clip(&mut scene, 10.0).unwrap();
 
