@@ -85,6 +85,7 @@ fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
     let vert_off = |x, y| vert_off(x, y, adj_size);
     let mut indices = Vec::new();
     gen_indices_range(&mut indices, 1, 1, size - 1, size - 1, size);
+
     if sides.contains(PATCH_SIDE_LEFT) {
         for y in 1..adj_size-1 {
             if (y % 2) == 1 {
@@ -359,6 +360,8 @@ struct Quad {
     base_coord: (u32, u32),
     cur_subdivision: u32,
     mid_coord_pos: Vector3<f32>,
+    patching_dirty: bool,
+    patch_flags: PatchSide,
     children: Option<[Rc<RefCell<Quad>>; 4]>,
     north: Option<Weak<RefCell<Quad>>>,
     south: Option<Weak<RefCell<Quad>>>,
@@ -386,6 +389,8 @@ impl Quad {
             }
         }
 
+        // Base the mesh indices from `PATCH_SIDE_NONE` since that generates the
+        // largest buffer size.
         let mesh = scene.create_mesh(&vertices, &indices);
         let shader = scene.create_shader(
             include_str!("default_vs.glsl"),
@@ -398,6 +403,8 @@ impl Quad {
         self.material = Some(material);
 
         self.mid_coord_pos = self.mid_coord_pos(sphere);
+
+        self.patch_flags = PATCH_SIDE_NONE;
 
         // TODO: reduce cloning
         let self_object = self.behaviour.object(scene).unwrap().clone();
@@ -438,6 +445,7 @@ impl Quad {
         cur_range <= range
     }
 
+    // TODO: maybe don't return an Option and expect that we are subdivided?
     fn get_child(&self, pos: QuadPos) -> Option<&Rc<RefCell<Quad>>> {
         self.children.as_ref().map(|children| &children[pos.to_idx()])
     }
@@ -672,6 +680,96 @@ impl Quad {
             lower_right.init(sphere, scene);
         }
 
+        let direct_north = direct_north.unwrap().upgrade().unwrap();
+        let direct_south = direct_south.unwrap().upgrade().unwrap();
+        let direct_east = direct_east.unwrap().upgrade().unwrap();
+        let direct_west = direct_west.unwrap().upgrade().unwrap();
+
+        let north_subdivided = direct_north.borrow().is_subdivided();
+        let south_subdivided = direct_south.borrow().is_subdivided();
+        let east_subdivided = direct_east.borrow().is_subdivided();
+        let west_subdivided = direct_west.borrow().is_subdivided();
+
+        if north_subdivided {
+            let north_borrow = direct_north.borrow();
+            let q1 = north_borrow.get_child(QuadPos::LowerLeft).unwrap();
+            let q2 = north_borrow.get_child(QuadPos::LowerRight).unwrap();
+            let mut q1_borrow = q1.borrow_mut();
+            let mut q2_borrow = q2.borrow_mut();
+            q1_borrow.patch_flags &= !PATCH_SIDE_BOTTOM;
+            q1_borrow.patching_dirty = true;
+            q2_borrow.patch_flags &= !PATCH_SIDE_BOTTOM;
+            q2_borrow.patching_dirty = true;
+        }
+
+        if south_subdivided {
+            let south_borrow = direct_south.borrow();
+            let q1 = south_borrow.get_child(QuadPos::UpperLeft).unwrap();
+            let q2 = south_borrow.get_child(QuadPos::UpperRight).unwrap();
+            let mut q1_borrow = q1.borrow_mut();
+            let mut q2_borrow = q2.borrow_mut();
+            q1_borrow.patch_flags &= !PATCH_SIDE_TOP;
+            q1_borrow.patching_dirty = true;
+            q2_borrow.patch_flags &= !PATCH_SIDE_TOP;
+            q2_borrow.patching_dirty = true;
+        }
+
+        if east_subdivided {
+            let east_borrow = direct_east.borrow();
+            let q1 = east_borrow.get_child(QuadPos::UpperLeft).unwrap();
+            let q2 = east_borrow.get_child(QuadPos::LowerLeft).unwrap();
+            let mut q1_borrow = q1.borrow_mut();
+            let mut q2_borrow = q2.borrow_mut();
+            q1_borrow.patch_flags &= !PATCH_SIDE_LEFT;
+            q1_borrow.patching_dirty = true;
+            q2_borrow.patch_flags &= !PATCH_SIDE_LEFT;
+            q2_borrow.patching_dirty = true;
+        }
+
+        if west_subdivided {
+            let west_borrow = direct_west.borrow();
+            let q1 = west_borrow.get_child(QuadPos::UpperRight).unwrap();
+            let q2 = west_borrow.get_child(QuadPos::LowerRight).unwrap();
+            let mut q1_borrow = q1.borrow_mut();
+            let mut q2_borrow = q2.borrow_mut();
+            q1_borrow.patch_flags &= !PATCH_SIDE_RIGHT;
+            q1_borrow.patching_dirty = true;
+            q2_borrow.patch_flags &= !PATCH_SIDE_RIGHT;
+            q2_borrow.patching_dirty = true;
+        }
+
+        {
+            let mut upper_left = upper_left.borrow_mut();
+            let mut upper_right = upper_right.borrow_mut();
+            let mut lower_left = lower_left.borrow_mut();
+            let mut lower_right = lower_right.borrow_mut();
+
+            if !north_subdivided {
+                upper_left.patch_flags |= PATCH_SIDE_TOP;
+                upper_right.patch_flags |= PATCH_SIDE_TOP;
+            }
+
+            if !south_subdivided {
+                lower_left.patch_flags |= PATCH_SIDE_BOTTOM;
+                lower_right.patch_flags |= PATCH_SIDE_BOTTOM;
+            }
+
+            if !east_subdivided {
+                upper_right.patch_flags |= PATCH_SIDE_RIGHT;
+                lower_right.patch_flags |= PATCH_SIDE_RIGHT;
+            }
+
+            if !west_subdivided {
+                upper_left.patch_flags |= PATCH_SIDE_LEFT;
+                lower_left.patch_flags |= PATCH_SIDE_LEFT;
+            }
+
+            upper_left.patching_dirty = true;
+            upper_right.patching_dirty = true;
+            lower_left.patching_dirty = true;
+            lower_right.patching_dirty = true;
+        }
+
         self.children = Some([upper_left, upper_right, lower_left, lower_right]);
     }
 
@@ -681,7 +779,89 @@ impl Quad {
             let q_obj = q.borrow().behaviour().object(scene).unwrap().clone();
             scene.destroy_object(&q_obj);
         }
+
+        let direct_north = self.direct_north().unwrap().upgrade().unwrap();
+        let direct_south = self.direct_south().unwrap().upgrade().unwrap();
+        let direct_east = self.direct_east().unwrap().upgrade().unwrap();
+        let direct_west = self.direct_west().unwrap().upgrade().unwrap();
+
+        let north_subdivided = direct_north.borrow().is_subdivided();
+        let south_subdivided = direct_south.borrow().is_subdivided();
+        let east_subdivided = direct_east.borrow().is_subdivided();
+        let west_subdivided = direct_west.borrow().is_subdivided();
+
+        if north_subdivided {
+            let north_borrow = direct_north.borrow();
+            let q1 = north_borrow.get_child(QuadPos::LowerLeft).unwrap();
+            let q2 = north_borrow.get_child(QuadPos::LowerRight).unwrap();
+            let mut q1_borrow = q1.borrow_mut();
+            let mut q2_borrow = q2.borrow_mut();
+            q1_borrow.patch_flags |= PATCH_SIDE_BOTTOM;
+            q1_borrow.patching_dirty = true;
+            q2_borrow.patch_flags |= PATCH_SIDE_BOTTOM;
+            q2_borrow.patching_dirty = true;
+        }
+
+        if south_subdivided {
+            let south_borrow = direct_south.borrow();
+            let q1 = south_borrow.get_child(QuadPos::UpperLeft).unwrap();
+            let q2 = south_borrow.get_child(QuadPos::UpperRight).unwrap();
+            let mut q1_borrow = q1.borrow_mut();
+            let mut q2_borrow = q2.borrow_mut();
+            q1_borrow.patch_flags |= PATCH_SIDE_TOP;
+            q1_borrow.patching_dirty = true;
+            q2_borrow.patch_flags |= PATCH_SIDE_TOP;
+            q2_borrow.patching_dirty = true;
+        }
+
+        if east_subdivided {
+            let east_borrow = direct_east.borrow();
+            let q1 = east_borrow.get_child(QuadPos::UpperLeft).unwrap();
+            let q2 = east_borrow.get_child(QuadPos::LowerLeft).unwrap();
+            let mut q1_borrow = q1.borrow_mut();
+            let mut q2_borrow = q2.borrow_mut();
+            q1_borrow.patch_flags |= PATCH_SIDE_LEFT;
+            q1_borrow.patching_dirty = true;
+            q2_borrow.patch_flags |= PATCH_SIDE_LEFT;
+            q2_borrow.patching_dirty = true;
+        }
+
+        if west_subdivided {
+            let west_borrow = direct_west.borrow();
+            let q1 = west_borrow.get_child(QuadPos::UpperRight).unwrap();
+            let q2 = west_borrow.get_child(QuadPos::LowerRight).unwrap();
+            let mut q1_borrow = q1.borrow_mut();
+            let mut q2_borrow = q2.borrow_mut();
+            q1_borrow.patch_flags |= PATCH_SIDE_RIGHT;
+            q1_borrow.patching_dirty = true;
+            q2_borrow.patch_flags |= PATCH_SIDE_RIGHT;
+            q2_borrow.patching_dirty = true;
+        }
+
+        self.patch_flags = PATCH_SIDE_NONE;
+        self.patching_dirty = true;
+
         self.children = None;
+    }
+
+    fn update_patching(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
+        let mesh = self.mesh.as_ref().unwrap();
+        // FIXME: inefficient, should be fixed in up-coming quad pooling patch
+        let indices = gen_indices(sphere.quad_mesh_size, self.patch_flags);
+        mesh.set_indices(scene, &indices).unwrap();
+        mesh.set_indices_len(scene, indices.len()).unwrap();
+    }
+
+    fn check_patching(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
+        if !self.is_subdivided() && self.patching_dirty {
+            self.update_patching(sphere, scene);
+            self.patching_dirty = false;
+        } else if self.is_subdivided() {
+            self.patching_dirty = false;
+            for q in self.children.as_ref().unwrap() {
+                q.borrow_mut().check_patching(sphere, scene);
+            }
+        }
     }
 
     fn check_subdivision(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
@@ -726,6 +906,8 @@ impl BehaviourMessages for Quad {
             base_coord: (0, 0),
             cur_subdivision: 0,
             mid_coord_pos: Vector3::new(0.0, 0.0, 0.0),
+            patching_dirty: false,
+            patch_flags: PATCH_SIDE_NONE,
             children: None,
             north: None,
             south: None,
@@ -998,6 +1180,10 @@ impl BehaviourMessages for QuadSphere {
         for i in 0..6 {
             let q = self.faces.as_ref().unwrap()[i].clone();
             q.borrow_mut().check_subdivision(self, scene);
+        }
+        for i in 0..6 {
+            let q = self.faces.as_ref().unwrap()[i].clone();
+            q.borrow_mut().check_patching(self, scene);
         }
 
         let cam_pos = 2.5f32 * self.centre_pos;
