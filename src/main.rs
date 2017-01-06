@@ -17,13 +17,13 @@ use num::One;
 use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, Scene, Shader, Vertex};
 
 /// Generate a `Vec` containing a `size + 1` by `size + 1` grid of vertices.
-fn gen_vertices(size: u16) -> Vec<Vertex> {
+fn gen_vertices(size: u16) -> Vec<Vector3<f32>> {
     let adj_size = size + 1;
     let mut vertices = Vec::new();
     let diff = 2.0 / size as f32;
     for x in 0..adj_size {
         for y in 0..adj_size {
-            vertices.push(Vertex { vert_pos: [-1.0 + x as f32 * diff, -1.0 + y as f32 * diff, 0.0] });
+            vertices.push(Vector3::new(-1.0 + x as f32 * diff, -1.0 + y as f32 * diff, 0.0));
         }
     }
     vertices
@@ -309,6 +309,35 @@ fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
     indices
 }
 
+fn calc_normals(verts: &[Vector3<f32>], indices: &[u16], normals: &mut [Vector3<f32>]) {
+    for n in normals.iter_mut() {
+        *n = Vector3::new(0.0, 0.0, 0.0);
+    }
+
+    let mut i = 0;
+    while i < indices.len() {
+        //let i = post_add(i, 3);
+        let i = {
+            let tmp = i;
+            i += 3;
+            tmp
+        };
+        let v1 = verts[indices[i] as usize];
+        let v2 = verts[indices[i + 1] as usize];
+        let v3 = verts[indices[i + 2] as usize];
+        let a = v2 - v1;
+        let b = v3 - v1;
+        let surf_normal = a.cross(b);
+        normals[indices[i] as usize] += surf_normal;
+        normals[indices[i + 1] as usize] += surf_normal;
+        normals[indices[i + 2] as usize] += surf_normal;
+    }
+
+    for n in normals.iter_mut() {
+        *n = n.normalize();
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Plane {
     /// +x
@@ -385,13 +414,20 @@ impl Quad {
 
                 let vert_pos = map_vertcoord(vert_coord, sphere.max_coord).normalize();
                 let off = vert_off(x, y);
-                vertices[off as usize].vert_pos = [vert_pos.x, vert_pos.y, vert_pos.z];
+                vertices[off as usize] = Vector3::new(vert_pos.x, vert_pos.y, vert_pos.z);
             }
         }
 
+        use cgmath::Zero;
+        let mut normals = vec![Vector3::zero(); vertices.len() as usize];
+        calc_normals(&vertices, &indices, &mut normals);
+
         // Base the mesh indices from `PATCH_SIDE_NONE` since that generates the
         // largest buffer size.
-        let mesh = scene.create_mesh(&vertices, &indices);
+        let mesh = scene.create_mesh(vertices.len(), indices.len());
+        *mesh.vpos_mut(scene).unwrap() = vertices;
+        *mesh.vnorm_mut(scene).unwrap() = normals;
+        *mesh.indices_mut(scene).unwrap() = indices;
         let shader = scene.create_shader(
             include_str!("default_vs.glsl"),
             include_str!("default_fs.glsl"),
@@ -848,8 +884,7 @@ impl Quad {
         let mesh = self.mesh.as_ref().unwrap();
         // FIXME: inefficient, should be fixed in up-coming quad pooling patch
         let indices = gen_indices(sphere.quad_mesh_size, self.patch_flags);
-        mesh.set_indices(scene, &indices).unwrap();
-        mesh.set_indices_len(scene, indices.len()).unwrap();
+        *mesh.indices_mut(scene).unwrap() = indices;
     }
 
     fn check_patching(&mut self, sphere: &QuadSphere, scene: &mut Scene) {

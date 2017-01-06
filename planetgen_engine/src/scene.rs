@@ -165,19 +165,27 @@ pub struct Vertex {
 }
 implement_vertex!(Vertex, vert_pos);
 
+#[derive(Copy, Clone)]
+struct VertDataPN {
+    vpos: [f32; 3],
+    vnorm: [f32; 3],
+}
+implement_vertex!(VertDataPN, vpos, vnorm);
+
 struct MeshData {
     /// Reference to the mesh object.
     object: Rc<Mesh>,
     /// True when the mesh has been marked for destruction at the end of the
     /// frame.
     marked: bool,
-    /// The length of the vertex buffer used for rendering. Data after this is
-    /// ignored.
-    vertex_buf_len: usize,
-    vertex_buf: VertexBuffer<Vertex>,
-    /// The length of the indices buffer used for rendering. Data after this is
-    /// ignored.
-    indices_buf_len: usize,
+    vpos_vec: Vec<Vector3<f32>>,
+    vnorm_vec: Vec<Vector3<f32>>,
+    indices_vec: Vec<u16>,
+    /// True if `vertex_buf` needs to be updated.
+    vertex_buf_dirty: bool,
+    vertex_buf: VertexBuffer<VertDataPN>,
+    /// True if `indices_buf` needs to be updated.
+    indices_buf_dirty: bool,
     indices_buf: IndexBuffer<u16>,
 }
 
@@ -186,71 +194,57 @@ pub struct Mesh {
 }
 
 impl Mesh {
-    pub fn set_indices(&self, scene: &mut Scene, indices: &[u16]) -> Result<()> {
-        self.set_indices_at(scene, 0, indices)
-    }
-
-    pub fn set_indices_at(&self, scene: &mut Scene, offset: usize, indices: &[u16]) -> Result<()> {
-        let indices_buf = try!(self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe {
-                &scene.mesh_data.get_unchecked(i).indices_buf
-            }));
-
-        match indices_buf.slice(offset..(offset + indices.len())) {
-            Some(slice) => {
-                slice.write(indices);
-                Ok(())
-            },
-            None => Err(Error::WrongBufferLength)
-        }
-    }
-
-    pub fn set_verts(&self, scene: &mut Scene, verts: &[Vertex]) -> Result<()> {
-        self.set_verts_at(scene, 0, verts)
-    }
-
-    pub fn set_verts_at(&self, scene: &mut Scene, offset: usize, verts: &[Vertex]) -> Result<()> {
-        let vertex_buf = try!(self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe {
-                &scene.mesh_data.get_unchecked(i).vertex_buf
-            }));
-
-        match vertex_buf.slice(offset..(offset + verts.len())) {
-            Some(slice) => {
-                slice.write(verts);
-                Ok(())
-            },
-            None => Err(Error::WrongBufferLength)
-        }
-    }
-
-    pub fn set_indices_len(&self, scene: &mut Scene, len: usize) -> Result<()> {
+    pub fn vpos<'a>(&self, scene: &'a Scene) -> Result<&'a Vec<Vector3<f32>>> {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
-            .and_then(|i| {
-                let data = &mut scene.mesh_data[i];
-                if len > data.indices_buf.len() {
-                    Err(Error::WrongBufferLength)
-                } else {
-                    data.indices_buf_len = len;
-                    Ok(())
-                }
+            .map(|i| {
+                &scene.mesh_data[i].vpos_vec
             })
     }
 
-    pub fn set_verts_len(&self, scene: &mut Scene, len: usize) -> Result<()> {
+    pub fn vpos_mut<'a>(&self, scene: &'a mut Scene) -> Result<&'a mut Vec<Vector3<f32>>> {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
-            .and_then(|i| {
+            .map(move |i| {
                 let data = &mut scene.mesh_data[i];
-                if len > data.vertex_buf.len() {
-                    Err(Error::WrongBufferLength)
-                } else {
-                    data.vertex_buf_len = len;
-                    Ok(())
-                }
+                data.vertex_buf_dirty = true;
+                &mut data.vpos_vec
+            })
+    }
+
+    pub fn vnorm<'a>(&self, scene: &'a Scene) -> Result<&'a Vec<Vector3<f32>>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                &scene.mesh_data[i].vnorm_vec
+            })
+    }
+
+    pub fn vnorm_mut<'a>(&self, scene: &'a mut Scene) -> Result<&'a mut Vec<Vector3<f32>>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(move |i| {
+                let data = &mut scene.mesh_data[i];
+                data.vertex_buf_dirty = true;
+                &mut data.vnorm_vec
+            })
+    }
+
+    pub fn indices<'a>(&self, scene: &'a Scene) -> Result<&'a Vec<u16>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                &scene.mesh_data[i].indices_vec
+            })
+    }
+
+    pub fn indices_mut<'a>(&self, scene: &'a mut Scene) -> Result<&'a mut Vec<u16>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(move |i| {
+                let data = &mut scene.mesh_data[i];
+                data.indices_buf_dirty = true;
+                &mut data.indices_vec
             })
     }
 }
@@ -656,7 +650,7 @@ impl Scene {
         rv
     }
 
-    pub fn create_mesh(&mut self, verts: &[Vertex], indices: &[u16]) -> Rc<Mesh> {
+    pub fn create_mesh(&mut self, vert_capacity: usize, indices_capacity: usize) -> Rc<Mesh> {
         let display = match self.display {
             Some(ref display) => display,
             None => {
@@ -668,10 +662,13 @@ impl Scene {
         let data = MeshData {
             object: rv.clone(),
             marked: false,
-            vertex_buf_len: verts.len(),
-            vertex_buf: VertexBuffer::new(display, verts).unwrap(),
-            indices_buf_len: indices.len(),
-            indices_buf: IndexBuffer::new(display, glium::index::PrimitiveType::TrianglesList, indices).unwrap(),
+            vpos_vec: Vec::new(),
+            vnorm_vec: Vec::new(),
+            indices_vec: Vec::new(),
+            vertex_buf_dirty: false,
+            vertex_buf: VertexBuffer::empty(display, vert_capacity).unwrap(),
+            indices_buf_dirty: false,
+            indices_buf: IndexBuffer::empty(display, glium::index::PrimitiveType::TrianglesList, indices_capacity).unwrap(),
         };
         self.mesh_data.push(data);
         rv.idx.set(Some(self.mesh_data.len() - 1));
@@ -1058,8 +1055,39 @@ impl Scene {
     }
 
     pub fn draw(&mut self) -> bool {
-        let mut target = self.display.as_ref().unwrap().draw();
+        let display = self.display.as_ref().unwrap();
+        let mut target = display.draw();
         target.clear_color_and_depth((0.8, 0.8, 0.8, 1.0), 1.0);
+
+        for data in &mut self.mesh_data {
+            if data.vertex_buf_dirty {
+                let vertex_buf_len = std::cmp::max(data.vpos_vec.len(), data.vnorm_vec.len());
+                if vertex_buf_len > data.vertex_buf.len() {
+                    // Resize buffer
+                    data.vertex_buf = VertexBuffer::empty(display, vertex_buf_len * 2).unwrap();
+                }
+
+                let mut map = data.vertex_buf.map_write();
+                for i in 0..vertex_buf_len {
+                    map.set(i, VertDataPN {
+                        vpos: (*data.vpos_vec.get(i).unwrap_or(&Vector3::zero())).into(),
+                        vnorm: (*data.vnorm_vec.get(i).unwrap_or(&Vector3::zero())).into()
+                    });
+                }
+                data.vertex_buf_dirty = false;
+            }
+
+            if data.indices_buf_dirty {
+                let indices_buf_len = data.indices_vec.len();
+                if indices_buf_len > data.indices_buf.len() {
+                    // Resize buffer
+                    data.indices_buf = IndexBuffer::empty(display, glium::index::PrimitiveType::TrianglesList, indices_buf_len * 2).unwrap();
+                }
+
+                data.indices_buf.slice(0..indices_buf_len).unwrap().write(&data.indices_vec);
+                data.indices_buf_dirty = false;
+            }
+        }
 
         //for data in &self.object_data {
         let mut idx = 0;
@@ -1169,10 +1197,12 @@ impl Scene {
                 colour: colour
             };
 
+            let vertex_buf_len = std::cmp::max(mesh.vpos_vec.len(), mesh.vnorm_vec.len());
+            let indices_buf_len = mesh.indices_vec.len();
             // TODO: unsuprisingly this is the most resource intensive method,
             // investigate ways of providing abstractions over multi-draw, etc.
-            target.draw(mesh.vertex_buf.slice(0..mesh.vertex_buf_len).unwrap(),
-                        mesh.indices_buf.slice(0..mesh.indices_buf_len).unwrap(),
+            target.draw(mesh.vertex_buf.slice(0..vertex_buf_len).unwrap(),
+                        mesh.indices_buf.slice(0..indices_buf_len).unwrap(),
                         &shader.program,
                         &uniforms,
                         &draw_params)
