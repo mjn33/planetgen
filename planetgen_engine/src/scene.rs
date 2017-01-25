@@ -1129,7 +1129,7 @@ impl Scene {
 
             let draw_params = glium::DrawParameters {
                 backface_culling: glium::draw_parameters::BackfaceCullingMode::CullClockwise,
-                polygon_mode: glium::draw_parameters::PolygonMode::Line,
+                polygon_mode: glium::draw_parameters::PolygonMode::Fill,
                 depth: glium::Depth {
                     test: glium::draw_parameters::DepthTest::IfLess,
                     write: true,
@@ -1164,6 +1164,7 @@ impl Scene {
 
             // TODO: multiple cameras
             let cam_matrix = self.camera_data[0].calc_matrix();
+            let cam_pos = self.camera_data[0].pos.into();
 
             let colour = [material.colour.0, material.colour.1, material.colour.2];
 
@@ -1171,6 +1172,7 @@ impl Scene {
                 scene: &'a Scene,
                 uniforms: &'b HashMap<String, UnsafeCell<Option<UniformValue>>>,
                 cam_matrix: [[f32; 4]; 4],
+                cam_pos: [f32; 3],
                 obj_matrix: [[f32; 4]; 4],
                 colour: [f32; 3]
             }
@@ -1178,6 +1180,7 @@ impl Scene {
             impl<'a, 'b> glium::uniforms::Uniforms for TmpUniforms<'a, 'b> {
                 fn visit_values<'c, F: FnMut(&str, glium::uniforms::UniformValue<'c>)>(&'c self, mut f: F) {
                     f("_obj_matrix", glium::uniforms::UniformValue::Mat4(self.obj_matrix));
+                    f("_cam_pos", glium::uniforms::UniformValue::Vec3(self.cam_pos));
                     f("_cam_matrix", glium::uniforms::UniformValue::Mat4(self.cam_matrix));
                     f("_colour", glium::uniforms::UniformValue::Vec3(self.colour));
                     for (name, entry) in self.uniforms {
@@ -1193,6 +1196,7 @@ impl Scene {
                 scene: self,
                 uniforms: &material.uniforms,
                 cam_matrix: cam_matrix,
+                cam_pos: cam_pos,
                 obj_matrix: trans_data.ltw_matrix.get(),
                 colour: colour
             };
