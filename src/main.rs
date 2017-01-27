@@ -376,6 +376,84 @@ impl QuadPos {
     }
 }
 
+fn calc_plane_mapping<T: num::Signed>(src_plane: Plane, dst_plane: Plane) -> ((T, T), (T, T), (T, T)) {
+    use Plane::*;
+    let one = || T::one();
+    let zero = || T::zero();
+    match (src_plane, dst_plane) {
+        (XP, XN) | (XN, XP) | (YP, YN) | (YN, YP) | (ZP, ZN) | (ZN, ZP) => {
+            // N/A as these planes do not neighbour each other on the quad
+            // sphere.
+            panic!("`src_plane` and `dst_plane` do not neighbour each other");
+        }
+        // YP
+        (YP, XP) => ((zero(), one()),  (zero(), -one()), (one(),  zero())),
+        (YP, XN) => ((one(),  zero()), (zero(), one()),  (-one(), zero())),
+        (YP, ZN) => ((one(),  one()),  (-one(), zero()), (zero(), -one())),
+        (XP, YP) => ((one(),  zero()), (zero(), one()),  (-one(), zero())),
+        (XN, YP) => ((zero(), one()),  (zero(), -one()), (one(),  zero())),
+        (ZN, YP) => ((one(),  one()),  (-one(), zero()), (zero(), -one())),
+        // YN
+        (YN, XP) => ((one(),  zero()), (zero(), one()),  (-one(), zero())),
+        (YN, XN) => ((zero(), one()),  (zero(), -one()), (one(),  zero())),
+        (YN, ZN) => ((one(),  one()),  (-one(), zero()), (zero(), -one())),
+        (XP, YN) => ((zero(), one()),  (zero(), -one()), (one(),  zero())),
+        (XN, YN) => ((one(),  zero()), (zero(), one()),  (-one(), zero())),
+        (ZN, YN) => ((one(),  one()),  (-one(), zero()), (zero(), -one())),
+        _ => {
+            ((zero(), zero()), (one(), zero()), (zero(), one()))
+        }
+    }
+}
+
+fn translate_quad_pos(pos: QuadPos, src_plane: Plane, dst_plane: Plane) -> QuadPos {
+    let (x, y) = match pos {
+        QuadPos::UpperLeft => (0, 1),
+        QuadPos::UpperRight => (1, 1),
+        QuadPos::LowerLeft => (0, 0),
+        QuadPos::LowerRight => (1, 0),
+        QuadPos::None => return QuadPos::None, // No other mapping applicable
+    };
+
+    let (origin, dir_x, dir_y) = calc_plane_mapping::<i32>(src_plane, dst_plane);
+    let new_x = origin.0 + dir_x.0 * x + dir_y.0 * y;
+    let new_y = origin.1 + dir_x.1 * x + dir_y.1 * y;
+
+    match (new_x, new_y) {
+        (0, 1) => QuadPos::UpperLeft,
+        (1, 1) => QuadPos::UpperRight,
+        (0, 0) => QuadPos::LowerLeft,
+        (1, 0) => QuadPos::LowerRight,
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn test_quad_pos_translate() {
+    assert_eq!(translate_quad_pos(QuadPos::UpperLeft, Plane::XP, Plane::XP), QuadPos::UpperLeft);
+    assert_eq!(translate_quad_pos(QuadPos::UpperRight, Plane::XP, Plane::XP), QuadPos::UpperRight);
+    assert_eq!(translate_quad_pos(QuadPos::LowerLeft, Plane::XP, Plane::XP), QuadPos::LowerLeft);
+    assert_eq!(translate_quad_pos(QuadPos::LowerRight, Plane::XP, Plane::XP), QuadPos::LowerRight);
+
+    assert_eq!(translate_quad_pos(QuadPos::UpperLeft, Plane::XP, Plane::ZN), QuadPos::UpperLeft);
+    assert_eq!(translate_quad_pos(QuadPos::UpperRight, Plane::XP, Plane::ZN), QuadPos::UpperRight);
+    assert_eq!(translate_quad_pos(QuadPos::LowerLeft, Plane::XP, Plane::ZN), QuadPos::LowerLeft);
+    assert_eq!(translate_quad_pos(QuadPos::LowerRight, Plane::XP, Plane::ZN), QuadPos::LowerRight);
+
+    assert_eq!(translate_quad_pos(QuadPos::UpperLeft, Plane::XP, Plane::YP), QuadPos::LowerLeft);
+    assert_eq!(translate_quad_pos(QuadPos::UpperRight, Plane::XP, Plane::YP), QuadPos::UpperLeft);
+    // lower left
+    assert_eq!(translate_quad_pos(QuadPos::LowerRight, Plane::XP, Plane::YP), QuadPos::UpperRight);
+
+    assert_eq!(translate_quad_pos(QuadPos::LowerLeft, Plane::XP, Plane::YP), QuadPos::LowerRight);
+    assert_eq!(translate_quad_pos(QuadPos::LowerLeft, Plane::ZN, Plane::YP), QuadPos::UpperRight);
+    assert_eq!(translate_quad_pos(QuadPos::LowerLeft, Plane::XN, Plane::YP), QuadPos::UpperLeft);
+
+    assert_eq!(translate_quad_pos(QuadPos::UpperLeft, Plane::XP, Plane::YN), QuadPos::UpperRight);
+    assert_eq!(translate_quad_pos(QuadPos::UpperLeft, Plane::ZN, Plane::YN), QuadPos::LowerRight);
+    assert_eq!(translate_quad_pos(QuadPos::UpperLeft, Plane::XN, Plane::YN), QuadPos::LowerLeft);
+}
+
 #[derive(Clone, Copy)]
 struct VertCoord(Plane, u32, u32);
 
@@ -492,13 +570,15 @@ impl Quad {
             QuadPos::UpperLeft => {
                 let north = self.north.as_ref().unwrap().upgrade().unwrap();
                 let north_borrow = north.borrow();
-                north_borrow.get_child(QuadPos::LowerLeft)
+                let pos = translate_quad_pos(QuadPos::LowerLeft, self.plane, north_borrow.plane);
+                north_borrow.get_child(pos)
                     .map(Rc::downgrade)
             },
             QuadPos::UpperRight => {
                 let north = self.north.as_ref().unwrap().upgrade().unwrap();
                 let north_borrow = north.borrow();
-                north_borrow.get_child(QuadPos::LowerRight)
+                let pos = translate_quad_pos(QuadPos::LowerRight, self.plane, north_borrow.plane);
+                north_borrow.get_child(pos)
                     .map(Rc::downgrade)
             },
             QuadPos::None => self.north.clone(),
@@ -511,13 +591,15 @@ impl Quad {
             QuadPos::LowerLeft => {
                 let south = self.south.as_ref().unwrap().upgrade().unwrap();
                 let south_borrow = south.borrow();
-                south_borrow.get_child(QuadPos::UpperLeft)
+                let pos = translate_quad_pos(QuadPos::UpperLeft, self.plane, south_borrow.plane);
+                south_borrow.get_child(pos)
                     .map(Rc::downgrade)
             },
             QuadPos::LowerRight => {
                 let south = self.south.as_ref().unwrap().upgrade().unwrap();
                 let south_borrow = south.borrow();
-                south_borrow.get_child(QuadPos::UpperRight)
+                let pos = translate_quad_pos(QuadPos::UpperRight, self.plane, south_borrow.plane);
+                south_borrow.get_child(pos)
                     .map(Rc::downgrade)
             },
             QuadPos::None => self.south.clone(),
@@ -530,13 +612,15 @@ impl Quad {
             QuadPos::UpperRight => {
                 let east = self.east.as_ref().unwrap().upgrade().unwrap();
                 let east_borrow = east.borrow();
-                east_borrow.get_child(QuadPos::UpperLeft)
+                let pos = translate_quad_pos(QuadPos::UpperLeft, self.plane, east_borrow.plane);
+                east_borrow.get_child(pos)
                     .map(Rc::downgrade)
             },
             QuadPos::LowerRight => {
                 let east = self.east.as_ref().unwrap().upgrade().unwrap();
                 let east_borrow = east.borrow();
-                east_borrow.get_child(QuadPos::LowerLeft)
+                let pos = translate_quad_pos(QuadPos::LowerLeft, self.plane, east_borrow.plane);
+                east_borrow.get_child(pos)
                     .map(Rc::downgrade)
             },
             QuadPos::None => self.east.clone(),
@@ -549,13 +633,15 @@ impl Quad {
             QuadPos::UpperLeft => {
                 let west = self.west.as_ref().unwrap().upgrade().unwrap();
                 let west_borrow = west.borrow();
-                west_borrow.get_child(QuadPos::UpperRight)
+                let pos = translate_quad_pos(QuadPos::UpperRight, self.plane, west_borrow.plane);
+                west_borrow.get_child(pos)
                     .map(Rc::downgrade)
             },
             QuadPos::LowerLeft => {
                 let west = self.west.as_ref().unwrap().upgrade().unwrap();
                 let west_borrow = west.borrow();
-                west_borrow.get_child(QuadPos::LowerRight)
+                let pos = translate_quad_pos(QuadPos::LowerRight, self.plane, west_borrow.plane);
+                west_borrow.get_child(pos)
                     .map(Rc::downgrade)
             },
             QuadPos::None => self.west.clone(),
