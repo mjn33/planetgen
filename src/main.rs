@@ -78,6 +78,17 @@ bitflags! {
     }
 }
 
+impl From<QuadSide> for PatchSide {
+    fn from(side: QuadSide) -> Self {
+        match side {
+            QuadSide::North => PATCH_SIDE_TOP,
+            QuadSide::South => PATCH_SIDE_BOTTOM,
+            QuadSide::East => PATCH_SIDE_RIGHT,
+            QuadSide::West => PATCH_SIDE_LEFT,
+        }
+    }
+}
+
 /// Generate the indices for a quad of the given size and the specified
 /// edges "patched".
 fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
@@ -364,6 +375,14 @@ enum QuadPos {
     LowerRight,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QuadSide {
+    North,
+    South,
+    East,
+    West,
+}
+
 impl QuadPos {
     fn to_idx(&self) -> usize {
         match *self {
@@ -428,6 +447,24 @@ fn translate_quad_pos(pos: QuadPos, src_plane: Plane, dst_plane: Plane) -> QuadP
     }
 }
 
+fn translate_quad_side(side: QuadSide, src_plane: Plane, dst_plane: Plane) -> QuadSide {
+    let (_, dir_x, dir_y) = calc_plane_mapping::<i32>(src_plane, dst_plane);
+    let dir = match side {
+        QuadSide::North => (dir_y.0, dir_y.1),
+        QuadSide::South => (-dir_y.0, -dir_y.1),
+        QuadSide::East => (dir_x.0, dir_x.1),
+        QuadSide::West => (-dir_x.0, -dir_x.1),
+    };
+
+    match dir {
+        (0, 1) => QuadSide::North,
+        (0, -1) => QuadSide::South,
+        (1, 0) => QuadSide::East,
+        (-1, 0) => QuadSide::West,
+        _ => unreachable!(),
+    }
+}
+
 #[test]
 fn test_quad_pos_translate() {
     assert_eq!(translate_quad_pos(QuadPos::UpperLeft, Plane::XP, Plane::XP), QuadPos::UpperLeft);
@@ -452,6 +489,14 @@ fn test_quad_pos_translate() {
     assert_eq!(translate_quad_pos(QuadPos::UpperLeft, Plane::XP, Plane::YN), QuadPos::UpperRight);
     assert_eq!(translate_quad_pos(QuadPos::UpperLeft, Plane::ZN, Plane::YN), QuadPos::LowerRight);
     assert_eq!(translate_quad_pos(QuadPos::UpperLeft, Plane::XN, Plane::YN), QuadPos::LowerLeft);
+}
+
+#[test]
+fn test_quad_side_translate() {
+    assert_eq!(translate_quad_side(QuadSide::North, Plane::YP, Plane::ZP), QuadSide::North);
+    assert_eq!(translate_quad_side(QuadSide::West, Plane::YP, Plane::XP), QuadSide::North);
+    assert_eq!(translate_quad_side(QuadSide::South, Plane::YP, Plane::ZN), QuadSide::North);
+    assert_eq!(translate_quad_side(QuadSide::East, Plane::YP, Plane::XN), QuadSide::North);
 }
 
 #[derive(Clone, Copy)]
@@ -814,49 +859,61 @@ impl Quad {
 
         if north_subdivided {
             let north_borrow = direct_north.borrow();
-            let q1 = north_borrow.get_child(QuadPos::LowerLeft).unwrap();
-            let q2 = north_borrow.get_child(QuadPos::LowerRight).unwrap();
+            let pos1 = translate_quad_pos(QuadPos::LowerLeft, self.plane, north_borrow.plane);
+            let pos2 = translate_quad_pos(QuadPos::LowerRight, self.plane, north_borrow.plane);
+            let q1 = north_borrow.get_child(pos1).unwrap();
+            let q2 = north_borrow.get_child(pos2).unwrap();
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            q1_borrow.patch_flags &= !PATCH_SIDE_BOTTOM;
+            let flags = PatchSide::from(translate_quad_side(QuadSide::South, self.plane, north_borrow.plane));
+            q1_borrow.patch_flags &= !flags;
             q1_borrow.patching_dirty = true;
-            q2_borrow.patch_flags &= !PATCH_SIDE_BOTTOM;
+            q2_borrow.patch_flags &= !flags;
             q2_borrow.patching_dirty = true;
         }
 
         if south_subdivided {
             let south_borrow = direct_south.borrow();
-            let q1 = south_borrow.get_child(QuadPos::UpperLeft).unwrap();
-            let q2 = south_borrow.get_child(QuadPos::UpperRight).unwrap();
+            let pos1 = translate_quad_pos(QuadPos::UpperLeft, self.plane, south_borrow.plane);
+            let pos2 = translate_quad_pos(QuadPos::UpperRight, self.plane, south_borrow.plane);
+            let q1 = south_borrow.get_child(pos1).unwrap();
+            let q2 = south_borrow.get_child(pos2).unwrap();
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            q1_borrow.patch_flags &= !PATCH_SIDE_TOP;
+            let flags = PatchSide::from(translate_quad_side(QuadSide::North, self.plane, south_borrow.plane));
+            q1_borrow.patch_flags &= !flags;
             q1_borrow.patching_dirty = true;
-            q2_borrow.patch_flags &= !PATCH_SIDE_TOP;
+            q2_borrow.patch_flags &= !flags;
             q2_borrow.patching_dirty = true;
         }
 
         if east_subdivided {
             let east_borrow = direct_east.borrow();
-            let q1 = east_borrow.get_child(QuadPos::UpperLeft).unwrap();
-            let q2 = east_borrow.get_child(QuadPos::LowerLeft).unwrap();
+            let pos1 = translate_quad_pos(QuadPos::UpperLeft, self.plane, east_borrow.plane);
+            let pos2 = translate_quad_pos(QuadPos::LowerLeft, self.plane, east_borrow.plane);
+            let q1 = east_borrow.get_child(pos1).unwrap();
+            let q2 = east_borrow.get_child(pos2).unwrap();
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            q1_borrow.patch_flags &= !PATCH_SIDE_LEFT;
+            let flags = PatchSide::from(translate_quad_side(QuadSide::West, self.plane, east_borrow.plane));
+            q1_borrow.patch_flags &= !flags;
             q1_borrow.patching_dirty = true;
-            q2_borrow.patch_flags &= !PATCH_SIDE_LEFT;
+            q2_borrow.patch_flags &= !flags;
             q2_borrow.patching_dirty = true;
         }
 
         if west_subdivided {
             let west_borrow = direct_west.borrow();
-            let q1 = west_borrow.get_child(QuadPos::UpperRight).unwrap();
-            let q2 = west_borrow.get_child(QuadPos::LowerRight).unwrap();
+            let pos1 = translate_quad_pos(QuadPos::UpperRight, self.plane, west_borrow.plane);
+            let pos2 = translate_quad_pos(QuadPos::LowerRight, self.plane, west_borrow.plane);
+            let q1 = west_borrow.get_child(pos1).unwrap();
+            let q2 = west_borrow.get_child(pos2).unwrap();
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            q1_borrow.patch_flags &= !PATCH_SIDE_RIGHT;
+            let flags = PatchSide::from(translate_quad_side(QuadSide::East, self.plane, west_borrow.plane));
+            q1_borrow.patch_flags &= !flags;
             q1_borrow.patching_dirty = true;
-            q2_borrow.patch_flags &= !PATCH_SIDE_RIGHT;
+            q2_borrow.patch_flags &= !flags;
             q2_borrow.patching_dirty = true;
         }
 
@@ -914,49 +971,61 @@ impl Quad {
 
         if north_subdivided {
             let north_borrow = direct_north.borrow();
-            let q1 = north_borrow.get_child(QuadPos::LowerLeft).unwrap();
-            let q2 = north_borrow.get_child(QuadPos::LowerRight).unwrap();
+            let pos1 = translate_quad_pos(QuadPos::LowerLeft, self.plane, north_borrow.plane);
+            let pos2 = translate_quad_pos(QuadPos::LowerRight, self.plane, north_borrow.plane);
+            let q1 = north_borrow.get_child(pos1).unwrap();
+            let q2 = north_borrow.get_child(pos2).unwrap();
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            q1_borrow.patch_flags |= PATCH_SIDE_BOTTOM;
+            let flags = PatchSide::from(translate_quad_side(QuadSide::South, self.plane, north_borrow.plane));
+            q1_borrow.patch_flags |= flags;
             q1_borrow.patching_dirty = true;
-            q2_borrow.patch_flags |= PATCH_SIDE_BOTTOM;
+            q2_borrow.patch_flags |= flags;
             q2_borrow.patching_dirty = true;
         }
 
         if south_subdivided {
             let south_borrow = direct_south.borrow();
-            let q1 = south_borrow.get_child(QuadPos::UpperLeft).unwrap();
-            let q2 = south_borrow.get_child(QuadPos::UpperRight).unwrap();
+            let pos1 = translate_quad_pos(QuadPos::UpperLeft, self.plane, south_borrow.plane);
+            let pos2 = translate_quad_pos(QuadPos::UpperRight, self.plane, south_borrow.plane);
+            let q1 = south_borrow.get_child(pos1).unwrap();
+            let q2 = south_borrow.get_child(pos2).unwrap();
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            q1_borrow.patch_flags |= PATCH_SIDE_TOP;
+            let flags = PatchSide::from(translate_quad_side(QuadSide::North, self.plane, south_borrow.plane));
+            q1_borrow.patch_flags |= flags;
             q1_borrow.patching_dirty = true;
-            q2_borrow.patch_flags |= PATCH_SIDE_TOP;
+            q2_borrow.patch_flags |= flags;
             q2_borrow.patching_dirty = true;
         }
 
         if east_subdivided {
             let east_borrow = direct_east.borrow();
-            let q1 = east_borrow.get_child(QuadPos::UpperLeft).unwrap();
-            let q2 = east_borrow.get_child(QuadPos::LowerLeft).unwrap();
+            let pos1 = translate_quad_pos(QuadPos::UpperLeft, self.plane, east_borrow.plane);
+            let pos2 = translate_quad_pos(QuadPos::LowerLeft, self.plane, east_borrow.plane);
+            let q1 = east_borrow.get_child(pos1).unwrap();
+            let q2 = east_borrow.get_child(pos2).unwrap();
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            q1_borrow.patch_flags |= PATCH_SIDE_LEFT;
+            let flags = PatchSide::from(translate_quad_side(QuadSide::West, self.plane, east_borrow.plane));
+            q1_borrow.patch_flags |= flags;
             q1_borrow.patching_dirty = true;
-            q2_borrow.patch_flags |= PATCH_SIDE_LEFT;
+            q2_borrow.patch_flags |= flags;
             q2_borrow.patching_dirty = true;
         }
 
         if west_subdivided {
             let west_borrow = direct_west.borrow();
-            let q1 = west_borrow.get_child(QuadPos::UpperRight).unwrap();
-            let q2 = west_borrow.get_child(QuadPos::LowerRight).unwrap();
+            let pos1 = translate_quad_pos(QuadPos::UpperRight, self.plane, west_borrow.plane);
+            let pos2 = translate_quad_pos(QuadPos::LowerRight, self.plane, west_borrow.plane);
+            let q1 = west_borrow.get_child(pos1).unwrap();
+            let q2 = west_borrow.get_child(pos2).unwrap();
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            q1_borrow.patch_flags |= PATCH_SIDE_RIGHT;
+            let flags = PatchSide::from(translate_quad_side(QuadSide::East, self.plane, west_borrow.plane));
+            q1_borrow.patch_flags |= flags;
             q1_borrow.patching_dirty = true;
-            q2_borrow.patch_flags |= PATCH_SIDE_RIGHT;
+            q2_borrow.patch_flags |= flags;
             q2_borrow.patching_dirty = true;
         }
 
