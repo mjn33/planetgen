@@ -1339,7 +1339,7 @@ impl BehaviourMessages for QuadSphere {
             camera: None,
             prev_instant: std::time::Instant::now(),
             old_rot: Quaternion::one(),
-            ninety_deg: Quaternion::from(Euler { x: Deg(0.0), y: Deg(45.0), z: Deg(0.0) }),
+            ninety_deg: Quaternion::from(Euler { x: Deg(45.0), y: Deg(0.0), z: Deg(0.0) }),
             quad_mesh_size: 0,
             max_subdivision: 0,
             max_coord: 0,
@@ -1359,14 +1359,14 @@ impl BehaviourMessages for QuadSphere {
         self.prev_instant = std::time::Instant::now();
         let secs = diff.as_secs() as f32 + diff.subsec_nanos() as f32 / 1000000000.0;
 
-        let dps = 20.0;
+        let dps = 5.0;
         let change_rot = Quaternion::one().nlerp(self.ninety_deg, (dps / 45.0) * secs);
 
         // TODO: reduce cloning
         let rot = self.old_rot * change_rot;
         self.old_rot = rot;
 
-        self.centre_pos = (rot.invert() * (-Vector3::unit_z())).normalize();
+        self.centre_pos = (rot.invert() * (Vector3::unit_z())).normalize();
         for i in 0..6 {
             let q = self.faces.as_ref().unwrap()[i].clone();
             q.borrow_mut().check_subdivision(self, scene);
@@ -1376,12 +1376,8 @@ impl BehaviourMessages for QuadSphere {
             q.borrow_mut().check_patching(self, scene);
         }
 
-        let cam_pos = 2.5f32 * self.centre_pos;
-
-        // Transform the centre_pos since in our world: forward = (0, 0, -1)
-        let tmp_centre_pos = Vector3::new(self.centre_pos.x, self.centre_pos.y, -self.centre_pos.z);
-
-        let cam_rot = Quaternion::look_at(-tmp_centre_pos, Vector3::unit_y());
+        let cam_pos = 1.5f32 * self.centre_pos;
+        let cam_rot = Quaternion::look_at(self.centre_pos, Vector3::unit_x()).invert();
 
         let camera = self.camera.as_ref().unwrap();
         camera.set_pos(scene, cam_pos).unwrap();
