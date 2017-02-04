@@ -489,6 +489,8 @@ fn test_quad_pos_translate() {
     assert_eq!(translate_quad_pos(QuadPos::UpperLeft, Plane::XP, Plane::YN), QuadPos::UpperRight);
     assert_eq!(translate_quad_pos(QuadPos::UpperLeft, Plane::ZN, Plane::YN), QuadPos::LowerRight);
     assert_eq!(translate_quad_pos(QuadPos::UpperLeft, Plane::XN, Plane::YN), QuadPos::LowerLeft);
+
+    assert_eq!(translate_quad_pos(QuadPos::LowerRight, Plane::ZN, Plane::YP), QuadPos::UpperLeft);
 }
 
 #[test]
