@@ -12,7 +12,7 @@ use cgmath::{Deg, Euler, InnerSpace, Rotation, Quaternion, Vector3};
 
 use glium::DisplayBuild;
 
-use num::One;
+use num::{Zero, One};
 
 use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, Scene, Shader, Vertex};
 
@@ -320,35 +320,6 @@ fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
     indices
 }
 
-fn calc_normals(verts: &[Vector3<f32>], indices: &[u16], normals: &mut [Vector3<f32>]) {
-    for n in normals.iter_mut() {
-        *n = Vector3::new(0.0, 0.0, 0.0);
-    }
-
-    let mut i = 0;
-    while i < indices.len() {
-        //let i = post_add(i, 3);
-        let i = {
-            let tmp = i;
-            i += 3;
-            tmp
-        };
-        let v1 = verts[indices[i] as usize];
-        let v2 = verts[indices[i + 1] as usize];
-        let v3 = verts[indices[i + 2] as usize];
-        let a = v2 - v1;
-        let b = v3 - v1;
-        let surf_normal = a.cross(b);
-        normals[indices[i] as usize] += surf_normal;
-        normals[indices[i + 1] as usize] += surf_normal;
-        normals[indices[i + 2] as usize] += surf_normal;
-    }
-
-    for n in normals.iter_mut() {
-        *n = n.normalize();
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Plane {
     /// +x
@@ -516,6 +487,9 @@ struct Quad {
     mid_coord_pos: Vector3<f32>,
     patching_dirty: bool,
     patch_flags: PatchSide,
+
+    non_normalized: Vec<Vector3<f32>>,
+
     children: Option<[Rc<RefCell<Quad>>; 4]>,
     north: Option<Weak<RefCell<Quad>>>,
     south: Option<Weak<RefCell<Quad>>>,
@@ -543,16 +517,14 @@ impl Quad {
             }
         }
 
-        use cgmath::Zero;
-        let mut normals = vec![Vector3::zero(); vertices.len() as usize];
-        calc_normals(&vertices, &indices, &mut normals);
+        self.non_normalized.resize(vertices.len(), Vector3::zero());
 
         // Base the mesh indices from `PATCH_SIDE_NONE` since that generates the
         // largest buffer size.
         let mesh = scene.create_mesh(vertices.len(), indices.len());
         *mesh.vpos_mut(scene).unwrap() = vertices;
-        *mesh.vnorm_mut(scene).unwrap() = normals;
         *mesh.indices_mut(scene).unwrap() = indices;
+
         let shader = scene.create_shader(
             include_str!("default_vs.glsl"),
             include_str!("default_fs.glsl"),
@@ -563,6 +535,8 @@ impl Quad {
         self.shader = Some(shader);
         self.material = Some(material);
 
+        self.calc_normals(scene);
+
         self.mid_coord_pos = self.mid_coord_pos(sphere);
 
         self.patch_flags = PATCH_SIDE_NONE;
@@ -571,6 +545,41 @@ impl Quad {
         let self_object = self.behaviour.object(scene).unwrap().clone();
         let sphere_object = sphere.behaviour().object(scene).unwrap().clone();
         scene.set_object_parent(&self_object, Some(&sphere_object));
+    }
+
+    fn calc_normals(&mut self, scene: &mut Scene) {
+        {
+            let verts = self.mesh.as_ref().unwrap().vpos(scene).unwrap();
+            let indices = self.mesh.as_ref().unwrap().indices(scene).unwrap();
+
+            for n in self.non_normalized.iter_mut() {
+                *n = Vector3::new(0.0, 0.0, 0.0);
+            }
+
+            let mut i = 0;
+            while i < indices.len() {
+                let i = {
+                    let tmp = i;
+                    i += 3;
+                    tmp
+                };
+                let v1 = verts[indices[i] as usize];
+                let v2 = verts[indices[i + 1] as usize];
+                let v3 = verts[indices[i + 2] as usize];
+                let a = v2 - v1;
+                let b = v3 - v1;
+                let surf_normal = a.cross(b);
+                self.non_normalized[indices[i] as usize] += surf_normal;
+                self.non_normalized[indices[i + 1] as usize] += surf_normal;
+                self.non_normalized[indices[i + 2] as usize] += surf_normal;
+            }
+        }
+
+        let normals = self.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap();
+        normals.clear();
+        for n in &self.non_normalized {
+            normals.push(n.normalize());
+        }
     }
 
     /// Calculates the coordinates of the middle of this quad.
@@ -1100,6 +1109,9 @@ impl BehaviourMessages for Quad {
             mid_coord_pos: Vector3::new(0.0, 0.0, 0.0),
             patching_dirty: false,
             patch_flags: PATCH_SIDE_NONE,
+
+            non_normalized: Vec::new(),
+
             children: None,
             north: None,
             south: None,
