@@ -490,6 +490,8 @@ struct Quad {
 
     non_normalized: Vec<Vector3<f32>>,
 
+    /// Pointer to this quad
+    self_ptr: Option<Weak<RefCell<Quad>>>,
     children: Option<[Rc<RefCell<Quad>>; 4]>,
     north: Option<Weak<RefCell<Quad>>>,
     south: Option<Weak<RefCell<Quad>>>,
@@ -807,9 +809,11 @@ impl Quad {
         let direct_west = self.direct_west();
 
         {
+            let self_ptr = Rc::downgrade(&upper_left);
             let mut upper_left = upper_left.borrow_mut();
             upper_left.plane = self.plane;
             upper_left.pos = QuadPos::UpperLeft;
+            upper_left.self_ptr = Some(self_ptr);
             upper_left.north = direct_north.clone();
             upper_left.east = Some(Rc::downgrade(&upper_right));
             upper_left.south = Some(Rc::downgrade(&lower_left));
@@ -820,9 +824,11 @@ impl Quad {
         }
 
         {
+            let self_ptr = Rc::downgrade(&upper_right);
             let mut upper_right = upper_right.borrow_mut();
             upper_right.plane = self.plane;
             upper_right.pos = QuadPos::UpperRight;
+            upper_right.self_ptr = Some(self_ptr);
             upper_right.north = direct_north.clone();
             upper_right.east = direct_east.clone();
             upper_right.south = Some(Rc::downgrade(&lower_right));
@@ -833,9 +839,11 @@ impl Quad {
         }
 
         {
+            let self_ptr = Rc::downgrade(&lower_left);
             let mut lower_left = lower_left.borrow_mut();
             lower_left.plane = self.plane;
             lower_left.pos = QuadPos::LowerLeft;
+            lower_left.self_ptr = Some(self_ptr);
             lower_left.north = Some(Rc::downgrade(&upper_left));
             lower_left.east = Some(Rc::downgrade(&lower_right));
             lower_left.south = direct_south.clone();
@@ -846,9 +854,11 @@ impl Quad {
         }
 
         {
+            let self_ptr = Rc::downgrade(&lower_right);
             let mut lower_right = lower_right.borrow_mut();
             lower_right.plane = self.plane;
             lower_right.pos = QuadPos::LowerRight;
+            lower_right.self_ptr = Some(self_ptr);
             lower_right.north = Some(Rc::downgrade(&upper_right));
             lower_right.east = direct_east.clone();
             lower_right.south = direct_south.clone();
@@ -1112,6 +1122,7 @@ impl BehaviourMessages for Quad {
 
             non_normalized: Vec::new(),
 
+            self_ptr: None,
             children: None,
             north: None,
             south: None,
@@ -1194,9 +1205,11 @@ impl QuadSphere {
         let zn_quad = scene.add_behaviour::<Quad>(&zn_quad_obj).unwrap();
 
         {
+            let self_ptr = Rc::downgrade(&xp_quad);
             let mut xp_quad = xp_quad.borrow_mut();
             xp_quad.plane = Plane::XP;
             xp_quad.pos = QuadPos::None;
+            xp_quad.self_ptr = Some(self_ptr);
             xp_quad.north = Some(Rc::downgrade(&yp_quad));
             xp_quad.south = Some(Rc::downgrade(&yn_quad));
             xp_quad.east = Some(Rc::downgrade(&zn_quad));
@@ -1207,9 +1220,11 @@ impl QuadSphere {
         }
 
         {
+            let self_ptr = Rc::downgrade(&xn_quad);
             let mut xn_quad = xn_quad.borrow_mut();
             xn_quad.plane = Plane::XN;
             xn_quad.pos = QuadPos::None;
+            xn_quad.self_ptr = Some(self_ptr);
             xn_quad.north = Some(Rc::downgrade(&yp_quad));
             xn_quad.south = Some(Rc::downgrade(&yn_quad));
             xn_quad.east = Some(Rc::downgrade(&zp_quad));
@@ -1220,9 +1235,11 @@ impl QuadSphere {
         }
 
         {
+            let self_ptr = Rc::downgrade(&yp_quad);
             let mut yp_quad = yp_quad.borrow_mut();
             yp_quad.plane = Plane::YP;
             yp_quad.pos = QuadPos::None;
+            yp_quad.self_ptr = Some(self_ptr);
             yp_quad.north = Some(Rc::downgrade(&zn_quad));
             yp_quad.south = Some(Rc::downgrade(&zp_quad));
             yp_quad.east = Some(Rc::downgrade(&xp_quad));
@@ -1233,9 +1250,11 @@ impl QuadSphere {
         }
 
         {
+            let self_ptr = Rc::downgrade(&yn_quad);
             let mut yn_quad = yn_quad.borrow_mut();
             yn_quad.plane = Plane::YN;
             yn_quad.pos = QuadPos::None;
+            yn_quad.self_ptr = Some(self_ptr);
             yn_quad.north = Some(Rc::downgrade(&zp_quad));
             yn_quad.south = Some(Rc::downgrade(&zn_quad));
             yn_quad.east = Some(Rc::downgrade(&xp_quad));
@@ -1246,9 +1265,11 @@ impl QuadSphere {
         }
 
         {
+            let self_ptr = Rc::downgrade(&zp_quad);
             let mut zp_quad = zp_quad.borrow_mut();
             zp_quad.plane = Plane::ZP;
             zp_quad.pos = QuadPos::None;
+            zp_quad.self_ptr = Some(self_ptr);
             zp_quad.north = Some(Rc::downgrade(&yp_quad));
             zp_quad.south = Some(Rc::downgrade(&yn_quad));
             zp_quad.east = Some(Rc::downgrade(&xp_quad));
@@ -1259,9 +1280,11 @@ impl QuadSphere {
         }
 
         {
+            let self_ptr = Rc::downgrade(&zn_quad);
             let mut zn_quad = zn_quad.borrow_mut();
             zn_quad.plane = Plane::ZN;
             zn_quad.pos = QuadPos::None;
+            zn_quad.self_ptr = Some(self_ptr);
             zn_quad.north = Some(Rc::downgrade(&yp_quad));
             zn_quad.south = Some(Rc::downgrade(&yn_quad));
             zn_quad.east = Some(Rc::downgrade(&xn_quad));
