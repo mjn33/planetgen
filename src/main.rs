@@ -485,10 +485,15 @@ struct Quad {
     base_coord: (u32, u32),
     cur_subdivision: u32,
     mid_coord_pos: Vector3<f32>,
-    patching_dirty: bool,
     patch_flags: PatchSide,
 
     non_normalized: Vec<Vector3<f32>>,
+
+    /// True if this quad needs the `non_normalized` normals to be recomputed.
+    needs_normal_update: bool,
+    /// True if this quad needs to have quad normals to be merge with
+    /// neighbouring quads.
+    needs_normal_merge: bool,
 
     /// Pointer to this quad
     self_ptr: Option<Weak<RefCell<Quad>>>,
@@ -813,6 +818,8 @@ impl Quad {
             let mut upper_left = upper_left.borrow_mut();
             upper_left.plane = self.plane;
             upper_left.pos = QuadPos::UpperLeft;
+            upper_left.needs_normal_update = true;
+            upper_left.needs_normal_merge = true;
             upper_left.self_ptr = Some(self_ptr);
             upper_left.north = direct_north.clone();
             upper_left.east = Some(Rc::downgrade(&upper_right));
@@ -822,12 +829,15 @@ impl Quad {
             upper_left.base_coord = (self.base_coord.0, self.base_coord.1 + half_quad_length);
             upper_left.init(sphere, scene);
         }
+        sphere.queue_normal_update(upper_left.clone());
 
         {
             let self_ptr = Rc::downgrade(&upper_right);
             let mut upper_right = upper_right.borrow_mut();
             upper_right.plane = self.plane;
             upper_right.pos = QuadPos::UpperRight;
+            upper_right.needs_normal_update = true;
+            upper_right.needs_normal_merge = true;
             upper_right.self_ptr = Some(self_ptr);
             upper_right.north = direct_north.clone();
             upper_right.east = direct_east.clone();
@@ -837,12 +847,15 @@ impl Quad {
             upper_right.base_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1 + half_quad_length);
             upper_right.init(sphere, scene);
         }
+        sphere.queue_normal_update(upper_right.clone());
 
         {
             let self_ptr = Rc::downgrade(&lower_left);
             let mut lower_left = lower_left.borrow_mut();
             lower_left.plane = self.plane;
             lower_left.pos = QuadPos::LowerLeft;
+            lower_left.needs_normal_update = true;
+            lower_left.needs_normal_merge = true;
             lower_left.self_ptr = Some(self_ptr);
             lower_left.north = Some(Rc::downgrade(&upper_left));
             lower_left.east = Some(Rc::downgrade(&lower_right));
@@ -852,12 +865,15 @@ impl Quad {
             lower_left.base_coord = (self.base_coord.0, self.base_coord.1);
             lower_left.init(sphere, scene);
         }
+        sphere.queue_normal_update(lower_left.clone());
 
         {
             let self_ptr = Rc::downgrade(&lower_right);
             let mut lower_right = lower_right.borrow_mut();
             lower_right.plane = self.plane;
             lower_right.pos = QuadPos::LowerRight;
+            lower_right.needs_normal_update = true;
+            lower_right.needs_normal_merge = true;
             lower_right.self_ptr = Some(self_ptr);
             lower_right.north = Some(Rc::downgrade(&upper_right));
             lower_right.east = direct_east.clone();
@@ -867,6 +883,7 @@ impl Quad {
             lower_right.base_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1);
             lower_right.init(sphere, scene);
         }
+        sphere.queue_normal_update(lower_right.clone());
 
         let direct_north = direct_north.unwrap().upgrade().unwrap();
         let direct_south = direct_south.unwrap().upgrade().unwrap();
@@ -888,9 +905,19 @@ impl Quad {
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::South, self.plane, north_borrow.plane));
             q1_borrow.patch_flags &= !flags;
-            q1_borrow.patching_dirty = true;
+            q1_borrow.needs_normal_update = true;
+            q1_borrow.needs_normal_merge = true;
             q2_borrow.patch_flags &= !flags;
-            q2_borrow.patching_dirty = true;
+            q2_borrow.needs_normal_update = true;
+            q2_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(q1.clone());
+            sphere.queue_normal_update(q2.clone());
+        } else {
+            let mut north_borrow = direct_north.borrow_mut();
+            // TODO: would this be strictly necessary if `merge_normals` updates
+            // both quads?
+            north_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(direct_north.clone());
         }
 
         if south_subdivided {
@@ -903,9 +930,19 @@ impl Quad {
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::North, self.plane, south_borrow.plane));
             q1_borrow.patch_flags &= !flags;
-            q1_borrow.patching_dirty = true;
+            q1_borrow.needs_normal_update = true;
+            q1_borrow.needs_normal_merge = true;
             q2_borrow.patch_flags &= !flags;
-            q2_borrow.patching_dirty = true;
+            q2_borrow.needs_normal_update = true;
+            q2_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(q1.clone());
+            sphere.queue_normal_update(q2.clone());
+        } else {
+            let mut south_borrow = direct_south.borrow_mut();
+            // TODO: would this be strictly necessary if `merge_normals` updates
+            // both quads?
+            south_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(direct_south.clone());
         }
 
         if east_subdivided {
@@ -918,9 +955,19 @@ impl Quad {
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::West, self.plane, east_borrow.plane));
             q1_borrow.patch_flags &= !flags;
-            q1_borrow.patching_dirty = true;
+            q1_borrow.needs_normal_update = true;
+            q1_borrow.needs_normal_merge = true;
             q2_borrow.patch_flags &= !flags;
-            q2_borrow.patching_dirty = true;
+            q2_borrow.needs_normal_update = true;
+            q2_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(q1.clone());
+            sphere.queue_normal_update(q2.clone());
+        } else {
+            let mut east_borrow = direct_east.borrow_mut();
+            // TODO: would this be strictly necessary if `merge_normals` updates
+            // both quads?
+            east_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(direct_east.clone());
         }
 
         if west_subdivided {
@@ -933,9 +980,19 @@ impl Quad {
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::East, self.plane, west_borrow.plane));
             q1_borrow.patch_flags &= !flags;
-            q1_borrow.patching_dirty = true;
+            q1_borrow.needs_normal_update = true;
+            q1_borrow.needs_normal_merge = true;
             q2_borrow.patch_flags &= !flags;
-            q2_borrow.patching_dirty = true;
+            q2_borrow.needs_normal_update = true;
+            q2_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(q1.clone());
+            sphere.queue_normal_update(q2.clone());
+        } else {
+            let mut west_borrow = direct_west.borrow_mut();
+            // TODO: would this be strictly necessary if `merge_normals` updates
+            // both quads?
+            west_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(direct_west.clone());
         }
 
         {
@@ -963,17 +1020,15 @@ impl Quad {
                 upper_left.patch_flags |= PATCH_SIDE_LEFT;
                 lower_left.patch_flags |= PATCH_SIDE_LEFT;
             }
-
-            upper_left.patching_dirty = true;
-            upper_right.patching_dirty = true;
-            lower_left.patching_dirty = true;
-            lower_right.patching_dirty = true;
         }
+
+        self.needs_normal_update = false;
+        self.needs_normal_merge = false;
 
         self.children = Some([upper_left, upper_right, lower_left, lower_right]);
     }
 
-    fn collapse(&mut self, scene: &mut Scene) {
+    fn collapse(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
         for q in self.children.as_ref().unwrap() {
             // TODO: reduce cloning
             let q_obj = q.borrow().behaviour().object(scene).unwrap().clone();
@@ -1000,9 +1055,19 @@ impl Quad {
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::South, self.plane, north_borrow.plane));
             q1_borrow.patch_flags |= flags;
-            q1_borrow.patching_dirty = true;
+            q1_borrow.needs_normal_update = true;
+            q1_borrow.needs_normal_merge = true;
             q2_borrow.patch_flags |= flags;
-            q2_borrow.patching_dirty = true;
+            q2_borrow.needs_normal_update = true;
+            q2_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(q1.clone());
+            sphere.queue_normal_update(q2.clone());
+        } else {
+            let mut north_borrow = direct_north.borrow_mut();
+            // TODO: would this be strictly necessary if `merge_normals` updates
+            // both quads?
+            north_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(direct_north.clone());
         }
 
         if south_subdivided {
@@ -1015,9 +1080,19 @@ impl Quad {
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::North, self.plane, south_borrow.plane));
             q1_borrow.patch_flags |= flags;
-            q1_borrow.patching_dirty = true;
+            q1_borrow.needs_normal_update = true;
+            q1_borrow.needs_normal_merge = true;
             q2_borrow.patch_flags |= flags;
-            q2_borrow.patching_dirty = true;
+            q2_borrow.needs_normal_update = true;
+            q2_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(q1.clone());
+            sphere.queue_normal_update(q2.clone());
+        } else {
+            let mut south_borrow = direct_south.borrow_mut();
+            // TODO: would this be strictly necessary if `merge_normals` updates
+            // both quads?
+            south_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(direct_south.clone());
         }
 
         if east_subdivided {
@@ -1030,9 +1105,19 @@ impl Quad {
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::West, self.plane, east_borrow.plane));
             q1_borrow.patch_flags |= flags;
-            q1_borrow.patching_dirty = true;
+            q1_borrow.needs_normal_update = true;
+            q1_borrow.needs_normal_merge = true;
             q2_borrow.patch_flags |= flags;
-            q2_borrow.patching_dirty = true;
+            q2_borrow.needs_normal_update = true;
+            q2_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(q1.clone());
+            sphere.queue_normal_update(q2.clone());
+        } else {
+            let mut east_borrow = direct_east.borrow_mut();
+            // TODO: would this be strictly necessary if `merge_normals` updates
+            // both quads?
+            east_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(direct_east.clone());
         }
 
         if west_subdivided {
@@ -1045,34 +1130,33 @@ impl Quad {
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::East, self.plane, west_borrow.plane));
             q1_borrow.patch_flags |= flags;
-            q1_borrow.patching_dirty = true;
+            q1_borrow.needs_normal_update = true;
+            q1_borrow.needs_normal_merge = true;
             q2_borrow.patch_flags |= flags;
-            q2_borrow.patching_dirty = true;
+            q2_borrow.needs_normal_update = true;
+            q2_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(q1.clone());
+            sphere.queue_normal_update(q2.clone());
+        } else {
+            let mut west_borrow = direct_west.borrow_mut();
+            // TODO: would this be strictly necessary if `merge_normals` updates
+            // both quads?
+            west_borrow.needs_normal_merge = true;
+            sphere.queue_normal_update(direct_west.clone());
         }
 
         self.patch_flags = PATCH_SIDE_NONE;
-        self.patching_dirty = true;
+        self.needs_normal_update = true;
+        self.needs_normal_merge = true;
+        sphere.queue_normal_update(self.self_ptr.as_ref().unwrap().upgrade().unwrap());
+
+        for c in self.children.as_ref().unwrap() {
+            let mut c_borrow = c.borrow_mut();
+            c_borrow.needs_normal_update = false;
+            c_borrow.needs_normal_merge = false;
+        }
 
         self.children = None;
-    }
-
-    fn update_patching(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
-        let mesh = self.mesh.as_ref().unwrap();
-        // FIXME: inefficient, should be fixed in up-coming quad pooling patch
-        let indices = gen_indices(sphere.quad_mesh_size, self.patch_flags);
-        *mesh.indices_mut(scene).unwrap() = indices;
-    }
-
-    fn check_patching(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
-        if !self.is_subdivided() && self.patching_dirty {
-            self.update_patching(sphere, scene);
-            self.patching_dirty = false;
-        } else if self.is_subdivided() {
-            self.patching_dirty = false;
-            for q in self.children.as_ref().unwrap() {
-                q.borrow_mut().check_patching(sphere, scene);
-            }
-        }
     }
 
     fn check_subdivision(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
@@ -1082,12 +1166,25 @@ impl Quad {
             && self.can_subdivide() {
             self.subdivide(sphere, scene);
         } else if self.is_subdivided() && self.in_collapse_range(sphere) && self.can_collapse() {
-            self.collapse(scene);
+            self.collapse(sphere, scene);
         } else if self.is_subdivided() {
             for q in self.children.as_ref().unwrap() {
                 q.borrow_mut().check_subdivision(sphere, scene);
             }
         }
+    }
+
+    fn update_normals(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
+        {
+            let mesh = self.mesh.as_ref().unwrap();
+            // FIXME: inefficient, should be fixed in up-coming quad pooling patch
+            let indices = gen_indices(sphere.quad_mesh_size, self.patch_flags);
+            *mesh.indices_mut(scene).unwrap() = indices;
+        }
+        self.calc_normals(scene);
+    }
+
+    fn update_edge_normals(&mut self, _sphere: &QuadSphere, _scene: &mut Scene) {
     }
 
     #[allow(dead_code)]
@@ -1117,10 +1214,12 @@ impl BehaviourMessages for Quad {
             base_coord: (0, 0),
             cur_subdivision: 0,
             mid_coord_pos: Vector3::new(0.0, 0.0, 0.0),
-            patching_dirty: false,
             patch_flags: PATCH_SIDE_NONE,
 
             non_normalized: Vec::new(),
+
+            needs_normal_update: false,
+            needs_normal_merge: false,
 
             self_ptr: None,
             children: None,
@@ -1177,6 +1276,7 @@ struct QuadSphere {
     subdivide_ranges: Vec<f32>,
     centre_pos: Vector3<f32>,
     faces: Option<[Rc<RefCell<Quad>>; 6]>,
+    normal_update_queue: RefCell<Vec<Rc<RefCell<Quad>>>>,
 }
 
 impl QuadSphere {
@@ -1350,6 +1450,10 @@ impl QuadSphere {
         self.subdivide_ranges[subdivision as usize]
     }
 
+    fn queue_normal_update(&self, quad: Rc<RefCell<Quad>>) {
+        self.normal_update_queue.borrow_mut().push(quad);
+    }
+
     #[allow(dead_code)]
     fn debug_find_quad(&self, plane: Plane, path: &[QuadPos]) -> Rc<RefCell<Quad>> {
         let q = match plane {
@@ -1384,6 +1488,7 @@ impl BehaviourMessages for QuadSphere {
             subdivide_ranges: Vec::new(),
             centre_pos: Vector3::unit_z(),
             faces: None,
+            normal_update_queue: RefCell::new(Vec::new()),
         }
     }
 
@@ -1408,10 +1513,24 @@ impl BehaviourMessages for QuadSphere {
             let q = self.faces.as_ref().unwrap()[i].clone();
             q.borrow_mut().check_subdivision(self, scene);
         }
-        for i in 0..6 {
-            let q = self.faces.as_ref().unwrap()[i].clone();
-            q.borrow_mut().check_patching(self, scene);
+
+        for q in &*self.normal_update_queue.borrow() {
+            let mut q = q.borrow_mut();
+            if q.needs_normal_update {
+                q.update_normals(self, scene);
+            }
+            q.needs_normal_update = false;
         }
+
+        for q in &*self.normal_update_queue.borrow() {
+            let mut q = q.borrow_mut();
+            if q.needs_normal_merge {
+                q.update_edge_normals(self, scene);
+            }
+            q.needs_normal_merge = false;
+        }
+
+        self.normal_update_queue.borrow_mut().clear();
 
         let cam_pos = 1.5f32 * self.centre_pos;
         let cam_rot = Quaternion::look_at(self.centre_pos, Vector3::unit_x()).invert();
