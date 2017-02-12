@@ -1184,7 +1184,11 @@ impl Quad {
         self.calc_normals(scene);
     }
 
-    fn update_edge_normals(&mut self, _sphere: &QuadSphere, _scene: &mut Scene) {
+    fn update_edge_normals(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
+        self.merge_side_normals(sphere, scene, QuadSide::North);
+        self.merge_side_normals(sphere, scene, QuadSide::South);
+        self.merge_side_normals(sphere, scene, QuadSide::East);
+        self.merge_side_normals(sphere, scene, QuadSide::West);
     }
 
     #[allow(dead_code)]
@@ -1570,7 +1574,313 @@ fn map_vertcoord(coord: VertCoord, max_coord: u32) -> Vector3<f32> {
                  -1.0 + z as f32 * 2.0 / max_coord as f32)
 }
 
+/// Maps a given vector and position on one plane to another. It allows other
+/// code to deal with quads on differing planes as if they were on the same
+/// plane, e.g.:
+///
+/// ```
+/// +--------+--------+
+/// |        |        |
+/// |   YP   |   XP   |
+/// |        |        |
+/// +--------+--------+
+/// ```
+///
+/// Say for example we want to iterate over coordinates bordering two quads on
+/// these two different planes; if we were to ignore the fact the two quads are
+/// on different planes we would start at `position = (MAX_COORD, 0)` and move
+/// with `vector = (0, 1)` on YP and start at `position = (0, 0)` and move with
+/// `vector = (0, 1)` on XP. However the position and vector for XP are
+/// incorrect; this function allows those vectors for XP to be translated to the
+/// correct values, in this case to `position = (0, MAX_COORD)` and `vector =
+/// (1, 0)`.
+///
+/// # Parameters
+///
+///   * `vec` - The vector to map
+///
+///   * `pos` - The position to map
+///
+///   * `max_coord` - The maximum valid x or y coordinate value
+///
+///   * `src_plane` - The plane the given vector `vec` and position `pos` are
+///     relative to
+///
+///   * `dst_plane` - The plane to map the given vector and position to
+///
+/// # Returns
+///
+/// A tuple containing the mapped vector first and the mapped position second.
+fn map_vec_pos<T: num::Signed + Copy>(vec: (T, T), pos: (T, T), max_coord: T, src_plane: Plane, dst_plane: Plane) -> ((T, T), (T, T)) {
+    let (origin, dir_x, dir_y) = calc_plane_mapping::<T>(src_plane, dst_plane);
+    let mapped_vec = (vec.0 * dir_x.0 + vec.1 * dir_y.0, vec.0 * dir_x.1 + vec.1 * dir_y.1);
+    let origin = (origin.0 * max_coord, origin.1 * max_coord);
+    let mapped_pos = (origin.0 + dir_x.0 * pos.0 + dir_y.0 * pos.1,
+                      origin.1 + dir_x.1 * pos.0 + dir_y.1 * pos.1);
+    (mapped_vec, mapped_pos)
+}
 
+#[test]
+fn test_map_vec_pos() {
+    assert_eq!(map_vec_pos((2, 0), (0, 8), 16, Plane::XP, Plane::YP),
+               ((0, 2), (8, 0)));
+    assert_eq!(map_vec_pos((2, 0), (0, 8), 16, Plane::ZP, Plane::XP),
+               ((2, 0), (0, 8)));
+    assert_eq!(map_vec_pos((2, 0), (8, 0), 16, Plane::ZN, Plane::YP),
+               ((-2, 0), (8, 16)));
+}
+
+impl Quad {
+    /// Get the direct (same subdivision level) neighbouring quad on the given
+    /// side if it exists, otherwise returns `None`.
+    fn get_direct(&self, side: QuadSide) -> Option<Weak<RefCell<Quad>>> {
+        match side {
+            QuadSide::North => self.direct_north(),
+            QuadSide::South => self.direct_south(),
+            QuadSide::East => self.direct_east(),
+            QuadSide::West => self.direct_west(),
+        }
+    }
+
+    /// Get the neighbouring quad on the given side. The given quad will be of a
+    /// subdivision level which is guaranteed to exist and not change; thus the
+    /// returned quad could be of the same subdivision level or one subdivision
+    /// level lower.
+    fn get_indirect(&self, side: QuadSide) -> &Weak<RefCell<Quad>> {
+        match side {
+            QuadSide::North => self.north.as_ref().unwrap(),
+            QuadSide::South => self.south.as_ref().unwrap(),
+            QuadSide::East => self.east.as_ref().unwrap(),
+            QuadSide::West => self.west.as_ref().unwrap(),
+        }
+    }
+
+    /// Merge the normals of this quad and the neighbouring quad(s) on the given
+    /// `side`. This doesn't update the corner normals.
+    ///
+    /// TODO: currently updates the edges but incorrectly, this is
+    /// inconsequential.
+    fn merge_side_normals(&mut self, sphere: &QuadSphere, scene: &mut Scene, side: QuadSide) {
+        // To simplify the problem we can first look at the situation as being
+        // one of three states:
+        //
+        //   * No direct neighbour
+        //
+        //     +--------+----------------+
+        //     |        |                |
+        //     |  SELF  |                |
+        //     |        |                |
+        //     +--------+     OTHER      |
+        //              |                |
+        //              |                |
+        //              |                |
+        //              +----------------+
+        //
+        //  * Direct neighbour, not subdivided
+        //
+        //    +--------+--------+
+        //    |        |        |
+        //    |  SELF  | OTHER  |
+        //    |        |        |
+        //    +--------+--------+
+        //
+        //  * Direct neighbour, subdivided
+        //
+        //    +----------------+--------+
+        //    |                |        |
+        //    |                |   Q1   |
+        //    |                |        |
+        //    |      SELF      +--------+
+        //    |                |        |
+        //    |                |   Q2   |
+        //    |                |        |
+        //    +----------------+--------+
+        //
+        // In each case we can view the problem as trying to find for all pairs
+        // of applicable quads to merge a "base" position and a "step"
+        // vector. We calculate these initially assuming that all quads lie on
+        // the same plane; then we use the function `map_vec_pos()` to to
+        // convert these if necessary.
+        //
+        // This function purposefully doesn't handle the problem of quads
+        // corners as this simplifies the logic.
+        let quad_mesh_size = sphere.quad_mesh_size as i32;
+        let direct_side = self.get_direct(side)
+            .map(|x| x.upgrade().unwrap());
+        let (dir_sx, dir_sy) = match side {
+            QuadSide::North => (1, 0),
+            QuadSide::South => (1, 0),
+            QuadSide::East => (0, 1),
+            QuadSide::West => (0, 1),
+        };
+        if let Some(direct_side) = direct_side {
+            let mut direct_side = direct_side.borrow_mut();
+            if direct_side.is_subdivided() {
+                let max = quad_mesh_size;
+                let half = quad_mesh_size / 2;
+                let ((base_sx, base_sy), (base_dx, base_dy)) = match side {
+                    QuadSide::North => ((0, max), (0, 0)),
+                    QuadSide::South => ((0, 0), (0, max)),
+                    QuadSide::East => ((max, 0), (0, 0)),
+                    QuadSide::West => ((0, 0), (max, 0))
+                };
+
+                let (q1_pos, q2_pos) = match side {
+                    QuadSide::North => (QuadPos::LowerLeft, QuadPos::LowerRight),
+                    QuadSide::South => (QuadPos::UpperLeft, QuadPos::UpperRight),
+                    QuadSide::East => (QuadPos::LowerLeft, QuadPos::UpperLeft),
+                    QuadSide::West => (QuadPos::LowerRight, QuadPos::UpperRight)
+                };
+
+                let q1_pos = translate_quad_pos(q1_pos, self.plane, direct_side.plane);
+                let q2_pos = translate_quad_pos(q2_pos, self.plane, direct_side.plane);
+
+                let q1 = direct_side.get_child(q1_pos).unwrap();
+                let q2 = direct_side.get_child(q2_pos).unwrap();
+
+                let (step_sx, step_sy) = (dir_sx, dir_sy);
+                let (step_dx, step_dy) = (dir_sx * 2, dir_sy * 2);
+
+                let ((step_dx, step_dy), (base_dx, base_dy)) = map_vec_pos(
+                    (step_dx, step_dy),
+                    (base_dx, base_dy),
+                    quad_mesh_size,
+                    self.plane, direct_side.plane);
+
+                // TODO: don't touch corners
+                self.merge_normals(sphere,
+                                   scene,
+                                   &mut *q1.borrow_mut(),
+                                   (base_sx, base_sy),
+                                   (step_sx, step_sy),
+                                   (base_dx, base_dy),
+                                   (step_dx, step_dy),
+                                   quad_mesh_size / 2 + 1);
+
+                let (base_sx2, base_sy2) = (base_sx + step_sx * half,
+                                            base_sy + step_sy * half);
+
+                // TODO: don't touch corners
+                self.merge_normals(sphere,
+                                   scene,
+                                   &mut *q2.borrow_mut(),
+                                   (base_sx2, base_sy2),
+                                   (step_sx, step_sy),
+                                   (base_dx, base_dy),
+                                   (step_dx, step_dy),
+                                   quad_mesh_size / 2 + 1);
+            } else {
+                let max = quad_mesh_size;
+                let ((base_sx, base_sy), (base_dx, base_dy)) = match side {
+                    QuadSide::North => ((0, max), (0, 0)),
+                    QuadSide::South => ((0, 0), (0, max)),
+                    QuadSide::East => ((max, 0), (0, 0)),
+                    QuadSide::West => ((0, 0), (max, 0))
+                };
+
+                let (step_sx, step_sy) = (dir_sx, dir_sy);
+                let (step_dx, step_dy) = (dir_sx, dir_sy);
+
+                let ((step_dx, step_dy), (base_dx, base_dy)) = map_vec_pos(
+                    (step_dx, step_dy),
+                    (base_dx, base_dy),
+                    quad_mesh_size,
+                    self.plane, direct_side.plane);
+
+                // TODO: don't touch corners
+                self.merge_normals(sphere,
+                                   scene,
+                                   &mut *direct_side,
+                                   (base_sx, base_sy),
+                                   (step_sx, step_sy),
+                                   (base_dx, base_dy),
+                                   (step_dx, step_dy),
+                                   quad_mesh_size + 1);
+            }
+        } else {
+            let indirect_side = self.get_indirect(side).upgrade().unwrap();
+            let mut indirect_side = indirect_side.borrow_mut();
+            // FIXME: copy paste code
+            let (x, y) = match self.pos {
+                QuadPos::UpperLeft => (0, 1),
+                QuadPos::UpperRight => (1, 1),
+                QuadPos::LowerLeft => (0, 0),
+                QuadPos::LowerRight => (1, 0),
+                QuadPos::None => {
+                    // We know we are subdivided at least once so this should be
+                    // unreachable.
+                    panic!("`pos` cannot be QuadPos::None.")
+                }
+            };
+
+            let max = quad_mesh_size;
+            let half = quad_mesh_size / 2;
+            let ((base_sx, base_sy), (base_dx, base_dy)) = match side {
+                QuadSide::North => ((0, max), (x * half, 0)),
+                QuadSide::South => ((0, 0), (x * half, max)),
+                QuadSide::East => ((max, 0), (0, y * half)),
+                QuadSide::West => ((0, 0), (max, y * half))
+            };
+            let (step_sx, step_sy) = (dir_sx * 2, dir_sy * 2);
+            let (step_dx, step_dy) = (dir_sx, dir_sy);
+
+            let ((step_dx, step_dy), (base_dx, base_dy)) = map_vec_pos(
+                (step_dx, step_dy),
+                (base_dx, base_dy),
+                quad_mesh_size,
+                self.plane, indirect_side.plane);
+
+            // TODO: don't touch corners
+            self.merge_normals(sphere,
+                               scene,
+                               &mut *indirect_side,
+                               (base_sx, base_sy),
+                               (step_sx, step_sy),
+                               (base_dx, base_dy),
+                               (step_dx, step_dy),
+                               quad_mesh_size / 2 + 1);
+        }
+    }
+
+    /// Merges the normals of two quads given base coordinates and step vectors
+    /// for each.
+    fn merge_normals(&mut self,
+                     sphere: &QuadSphere,
+                     scene: &mut Scene,
+                     other: &mut Quad,
+                     (base_sx, base_sy): (i32, i32),
+                     (step_sx, step_sy): (i32, i32),
+                     (base_dx, base_dy): (i32, i32),
+                     (step_dx, step_dy): (i32, i32),
+                     vert_count: i32) {
+        let quad_mesh_size = sphere.quad_mesh_size as i32;
+        let adj_size = quad_mesh_size + 1;
+        let vert_off = |x, y| vert_off(x, y, adj_size as u16);
+
+        let mut self_normalized = Vec::new();
+        let mut other_normalized = Vec::new();
+
+        let self_mesh = self.mesh.as_ref().unwrap();
+        let other_mesh = other.mesh.as_ref().unwrap();
+        std::mem::swap(self_mesh.vnorm_mut(scene).unwrap(), &mut self_normalized);
+        std::mem::swap(other_mesh.vnorm_mut(scene).unwrap(), &mut other_normalized);
+
+        for i in 0..vert_count {
+            let (sx, sy) = (base_sx + step_sx * i, base_sy + step_sy * i);
+            let (dx, dy) = (base_dx + step_dx * i, base_dy + step_dy * i);
+            let svert_off = vert_off(sx as u16, sy as u16) as usize;
+            let dvert_off = vert_off(dx as u16, dy as u16) as usize;
+
+            let combined = self.non_normalized[svert_off] + other.non_normalized[dvert_off];
+            let normalized = combined.normalize();
+            self_normalized[svert_off] = normalized;
+            other_normalized[dvert_off] = normalized;
+        }
+
+        std::mem::swap(self_mesh.vnorm_mut(scene).unwrap(), &mut self_normalized);
+        std::mem::swap(other_mesh.vnorm_mut(scene).unwrap(), &mut other_normalized);
+    }
+}
 
 fn main() {
     let display = glium::glutin::WindowBuilder::new()
