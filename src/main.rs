@@ -643,87 +643,87 @@ impl Quad {
         self.west.as_ref().unwrap().upgrade().unwrap()
     }
 
-    fn direct_north(&self) -> Option<Weak<RefCell<Quad>>> {
+    fn direct_north(&self) -> Option<Rc<RefCell<Quad>>> {
         match self.pos {
-            QuadPos::LowerLeft | QuadPos::LowerRight => self.north.clone(),
+            QuadPos::LowerLeft | QuadPos::LowerRight => Some(self.north()),
             QuadPos::UpperLeft => {
-                let north = self.north.as_ref().unwrap().upgrade().unwrap();
+                let north = self.north();
                 let north_borrow = north.borrow();
                 let pos = translate_quad_pos(QuadPos::LowerLeft, self.plane, north_borrow.plane);
                 north_borrow.get_child(pos)
-                    .map(Rc::downgrade)
+                    .map(Rc::clone)
             },
             QuadPos::UpperRight => {
-                let north = self.north.as_ref().unwrap().upgrade().unwrap();
+                let north = self.north();
                 let north_borrow = north.borrow();
                 let pos = translate_quad_pos(QuadPos::LowerRight, self.plane, north_borrow.plane);
                 north_borrow.get_child(pos)
-                    .map(Rc::downgrade)
+                    .map(Rc::clone)
             },
-            QuadPos::None => self.north.clone(),
+            QuadPos::None => Some(self.north()),
         }
     }
 
-    fn direct_south(&self) -> Option<Weak<RefCell<Quad>>> {
+    fn direct_south(&self) -> Option<Rc<RefCell<Quad>>> {
         match self.pos {
-            QuadPos::UpperLeft | QuadPos::UpperRight => self.south.clone(),
+            QuadPos::UpperLeft | QuadPos::UpperRight => Some(self.south()),
             QuadPos::LowerLeft => {
-                let south = self.south.as_ref().unwrap().upgrade().unwrap();
+                let south = self.south();
                 let south_borrow = south.borrow();
                 let pos = translate_quad_pos(QuadPos::UpperLeft, self.plane, south_borrow.plane);
                 south_borrow.get_child(pos)
-                    .map(Rc::downgrade)
+                    .map(Rc::clone)
             },
             QuadPos::LowerRight => {
-                let south = self.south.as_ref().unwrap().upgrade().unwrap();
+                let south = self.south();
                 let south_borrow = south.borrow();
                 let pos = translate_quad_pos(QuadPos::UpperRight, self.plane, south_borrow.plane);
                 south_borrow.get_child(pos)
-                    .map(Rc::downgrade)
+                    .map(Rc::clone)
             },
-            QuadPos::None => self.south.clone(),
+            QuadPos::None => Some(self.south()),
         }
     }
 
-    fn direct_east(&self) -> Option<Weak<RefCell<Quad>>> {
+    fn direct_east(&self) -> Option<Rc<RefCell<Quad>>> {
         match self.pos {
-            QuadPos::UpperLeft | QuadPos::LowerLeft => self.east.clone(),
+            QuadPos::UpperLeft | QuadPos::LowerLeft => Some(self.east()),
             QuadPos::UpperRight => {
-                let east = self.east.as_ref().unwrap().upgrade().unwrap();
+                let east = self.east();
                 let east_borrow = east.borrow();
                 let pos = translate_quad_pos(QuadPos::UpperLeft, self.plane, east_borrow.plane);
                 east_borrow.get_child(pos)
-                    .map(Rc::downgrade)
+                    .map(Rc::clone)
             },
             QuadPos::LowerRight => {
-                let east = self.east.as_ref().unwrap().upgrade().unwrap();
+                let east = self.east();
                 let east_borrow = east.borrow();
                 let pos = translate_quad_pos(QuadPos::LowerLeft, self.plane, east_borrow.plane);
                 east_borrow.get_child(pos)
-                    .map(Rc::downgrade)
+                    .map(Rc::clone)
             },
-            QuadPos::None => self.east.clone(),
+            QuadPos::None => Some(self.east()),
         }
     }
 
-    fn direct_west(&self) -> Option<Weak<RefCell<Quad>>> {
+    fn direct_west(&self) -> Option<Rc<RefCell<Quad>>> {
         match self.pos {
-            QuadPos::UpperRight | QuadPos::LowerRight => self.west.clone(),
+            QuadPos::UpperRight | QuadPos::LowerRight => Some(self.west()),
             QuadPos::UpperLeft => {
-                let west = self.west.as_ref().unwrap().upgrade().unwrap();
+                let west = self.west();
                 let west_borrow = west.borrow();
                 let pos = translate_quad_pos(QuadPos::UpperRight, self.plane, west_borrow.plane);
                 west_borrow.get_child(pos)
-                    .map(Rc::downgrade)
+                    .map(Rc::clone)
             },
             QuadPos::LowerLeft => {
-                let west = self.west.as_ref().unwrap().upgrade().unwrap();
+                let west = self.west();
                 let west_borrow = west.borrow();
                 let pos = translate_quad_pos(QuadPos::LowerRight, self.plane, west_borrow.plane);
                 west_borrow.get_child(pos)
-                    .map(Rc::downgrade)
+                    .map(Rc::clone)
             },
-            QuadPos::None => self.west.clone(),
+            QuadPos::None => Some(self.west()),
         }
     }
 
@@ -754,7 +754,6 @@ impl Quad {
         let direct_west = self.direct_west();
 
         if let Some(q) = direct_north {
-            let q = q.upgrade().unwrap();
             let q_borrow = q.borrow();
             if q_borrow.is_subdivided() {
                 let q1 = q_borrow.get_child(QuadPos::LowerLeft).unwrap();
@@ -766,7 +765,6 @@ impl Quad {
         }
 
         if let Some(q) = direct_south {
-            let q = q.upgrade().unwrap();
             let q_borrow = q.borrow();
             if q_borrow.is_subdivided() {
                 let q1 = q_borrow.get_child(QuadPos::UpperLeft).unwrap();
@@ -778,7 +776,6 @@ impl Quad {
         }
 
         if let Some(q) = direct_east {
-            let q = q.upgrade().unwrap();
             let q_borrow = q.borrow();
             if q_borrow.is_subdivided() {
                 let q1 = q_borrow.get_child(QuadPos::UpperLeft).unwrap();
@@ -790,7 +787,6 @@ impl Quad {
         }
 
         if let Some(q) = direct_west {
-            let q = q.upgrade().unwrap();
             let q_borrow = q.borrow();
             if q_borrow.is_subdivided() {
                 let q1 = q_borrow.get_child(QuadPos::UpperRight).unwrap();
@@ -835,10 +831,10 @@ impl Quad {
             upper_left.needs_normal_update = true;
             upper_left.needs_normal_merge = true;
             upper_left.self_ptr = Some(self_ptr);
-            upper_left.north = direct_north.clone();
+            upper_left.north = direct_north.as_ref().map(Rc::downgrade);
             upper_left.east = Some(Rc::downgrade(&upper_right));
             upper_left.south = Some(Rc::downgrade(&lower_left));
-            upper_left.west = direct_west.clone();
+            upper_left.west = direct_west.as_ref().map(Rc::downgrade);
             upper_left.cur_subdivision = self.cur_subdivision + 1;
             upper_left.base_coord = (self.base_coord.0, self.base_coord.1 + half_quad_length);
             upper_left.init(sphere, scene);
@@ -853,8 +849,8 @@ impl Quad {
             upper_right.needs_normal_update = true;
             upper_right.needs_normal_merge = true;
             upper_right.self_ptr = Some(self_ptr);
-            upper_right.north = direct_north.clone();
-            upper_right.east = direct_east.clone();
+            upper_right.north = direct_north.as_ref().map(Rc::downgrade);
+            upper_right.east = direct_east.as_ref().map(Rc::downgrade);
             upper_right.south = Some(Rc::downgrade(&lower_right));
             upper_right.west = Some(Rc::downgrade(&upper_left));
             upper_right.cur_subdivision = self.cur_subdivision + 1;
@@ -873,8 +869,8 @@ impl Quad {
             lower_left.self_ptr = Some(self_ptr);
             lower_left.north = Some(Rc::downgrade(&upper_left));
             lower_left.east = Some(Rc::downgrade(&lower_right));
-            lower_left.south = direct_south.clone();
-            lower_left.west = direct_west.clone();
+            lower_left.south = direct_south.as_ref().map(Rc::downgrade);
+            lower_left.west = direct_west.as_ref().map(Rc::downgrade);
             lower_left.cur_subdivision = self.cur_subdivision + 1;
             lower_left.base_coord = (self.base_coord.0, self.base_coord.1);
             lower_left.init(sphere, scene);
@@ -890,8 +886,8 @@ impl Quad {
             lower_right.needs_normal_merge = true;
             lower_right.self_ptr = Some(self_ptr);
             lower_right.north = Some(Rc::downgrade(&upper_right));
-            lower_right.east = direct_east.clone();
-            lower_right.south = direct_south.clone();
+            lower_right.east = direct_east.as_ref().map(Rc::downgrade);
+            lower_right.south = direct_south.as_ref().map(Rc::downgrade);
             lower_right.west = Some(Rc::downgrade(&lower_left));
             lower_right.cur_subdivision = self.cur_subdivision + 1;
             lower_right.base_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1);
@@ -899,10 +895,10 @@ impl Quad {
         }
         sphere.queue_normal_update(lower_right.clone());
 
-        let direct_north = direct_north.unwrap().upgrade().unwrap();
-        let direct_south = direct_south.unwrap().upgrade().unwrap();
-        let direct_east = direct_east.unwrap().upgrade().unwrap();
-        let direct_west = direct_west.unwrap().upgrade().unwrap();
+        let direct_north = direct_north.unwrap();
+        let direct_south = direct_south.unwrap();
+        let direct_east = direct_east.unwrap();
+        let direct_west = direct_west.unwrap();
 
         let north_subdivided = direct_north.borrow().is_subdivided();
         let south_subdivided = direct_south.borrow().is_subdivided();
@@ -1049,10 +1045,10 @@ impl Quad {
             scene.destroy_object(&q_obj);
         }
 
-        let direct_north = self.direct_north().unwrap().upgrade().unwrap();
-        let direct_south = self.direct_south().unwrap().upgrade().unwrap();
-        let direct_east = self.direct_east().unwrap().upgrade().unwrap();
-        let direct_west = self.direct_west().unwrap().upgrade().unwrap();
+        let direct_north = self.direct_north().unwrap();
+        let direct_south = self.direct_south().unwrap();
+        let direct_east = self.direct_east().unwrap();
+        let direct_west = self.direct_west().unwrap();
 
         let north_subdivided = direct_north.borrow().is_subdivided();
         let south_subdivided = direct_south.borrow().is_subdivided();
@@ -1647,7 +1643,7 @@ fn test_map_vec_pos() {
 impl Quad {
     /// Get the direct (same subdivision level) neighbouring quad on the given
     /// side if it exists, otherwise returns `None`.
-    fn get_direct(&self, side: QuadSide) -> Option<Weak<RefCell<Quad>>> {
+    fn get_direct(&self, side: QuadSide) -> Option<Rc<RefCell<Quad>>> {
         match side {
             QuadSide::North => self.direct_north(),
             QuadSide::South => self.direct_south(),
@@ -1719,8 +1715,7 @@ impl Quad {
         // This function purposefully doesn't handle the problem of quads
         // corners as this simplifies the logic.
         let quad_mesh_size = sphere.quad_mesh_size as i32;
-        let direct_side = self.get_direct(side)
-            .map(|x| x.upgrade().unwrap());
+        let direct_side = self.get_direct(side);
         let (dir_sx, dir_sy) = match side {
             QuadSide::North => (1, 0),
             QuadSide::South => (1, 0),
