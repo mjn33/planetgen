@@ -627,6 +627,22 @@ impl Quad {
         self.children.as_ref().map(|children| &children[pos.to_idx()])
     }
 
+    fn north(&self) -> Rc<RefCell<Quad>> {
+        self.north.as_ref().unwrap().upgrade().unwrap()
+    }
+
+    fn south(&self) -> Rc<RefCell<Quad>> {
+        self.south.as_ref().unwrap().upgrade().unwrap()
+    }
+
+    fn east(&self) -> Rc<RefCell<Quad>> {
+        self.east.as_ref().unwrap().upgrade().unwrap()
+    }
+
+    fn west(&self) -> Rc<RefCell<Quad>> {
+        self.west.as_ref().unwrap().upgrade().unwrap()
+    }
+
     fn direct_north(&self) -> Option<Weak<RefCell<Quad>>> {
         match self.pos {
             QuadPos::LowerLeft | QuadPos::LowerRight => self.north.clone(),
@@ -717,16 +733,14 @@ impl Quad {
 
     fn can_subdivide(&self) -> bool {
         let (indirect1, indirect2) = match self.pos {
-            QuadPos::UpperLeft => (self.north.as_ref().unwrap(), self.west.as_ref().unwrap()),
-            QuadPos::UpperRight => (self.north.as_ref().unwrap(), self.east.as_ref().unwrap()),
-            QuadPos::LowerLeft => (self.south.as_ref().unwrap(), self.west.as_ref().unwrap()),
-            QuadPos::LowerRight => (self.south.as_ref().unwrap(), self.east.as_ref().unwrap()),
+            QuadPos::UpperLeft => (self.north(), self.west()),
+            QuadPos::UpperRight => (self.north(), self.east()),
+            QuadPos::LowerLeft => (self.south(), self.west()),
+            QuadPos::LowerRight => (self.south(), self.east()),
             QuadPos::None => return true,
         };
 
         // TODO: write this in a more elegant way...
-        let indirect1 = indirect1.upgrade().unwrap();
-        let indirect2 = indirect2.upgrade().unwrap();
         let subdivided1 = indirect1.borrow().is_subdivided();
         let subdivided2 = indirect2.borrow().is_subdivided();
         subdivided1 && subdivided2
@@ -1646,12 +1660,12 @@ impl Quad {
     /// subdivision level which is guaranteed to exist and not change; thus the
     /// returned quad could be of the same subdivision level or one subdivision
     /// level lower.
-    fn get_indirect(&self, side: QuadSide) -> &Weak<RefCell<Quad>> {
+    fn get_indirect(&self, side: QuadSide) -> Rc<RefCell<Quad>> {
         match side {
-            QuadSide::North => self.north.as_ref().unwrap(),
-            QuadSide::South => self.south.as_ref().unwrap(),
-            QuadSide::East => self.east.as_ref().unwrap(),
-            QuadSide::West => self.west.as_ref().unwrap(),
+            QuadSide::North => self.north(),
+            QuadSide::South => self.south(),
+            QuadSide::East => self.east(),
+            QuadSide::West => self.west(),
         }
     }
 
@@ -1798,7 +1812,7 @@ impl Quad {
                                    quad_mesh_size + 1);
             }
         } else {
-            let indirect_side = self.get_indirect(side).upgrade().unwrap();
+            let indirect_side = self.get_indirect(side);
             let mut indirect_side = indirect_side.borrow_mut();
             // FIXME: copy paste code
             let (x, y) = match self.pos {
