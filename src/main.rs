@@ -746,54 +746,56 @@ impl Quad {
         subdivided1 && subdivided2
     }
 
+    /// Checks if this quad is able to collapse without causing quad-tree
+    /// invariants to be violated.
     fn can_collapse(&self) -> bool {
-        // TODO: It should be OK to use unwrap() here.
-        let direct_north = self.direct_north();
-        let direct_south = self.direct_south();
-        let direct_east = self.direct_east();
-        let direct_west = self.direct_west();
+        assert!(self.is_subdivided(), "can_collapse() should only be called on subdivided quads");
+        let direct_north = self.direct_north().unwrap();
+        let direct_south = self.direct_south().unwrap();
+        let direct_east = self.direct_east().unwrap();
+        let direct_west = self.direct_west().unwrap();
 
-        if let Some(q) = direct_north {
-            let q_borrow = q.borrow();
-            if q_borrow.is_subdivided() {
-                let q1 = q_borrow.get_child(QuadPos::LowerLeft).unwrap();
-                let q2 = q_borrow.get_child(QuadPos::LowerRight).unwrap();
-                if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
-                    return false
-                }
+        let direct_north = direct_north.borrow();
+        if direct_north.is_subdivided() {
+            let pos1 = translate_quad_pos(QuadPos::LowerLeft, self.plane, direct_north.plane);
+            let pos2 = translate_quad_pos(QuadPos::LowerRight, self.plane, direct_north.plane);
+            let q1 = direct_north.get_child(pos1).unwrap();
+            let q2 = direct_north.get_child(pos2).unwrap();
+            if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
+                return false
             }
         }
 
-        if let Some(q) = direct_south {
-            let q_borrow = q.borrow();
-            if q_borrow.is_subdivided() {
-                let q1 = q_borrow.get_child(QuadPos::UpperLeft).unwrap();
-                let q2 = q_borrow.get_child(QuadPos::UpperRight).unwrap();
-                if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
-                    return false
-                }
+        let direct_south = direct_south.borrow();
+        if direct_south.is_subdivided() {
+            let pos1 = translate_quad_pos(QuadPos::UpperLeft, self.plane, direct_south.plane);
+            let pos2 = translate_quad_pos(QuadPos::UpperRight, self.plane, direct_south.plane);
+            let q1 = direct_south.get_child(pos1).unwrap();
+            let q2 = direct_south.get_child(pos2).unwrap();
+            if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
+                return false
             }
         }
 
-        if let Some(q) = direct_east {
-            let q_borrow = q.borrow();
-            if q_borrow.is_subdivided() {
-                let q1 = q_borrow.get_child(QuadPos::UpperLeft).unwrap();
-                let q2 = q_borrow.get_child(QuadPos::LowerLeft).unwrap();
-                if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
-                    return false
-                }
+        let direct_east = direct_east.borrow();
+        if direct_east.is_subdivided() {
+            let pos1 = translate_quad_pos(QuadPos::UpperLeft, self.plane, direct_east.plane);
+            let pos2 = translate_quad_pos(QuadPos::LowerLeft, self.plane, direct_east.plane);
+            let q1 = direct_east.get_child(pos1).unwrap();
+            let q2 = direct_east.get_child(pos2).unwrap();
+            if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
+                return false
             }
         }
 
-        if let Some(q) = direct_west {
-            let q_borrow = q.borrow();
-            if q_borrow.is_subdivided() {
-                let q1 = q_borrow.get_child(QuadPos::UpperRight).unwrap();
-                let q2 = q_borrow.get_child(QuadPos::LowerRight).unwrap();
-                if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
-                    return false
-                }
+        let direct_west = direct_west.borrow();
+        if direct_west.is_subdivided() {
+            let pos1 = translate_quad_pos(QuadPos::UpperRight, self.plane, direct_west.plane);
+            let pos2 = translate_quad_pos(QuadPos::LowerRight, self.plane, direct_west.plane);
+            let q1 = direct_west.get_child(pos1).unwrap();
+            let q2 = direct_west.get_child(pos2).unwrap();
+            if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
+                return false
             }
         }
 
