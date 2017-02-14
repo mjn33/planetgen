@@ -622,8 +622,18 @@ impl Quad {
         cur_range <= range
     }
 
-    // TODO: maybe don't return an Option and expect that we are subdivided?
-    fn get_child(&self, pos: QuadPos) -> Option<&Rc<RefCell<Quad>>> {
+    /// Returns the child quad at the given position.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the quad isn't subdivided.
+    fn get_child(&self, pos: QuadPos) -> &Rc<RefCell<Quad>> {
+        self.get_child_opt(pos).expect("Expected quad to be subdivided")
+    }
+
+    /// Returns the child quad at the given position, or None if the quad isn't
+    /// subdivided.
+    fn get_child_opt(&self, pos: QuadPos) -> Option<&Rc<RefCell<Quad>>> {
         self.children.as_ref().map(|children| &children[pos.to_idx()])
     }
 
@@ -650,14 +660,14 @@ impl Quad {
                 let north = self.north();
                 let north_borrow = north.borrow();
                 let pos = translate_quad_pos(QuadPos::LowerLeft, self.plane, north_borrow.plane);
-                north_borrow.get_child(pos)
+                north_borrow.get_child_opt(pos)
                     .map(Rc::clone)
             },
             QuadPos::UpperRight => {
                 let north = self.north();
                 let north_borrow = north.borrow();
                 let pos = translate_quad_pos(QuadPos::LowerRight, self.plane, north_borrow.plane);
-                north_borrow.get_child(pos)
+                north_borrow.get_child_opt(pos)
                     .map(Rc::clone)
             },
             QuadPos::None => Some(self.north()),
@@ -671,14 +681,14 @@ impl Quad {
                 let south = self.south();
                 let south_borrow = south.borrow();
                 let pos = translate_quad_pos(QuadPos::UpperLeft, self.plane, south_borrow.plane);
-                south_borrow.get_child(pos)
+                south_borrow.get_child_opt(pos)
                     .map(Rc::clone)
             },
             QuadPos::LowerRight => {
                 let south = self.south();
                 let south_borrow = south.borrow();
                 let pos = translate_quad_pos(QuadPos::UpperRight, self.plane, south_borrow.plane);
-                south_borrow.get_child(pos)
+                south_borrow.get_child_opt(pos)
                     .map(Rc::clone)
             },
             QuadPos::None => Some(self.south()),
@@ -692,14 +702,14 @@ impl Quad {
                 let east = self.east();
                 let east_borrow = east.borrow();
                 let pos = translate_quad_pos(QuadPos::UpperLeft, self.plane, east_borrow.plane);
-                east_borrow.get_child(pos)
+                east_borrow.get_child_opt(pos)
                     .map(Rc::clone)
             },
             QuadPos::LowerRight => {
                 let east = self.east();
                 let east_borrow = east.borrow();
                 let pos = translate_quad_pos(QuadPos::LowerLeft, self.plane, east_borrow.plane);
-                east_borrow.get_child(pos)
+                east_borrow.get_child_opt(pos)
                     .map(Rc::clone)
             },
             QuadPos::None => Some(self.east()),
@@ -713,14 +723,14 @@ impl Quad {
                 let west = self.west();
                 let west_borrow = west.borrow();
                 let pos = translate_quad_pos(QuadPos::UpperRight, self.plane, west_borrow.plane);
-                west_borrow.get_child(pos)
+                west_borrow.get_child_opt(pos)
                     .map(Rc::clone)
             },
             QuadPos::LowerLeft => {
                 let west = self.west();
                 let west_borrow = west.borrow();
                 let pos = translate_quad_pos(QuadPos::LowerRight, self.plane, west_borrow.plane);
-                west_borrow.get_child(pos)
+                west_borrow.get_child_opt(pos)
                     .map(Rc::clone)
             },
             QuadPos::None => Some(self.west()),
@@ -759,8 +769,8 @@ impl Quad {
         if direct_north.is_subdivided() {
             let pos1 = translate_quad_pos(QuadPos::LowerLeft, self.plane, direct_north.plane);
             let pos2 = translate_quad_pos(QuadPos::LowerRight, self.plane, direct_north.plane);
-            let q1 = direct_north.get_child(pos1).unwrap();
-            let q2 = direct_north.get_child(pos2).unwrap();
+            let q1 = direct_north.get_child(pos1);
+            let q2 = direct_north.get_child(pos2);
             if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
                 return false
             }
@@ -770,8 +780,8 @@ impl Quad {
         if direct_south.is_subdivided() {
             let pos1 = translate_quad_pos(QuadPos::UpperLeft, self.plane, direct_south.plane);
             let pos2 = translate_quad_pos(QuadPos::UpperRight, self.plane, direct_south.plane);
-            let q1 = direct_south.get_child(pos1).unwrap();
-            let q2 = direct_south.get_child(pos2).unwrap();
+            let q1 = direct_south.get_child(pos1);
+            let q2 = direct_south.get_child(pos2);
             if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
                 return false
             }
@@ -781,8 +791,8 @@ impl Quad {
         if direct_east.is_subdivided() {
             let pos1 = translate_quad_pos(QuadPos::UpperLeft, self.plane, direct_east.plane);
             let pos2 = translate_quad_pos(QuadPos::LowerLeft, self.plane, direct_east.plane);
-            let q1 = direct_east.get_child(pos1).unwrap();
-            let q2 = direct_east.get_child(pos2).unwrap();
+            let q1 = direct_east.get_child(pos1);
+            let q2 = direct_east.get_child(pos2);
             if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
                 return false
             }
@@ -792,8 +802,8 @@ impl Quad {
         if direct_west.is_subdivided() {
             let pos1 = translate_quad_pos(QuadPos::UpperRight, self.plane, direct_west.plane);
             let pos2 = translate_quad_pos(QuadPos::LowerRight, self.plane, direct_west.plane);
-            let q1 = direct_west.get_child(pos1).unwrap();
-            let q2 = direct_west.get_child(pos2).unwrap();
+            let q1 = direct_west.get_child(pos1);
+            let q2 = direct_west.get_child(pos2);
             if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
                 return false
             }
@@ -911,8 +921,8 @@ impl Quad {
             let north_borrow = direct_north.borrow();
             let pos1 = translate_quad_pos(QuadPos::LowerLeft, self.plane, north_borrow.plane);
             let pos2 = translate_quad_pos(QuadPos::LowerRight, self.plane, north_borrow.plane);
-            let q1 = north_borrow.get_child(pos1).unwrap();
-            let q2 = north_borrow.get_child(pos2).unwrap();
+            let q1 = north_borrow.get_child(pos1);
+            let q2 = north_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::South, self.plane, north_borrow.plane));
@@ -936,8 +946,8 @@ impl Quad {
             let south_borrow = direct_south.borrow();
             let pos1 = translate_quad_pos(QuadPos::UpperLeft, self.plane, south_borrow.plane);
             let pos2 = translate_quad_pos(QuadPos::UpperRight, self.plane, south_borrow.plane);
-            let q1 = south_borrow.get_child(pos1).unwrap();
-            let q2 = south_borrow.get_child(pos2).unwrap();
+            let q1 = south_borrow.get_child(pos1);
+            let q2 = south_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::North, self.plane, south_borrow.plane));
@@ -961,8 +971,8 @@ impl Quad {
             let east_borrow = direct_east.borrow();
             let pos1 = translate_quad_pos(QuadPos::UpperLeft, self.plane, east_borrow.plane);
             let pos2 = translate_quad_pos(QuadPos::LowerLeft, self.plane, east_borrow.plane);
-            let q1 = east_borrow.get_child(pos1).unwrap();
-            let q2 = east_borrow.get_child(pos2).unwrap();
+            let q1 = east_borrow.get_child(pos1);
+            let q2 = east_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::West, self.plane, east_borrow.plane));
@@ -986,8 +996,8 @@ impl Quad {
             let west_borrow = direct_west.borrow();
             let pos1 = translate_quad_pos(QuadPos::UpperRight, self.plane, west_borrow.plane);
             let pos2 = translate_quad_pos(QuadPos::LowerRight, self.plane, west_borrow.plane);
-            let q1 = west_borrow.get_child(pos1).unwrap();
-            let q2 = west_borrow.get_child(pos2).unwrap();
+            let q1 = west_borrow.get_child(pos1);
+            let q2 = west_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::East, self.plane, west_borrow.plane));
@@ -1061,8 +1071,8 @@ impl Quad {
             let north_borrow = direct_north.borrow();
             let pos1 = translate_quad_pos(QuadPos::LowerLeft, self.plane, north_borrow.plane);
             let pos2 = translate_quad_pos(QuadPos::LowerRight, self.plane, north_borrow.plane);
-            let q1 = north_borrow.get_child(pos1).unwrap();
-            let q2 = north_borrow.get_child(pos2).unwrap();
+            let q1 = north_borrow.get_child(pos1);
+            let q2 = north_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::South, self.plane, north_borrow.plane));
@@ -1086,8 +1096,8 @@ impl Quad {
             let south_borrow = direct_south.borrow();
             let pos1 = translate_quad_pos(QuadPos::UpperLeft, self.plane, south_borrow.plane);
             let pos2 = translate_quad_pos(QuadPos::UpperRight, self.plane, south_borrow.plane);
-            let q1 = south_borrow.get_child(pos1).unwrap();
-            let q2 = south_borrow.get_child(pos2).unwrap();
+            let q1 = south_borrow.get_child(pos1);
+            let q2 = south_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::North, self.plane, south_borrow.plane));
@@ -1111,8 +1121,8 @@ impl Quad {
             let east_borrow = direct_east.borrow();
             let pos1 = translate_quad_pos(QuadPos::UpperLeft, self.plane, east_borrow.plane);
             let pos2 = translate_quad_pos(QuadPos::LowerLeft, self.plane, east_borrow.plane);
-            let q1 = east_borrow.get_child(pos1).unwrap();
-            let q2 = east_borrow.get_child(pos2).unwrap();
+            let q1 = east_borrow.get_child(pos1);
+            let q2 = east_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::West, self.plane, east_borrow.plane));
@@ -1136,8 +1146,8 @@ impl Quad {
             let west_borrow = direct_west.borrow();
             let pos1 = translate_quad_pos(QuadPos::UpperRight, self.plane, west_borrow.plane);
             let pos2 = translate_quad_pos(QuadPos::LowerRight, self.plane, west_borrow.plane);
-            let q1 = west_borrow.get_child(pos1).unwrap();
-            let q2 = west_borrow.get_child(pos2).unwrap();
+            let q1 = west_borrow.get_child(pos1);
+            let q2 = west_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags = PatchSide::from(translate_quad_side(QuadSide::East, self.plane, west_borrow.plane));
@@ -1211,9 +1221,9 @@ impl Quad {
 
         let q = self.get_child(path[0]);
         if path.len() == 1 {
-            return q.unwrap().clone()
+            return q.clone()
         } else {
-            q.unwrap().borrow().debug_find_quad(&path[1..])
+            q.borrow().debug_find_quad(&path[1..])
         }
     }
 }
@@ -1746,8 +1756,8 @@ impl Quad {
                 let q1_pos = translate_quad_pos(q1_pos, self.plane, direct_side.plane);
                 let q2_pos = translate_quad_pos(q2_pos, self.plane, direct_side.plane);
 
-                let q1 = direct_side.get_child(q1_pos).unwrap();
-                let q2 = direct_side.get_child(q2_pos).unwrap();
+                let q1 = direct_side.get_child(q1_pos);
+                let q2 = direct_side.get_child(q2_pos);
 
                 let (step_sx, step_sy) = (dir_sx, dir_sy);
                 let (step_dx, step_dy) = (dir_sx * 2, dir_sy * 2);
