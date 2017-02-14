@@ -14,7 +14,7 @@ use glium::DisplayBuild;
 
 use num::{Zero, One};
 
-use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, Scene, Shader, Vertex};
+use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, Scene, Shader};
 
 /// Generate a `Vec` containing a `size + 1` by `size + 1` grid of vertices.
 fn gen_vertices(size: u16) -> Vec<Vector3<f32>> {
@@ -559,7 +559,7 @@ impl Quad {
             let verts = self.mesh.as_ref().unwrap().vpos(scene).unwrap();
             let indices = self.mesh.as_ref().unwrap().indices(scene).unwrap();
 
-            for n in self.non_normalized.iter_mut() {
+            for n in &mut self.non_normalized {
                 *n = Vector3::new(0.0, 0.0, 0.0);
             }
 
@@ -655,7 +655,7 @@ impl Quad {
 
     fn direct_north(&self) -> Option<Rc<RefCell<Quad>>> {
         match self.pos {
-            QuadPos::LowerLeft | QuadPos::LowerRight => Some(self.north()),
+            QuadPos::LowerLeft | QuadPos::LowerRight | QuadPos::None => Some(self.north()),
             QuadPos::UpperLeft => {
                 let north = self.north();
                 let north_borrow = north.borrow();
@@ -670,13 +670,12 @@ impl Quad {
                 north_borrow.get_child_opt(pos)
                     .map(Rc::clone)
             },
-            QuadPos::None => Some(self.north()),
         }
     }
 
     fn direct_south(&self) -> Option<Rc<RefCell<Quad>>> {
         match self.pos {
-            QuadPos::UpperLeft | QuadPos::UpperRight => Some(self.south()),
+            QuadPos::UpperLeft | QuadPos::UpperRight | QuadPos::None => Some(self.south()),
             QuadPos::LowerLeft => {
                 let south = self.south();
                 let south_borrow = south.borrow();
@@ -691,13 +690,12 @@ impl Quad {
                 south_borrow.get_child_opt(pos)
                     .map(Rc::clone)
             },
-            QuadPos::None => Some(self.south()),
         }
     }
 
     fn direct_east(&self) -> Option<Rc<RefCell<Quad>>> {
         match self.pos {
-            QuadPos::UpperLeft | QuadPos::LowerLeft => Some(self.east()),
+            QuadPos::UpperLeft | QuadPos::LowerLeft | QuadPos::None => Some(self.east()),
             QuadPos::UpperRight => {
                 let east = self.east();
                 let east_borrow = east.borrow();
@@ -712,13 +710,12 @@ impl Quad {
                 east_borrow.get_child_opt(pos)
                     .map(Rc::clone)
             },
-            QuadPos::None => Some(self.east()),
         }
     }
 
     fn direct_west(&self) -> Option<Rc<RefCell<Quad>>> {
         match self.pos {
-            QuadPos::UpperRight | QuadPos::LowerRight => Some(self.west()),
+            QuadPos::UpperRight | QuadPos::LowerRight | QuadPos::None => Some(self.west()),
             QuadPos::UpperLeft => {
                 let west = self.west();
                 let west_borrow = west.borrow();
@@ -733,7 +730,6 @@ impl Quad {
                 west_borrow.get_child_opt(pos)
                     .map(Rc::clone)
             },
-            QuadPos::None => Some(self.west()),
         }
     }
 
@@ -1221,7 +1217,7 @@ impl Quad {
 
         let q = self.get_child(path[0]);
         if path.len() == 1 {
-            return q.clone()
+            q.clone()
         } else {
             q.borrow().debug_find_quad(&path[1..])
         }
@@ -1421,7 +1417,7 @@ impl QuadSphere {
         }
 
         // TODO: reduce cloning
-        let self_object = self.behaviour().object(&scene).unwrap().clone();
+        let self_object = self.behaviour().object(scene).unwrap().clone();
         scene.set_object_parent(&xp_quad_obj, Some(&self_object));
         scene.set_object_parent(&xn_quad_obj, Some(&self_object));
         scene.set_object_parent(&yp_quad_obj, Some(&self_object));
@@ -1492,7 +1488,7 @@ impl QuadSphere {
         };
 
         if path.len() == 0 {
-            return q.clone()
+            q.clone()
         } else {
             q.borrow().debug_find_quad(path)
         }
