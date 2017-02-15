@@ -746,10 +746,8 @@ impl Quad {
             QuadPos::None => return true,
         };
 
-        // TODO: write this in a more elegant way...
-        let subdivided1 = indirect1.borrow().is_subdivided();
-        let subdivided2 = indirect2.borrow().is_subdivided();
-        subdivided1 && subdivided2
+        let subdivided = indirect1.borrow().is_subdivided() && indirect2.borrow().is_subdivided();
+        subdivided
     }
 
     /// Checks if this quad is able to collapse without causing quad-tree
