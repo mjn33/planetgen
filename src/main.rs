@@ -1205,6 +1205,10 @@ impl Quad {
         self.merge_side_normals(sphere, scene, QuadSide::South);
         self.merge_side_normals(sphere, scene, QuadSide::East);
         self.merge_side_normals(sphere, scene, QuadSide::West);
+        self.merge_corner_normal(sphere, scene, QuadPos::UpperLeft);
+        self.merge_corner_normal(sphere, scene, QuadPos::UpperRight);
+        self.merge_corner_normal(sphere, scene, QuadPos::LowerLeft);
+        self.merge_corner_normal(sphere, scene, QuadPos::LowerRight);
     }
 
     #[allow(dead_code)]
@@ -1646,6 +1650,29 @@ fn test_map_vec_pos() {
                ((-2, 0), (8, 16)));
 }
 
+/// Splits the given `pos` into its vertical and horizontal side,
+/// e.g. upper-left maps to north and west.
+fn split_pos(pos: QuadPos) -> (QuadSide, QuadSide) {
+    match pos {
+        QuadPos::UpperLeft => (QuadSide::North, QuadSide::West),
+        QuadPos::UpperRight => (QuadSide::North, QuadSide::East),
+        QuadPos::LowerLeft => (QuadSide::South, QuadSide::West),
+        QuadPos::LowerRight => (QuadSide::South, QuadSide::East),
+        QuadPos::None => panic!("Cannot call `split_pos` on QuadPos::None.")
+    }
+}
+
+/// Returns the position opposite to `pos`.
+fn opposite_pos(pos: QuadPos) -> QuadPos {
+    match pos {
+        QuadPos::UpperLeft => QuadPos::LowerRight,
+        QuadPos::UpperRight => QuadPos::LowerLeft,
+        QuadPos::LowerLeft => QuadPos::UpperRight,
+        QuadPos::LowerRight => QuadPos::UpperLeft,
+        QuadPos::None => panic!("Cannot call `opposite_pos` on QuadPos::None.")
+    }
+}
+
 impl Quad {
     /// Get the direct (same subdivision level) neighbouring quad on the given
     /// side if it exists, otherwise returns `None`.
@@ -1658,6 +1685,8 @@ impl Quad {
         }
     }
 
+    // TODO: the naming of this method is misleading as it doesn't always return
+    // an "indirect" neighbour
     /// Get the neighbouring quad on the given side. The given quad will be of a
     /// subdivision level which is guaranteed to exist and not change; thus the
     /// returned quad could be of the same subdivision level or one subdivision
@@ -1894,6 +1923,300 @@ impl Quad {
 
         std::mem::swap(self_mesh.vnorm_mut(scene).unwrap(), &mut self_normalized);
         std::mem::swap(other_mesh.vnorm_mut(scene).unwrap(), &mut other_normalized);
+    }
+
+    /// Merge the normals on the specified corner of this quad and the other
+    /// quads which share the given `corner`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `corner` is `QuadPos::None`
+    fn merge_corner_normal(&mut self, sphere: &QuadSphere, scene: &mut Scene, corner: QuadPos) {
+        // To understand the problem we can first look at the situation as being
+        // one of six states:
+        //
+        //   * Direct vertical neighbour, direct horizontal neighbour
+        //
+        //              +--------+
+        //              |        |
+        //         Q3?  |   Q1   |
+        //              |        |
+        //     +--------%--------+
+        //     |        |        |
+        //     |   Q2   |  SELF  |
+        //     |        |        |
+        //     +--------+--------+
+        //
+        //   * Indirect vertical neighbour (midpoint), direct horizontal
+        //     neighbour
+        //
+        //     +-----------------+
+        //     |                 |
+        //     |                 |
+        //     |                 |
+        //     |       Q1        |
+        //     |                 |
+        //     |                 |
+        //     |                 |
+        //     +--------%--------+
+        //     |        |        |
+        //     |   Q2   |  SELF  |
+        //     |        |        |
+        //     +--------+--------+
+        //
+        //   * Indirect vertical neighbour (corner), direct horizontal neighbour
+        //
+        //              +-----------------+
+        //              |                 |
+        //              |                 |
+        //              |                 |
+        //              |       Q1        |
+        //              |                 |
+        //         Q3?  |                 |
+        //              |                 |
+        //     +--------%--------+--------+
+        //     |        |        |
+        //     |   Q2   |  SELF  |
+        //     |        |        |
+        //     +--------+--------+
+        //
+        //   * Direct vertical neighbour, indirect horizontal neighbour
+        //     (midpoint)
+        //
+        //     +-----------------+--------+
+        //     |                 |        |
+        //     |                 |   Q1   |
+        //     |                 |        |
+        //     |       Q2        %--------+
+        //     |                 |        |
+        //     |                 |  SELF  |
+        //     |                 |        |
+        //     +-----------------+--------+
+        //
+        //   * Direct vertical neighbour, indirect horizontal neighbour
+        //     (corner)
+        //
+        //                       +--------+
+        //                       |        |
+        //                  Q3?  |   Q1   |
+        //                       |        |
+        //     +-----------------%--------+
+        //     |                 |        |
+        //     |                 |  SELF  |
+        //     |                 |        |
+        //     |       Q2        +--------+
+        //     |                 |
+        //     |                 |
+        //     |                 |
+        //     +-----------------+
+        //
+        //   * Indirect vertical neighbour (corner), indirect horizontal
+        //     neighbour (corner)
+        //
+        //                       +-----------------+
+        //                       |                 |
+        //                       |                 |
+        //                       |                 |
+        //             Q3?       |       Q1        |
+        //                       |                 |
+        //                       |                 |
+        //                       |                 |
+        //     +-----------------%--------+--------+
+        //     |                 |        |
+        //     |                 |  SELF  |
+        //     |                 |        |
+        //     |       Q2        +--------+
+        //     |                 |
+        //     |                 |
+        //     |                 |
+        //     +-----------------+
+        assert!(corner != QuadPos::None);
+
+        let quad_mesh_size = sphere.quad_mesh_size as i32;
+        let adj_size = quad_mesh_size + 1;
+        let vert_off = |x, y| vert_off(x, y, adj_size as u16);
+        let max = quad_mesh_size;
+        let half = quad_mesh_size / 2;
+
+        let (side1, side2) = split_pos(corner);
+
+        let (q1, q1_is_direct) = match self.get_direct(side1) {
+            Some(q1) => (q1, true),
+            None => (self.get_indirect(side1), false)
+        };
+        let (q2, q2_is_direct) = match self.get_direct(side2) {
+            Some(q2) => (q2, true),
+            None => (self.get_indirect(side2), false)
+        };
+
+        let q1_plane = q1.borrow().plane;
+        let q2_plane = q2.borrow().plane;
+
+        let (self_x, self_y) = match corner {
+            QuadPos::UpperLeft => (0, max),
+            QuadPos::UpperRight => (max, max),
+            QuadPos::LowerLeft => (0, 0),
+            QuadPos::LowerRight => (max, 0),
+            QuadPos::None => unreachable!(),
+        };
+
+        let q1_x = if q1_is_direct {
+            match side2 {
+                QuadSide::East => max,
+                QuadSide::West => 0,
+                _ => unreachable!()
+            }
+        } else {
+            // Note: we don't need to handle `QuadPos::None` here since we know we
+            // aren't of the lowest subdivision level, otherwise `get_direct()` would
+            // have returned `Some(_)`.
+            let (_, self_hside) = split_pos(self.pos);
+            match (self_hside, side2) {
+                (QuadSide::West, QuadSide::West) => 0,
+                (QuadSide::West, QuadSide::East) => half,
+                (QuadSide::East, QuadSide::West) => half,
+                (QuadSide::East, QuadSide::East) => max,
+                _ => unreachable!(),
+            }
+        };
+        let q1_y = match side1 {
+            QuadSide::North => 0,
+            QuadSide::South => max,
+            _ => unreachable!(),
+        };
+        let q1_pos = match corner {
+            QuadPos::UpperLeft => QuadPos::LowerLeft,
+            QuadPos::UpperRight => QuadPos::LowerRight,
+            QuadPos::LowerLeft => QuadPos::UpperLeft,
+            QuadPos::LowerRight => QuadPos::UpperRight,
+            QuadPos::None => unreachable!(),
+        };
+
+        let (_, (q1_x, q1_y)) = map_vec_pos(
+            (0, 0),
+            (q1_x, q1_y),
+            quad_mesh_size,
+            self.plane, q1_plane);
+        let q1_pos = translate_quad_pos(q1_pos, self.plane, q1_plane);
+
+        let q2_x = match side2 {
+            QuadSide::East => 0,
+            QuadSide::West => max,
+            _ => unreachable!(),
+        };
+        let q2_y = if q2_is_direct {
+            match side1 {
+                QuadSide::North => max,
+                QuadSide::South => 0,
+                _ => unreachable!()
+            }
+        } else {
+            // Note: we don't need to handle `QuadPos::None` here since we know we
+            // aren't of the lowest subdivision level, otherwise `get_direct()` would
+            // have returned `Some(_)`.
+            let (self_vside, _) = split_pos(self.pos);
+            match (self_vside, side1) {
+                (QuadSide::South, QuadSide::South) => 0,
+                (QuadSide::South, QuadSide::North) => half,
+                (QuadSide::North, QuadSide::South) => half,
+                (QuadSide::North, QuadSide::North) => max,
+                _ => unreachable!(),
+            }
+        };
+        let q2_pos = match corner {
+            QuadPos::UpperLeft => QuadPos::UpperRight,
+            QuadPos::UpperRight => QuadPos::UpperLeft,
+            QuadPos::LowerLeft => QuadPos::LowerRight,
+            QuadPos::LowerRight => QuadPos::LowerLeft,
+            QuadPos::None => unreachable!(),
+        };
+
+        let (_, (q2_x, q2_y)) = map_vec_pos(
+            (0, 0),
+            (q2_x, q2_y),
+            quad_mesh_size,
+            self.plane, q2_plane);
+        let q2_pos = translate_quad_pos(q2_pos, self.plane, q2_plane);
+
+        let q1 = if q1.borrow().is_subdivided() {
+            q1.borrow().get_child(q1_pos).clone()
+        } else {
+            q1
+        };
+        let q2 = if q2.borrow().is_subdivided() {
+            q2.borrow().get_child(q2_pos).clone()
+        } else {
+            q2
+        };
+
+        if self.plane != q1_plane && self.plane != q2_plane && q1_plane != q2_plane || q1_x == half || q1_y == half || q2_x == half || q2_y == half {
+            // There will only be three quads to consider in the following two
+            // cases:
+            //
+            //   * All quads are on different planes
+            //   * A corner is on the mid-point of a quad edge
+
+            let mut q1 = q1.borrow_mut();
+            let mut q2 = q2.borrow_mut();
+
+            let self_idx = vert_off(self_x as u16, self_y as u16) as usize;
+            let q1_idx = vert_off(q1_x as u16, q1_y as u16) as usize;
+            let q2_idx = vert_off(q2_x as u16, q2_y as u16) as usize;
+
+            let combined =
+                self.non_normalized[self_idx] +
+                q1.non_normalized[q1_idx] +
+                q2.non_normalized[q2_idx];
+            let normalized = combined.normalize();
+
+            self.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap()[self_idx] = normalized;
+            q1.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap()[q1_idx] = normalized;
+            q2.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap()[q2_idx] = normalized;
+        } else {
+            let side2 = translate_quad_side(side2, self.plane, q1_plane);
+
+            let mut q3 = q1.borrow().get_direct(side2).unwrap_or_else(|| q1.borrow().get_indirect(side2));
+            let q3_plane = q3.borrow().plane;
+            let q3_pos = opposite_pos(corner);
+            let q3_pos = translate_quad_pos(q3_pos, self.plane, q3_plane);
+
+            let (q3_x, q3_y) = match q3_pos {
+                QuadPos::UpperLeft => (0, max),
+                QuadPos::UpperRight => (max, max),
+                QuadPos::LowerLeft => (0, 0),
+                QuadPos::LowerRight => (max, 0),
+                QuadPos::None => unreachable!(),
+            };
+
+            loop {
+                let q3_next = match q3.borrow().get_child_opt(q3_pos) {
+                    Some(q3_next) => q3_next.clone(),
+                    None => break,
+                };
+                q3 = q3_next;
+            }
+
+            let mut q1 = q1.borrow_mut();
+            let mut q2 = q2.borrow_mut();
+            let mut q3 = q3.borrow_mut();
+
+            let self_idx = vert_off(self_x as u16, self_y as u16) as usize;
+            let q1_idx = vert_off(q1_x as u16, q1_y as u16) as usize;
+            let q2_idx = vert_off(q2_x as u16, q2_y as u16) as usize;
+            let q3_idx = vert_off(q3_x as u16, q3_y as u16) as usize;
+
+            let combined =
+                self.non_normalized[self_idx] +
+                q1.non_normalized[q1_idx] +
+                q2.non_normalized[q2_idx] +
+                q3.non_normalized[q3_idx];
+            let normalized = combined.normalize();
+
+            self.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap()[self_idx] = normalized;
+            q1.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap()[q1_idx] = normalized;
+            q2.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap()[q2_idx] = normalized;
+            q3.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap()[q3_idx] = normalized;
+        }
     }
 }
 
