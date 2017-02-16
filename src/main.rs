@@ -69,35 +69,35 @@ fn gen_indices_range(indices: &mut Vec<u16>, x1: u16, y1: u16, x2: u16, y2: u16,
 }
 
 bitflags! {
-    flags PatchSide: u32 {
-        const PATCH_SIDE_NONE   = 0x00,
-        const PATCH_SIDE_LEFT   = 0x01,
-        const PATCH_SIDE_RIGHT  = 0x02,
-        const PATCH_SIDE_TOP    = 0x04,
-        const PATCH_SIDE_BOTTOM = 0x08,
+    flags PatchFlags: u32 {
+        const PATCH_FLAGS_NONE = 0x00,
+        const PATCH_FLAGS_NORTH = 0x01,
+        const PATCH_FLAGS_SOUTH = 0x02,
+        const PATCH_FLAGS_EAST = 0x04,
+        const PATCH_FLAGS_WEST = 0x08,
     }
 }
 
-impl From<QuadSide> for PatchSide {
+impl From<QuadSide> for PatchFlags {
     fn from(side: QuadSide) -> Self {
         match side {
-            QuadSide::North => PATCH_SIDE_TOP,
-            QuadSide::South => PATCH_SIDE_BOTTOM,
-            QuadSide::East => PATCH_SIDE_RIGHT,
-            QuadSide::West => PATCH_SIDE_LEFT,
+            QuadSide::North => PATCH_FLAGS_NORTH,
+            QuadSide::South => PATCH_FLAGS_SOUTH,
+            QuadSide::East => PATCH_FLAGS_EAST,
+            QuadSide::West => PATCH_FLAGS_WEST,
         }
     }
 }
 
 /// Generate the indices for a quad of the given size and the specified
 /// edges "patched".
-fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
+fn gen_indices(size: u16, sides: PatchFlags) -> Vec<u16> {
     let adj_size = size + 1;
     let vert_off = |x, y| vert_off(x, y, adj_size);
     let mut indices = Vec::new();
     gen_indices_range(&mut indices, 1, 1, size - 1, size - 1, size);
 
-    if sides.contains(PATCH_SIDE_LEFT) {
+    if sides.contains(PATCH_FLAGS_WEST) {
         for y in 1..adj_size-1 {
             if (y % 2) == 1 {
                 // *
@@ -141,7 +141,7 @@ fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
             }
         }
     } else {
-        if sides.contains(PATCH_SIDE_BOTTOM) {
+        if sides.contains(PATCH_FLAGS_SOUTH) {
             let ta = vert_off(1, 1);
             let tb = vert_off(0, 1);
             let tc = vert_off(0, 0);
@@ -151,7 +151,7 @@ fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
             gen_indices_range(&mut indices, 0, 0, 1, 1, size);
         }
         gen_indices_range(&mut indices, 0, 1, 1, size - 1, size);
-        if sides.contains(PATCH_SIDE_TOP) {
+        if sides.contains(PATCH_FLAGS_NORTH) {
             let ta = vert_off(0, size);
             let tb = vert_off(0, size - 1);
             let tc = vert_off(1, size - 1);
@@ -162,7 +162,7 @@ fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
         }
     }
 
-    if sides.contains(PATCH_SIDE_TOP) {
+    if sides.contains(PATCH_FLAGS_NORTH) {
         for x in 1..adj_size-1 {
             if (x % 2) == 1 {
                 let ta = vert_off(x - 1, size);
@@ -184,7 +184,7 @@ fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
             }
         }
     } else {
-        if sides.contains(PATCH_SIDE_LEFT) {
+        if sides.contains(PATCH_FLAGS_WEST) {
             let ta = vert_off(1, size - 1);
             let tb = vert_off(1, size);
             let tc = vert_off(0, size);
@@ -192,7 +192,7 @@ fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
             push_tri(&mut indices, ta, tb, tc);
         }
         gen_indices_range(&mut indices, 1, size - 1, size - 1, size, size);
-        if sides.contains(PATCH_SIDE_RIGHT) {
+        if sides.contains(PATCH_FLAGS_EAST) {
             let ta = vert_off(size, size);
             let tb = vert_off(size - 1, size);
             let tc = vert_off(size - 1, size - 1);
@@ -201,7 +201,7 @@ fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
         }
     }
 
-    if sides.contains(PATCH_SIDE_BOTTOM) {
+    if sides.contains(PATCH_FLAGS_SOUTH) {
         for x in 1..adj_size-1 {
             if (x % 2) == 1 {
                 //
@@ -236,7 +236,7 @@ fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
             }
         }
     } else {
-        if sides.contains(PATCH_SIDE_LEFT) {
+        if sides.contains(PATCH_FLAGS_WEST) {
             let ta = vert_off(0, 0);
             let tb = vert_off(1, 0);
             let tc = vert_off(1, 1);
@@ -244,7 +244,7 @@ fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
             push_tri(&mut indices, ta, tb, tc);
         }
         gen_indices_range(&mut indices, 1, 0, size - 1, 1, size);
-        if sides.contains(PATCH_SIDE_RIGHT) {
+        if sides.contains(PATCH_FLAGS_EAST) {
             let ta = vert_off(size - 1, 1);
             let tb = vert_off(size - 1, 0);
             let tc = vert_off(size, 0);
@@ -253,7 +253,7 @@ fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
         }
     }
 
-    if sides.contains(PATCH_SIDE_RIGHT) {
+    if sides.contains(PATCH_FLAGS_EAST) {
         for y in 1..adj_size-1 {
             if (y % 2) == 1 {
                 //          *
@@ -297,7 +297,7 @@ fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
             }
         }
     } else {
-        if sides.contains(PATCH_SIDE_BOTTOM) {
+        if sides.contains(PATCH_FLAGS_SOUTH) {
             let ta = vert_off(size, 0);
             let tb = vert_off(size, 1);
             let tc = vert_off(size - 1, 1);
@@ -307,7 +307,7 @@ fn gen_indices(size: u16, sides: PatchSide) -> Vec<u16> {
             gen_indices_range(&mut indices, size - 1, 0, size, 1, size);
         }
         gen_indices_range(&mut indices, size - 1, 1, size, size - 1, size);
-        if sides.contains(PATCH_SIDE_TOP) {
+        if sides.contains(PATCH_FLAGS_NORTH) {
             let ta = vert_off(size - 1, size - 1);
             let tb = vert_off(size, size - 1);
             let tc = vert_off(size, size);
@@ -485,7 +485,7 @@ struct Quad {
     base_coord: (u32, u32),
     cur_subdivision: u32,
     mid_coord_pos: Vector3<f32>,
-    patch_flags: PatchSide,
+    patch_flags: PatchFlags,
 
     non_normalized: Vec<Vector3<f32>>,
 
@@ -509,7 +509,7 @@ impl Quad {
         let vert_step = 1 << (sphere.max_subdivision - self.cur_subdivision);
         let adj_size = sphere.quad_mesh_size + 1;
         let mut vertices = gen_vertices(sphere.quad_mesh_size);
-        let indices = gen_indices(sphere.quad_mesh_size, PATCH_SIDE_NONE);
+        let indices = gen_indices(sphere.quad_mesh_size, PATCH_FLAGS_NONE);
 
         let vert_off = |x, y| vert_off(x, y, adj_size);
         for x in 0..adj_size {
@@ -526,7 +526,7 @@ impl Quad {
 
         self.non_normalized.resize(vertices.len(), Vector3::zero());
 
-        // Base the mesh indices from `PATCH_SIDE_NONE` since that generates the
+        // Base the mesh indices from `PATCH_FLAGS_NONE` since that generates the
         // largest buffer size.
         let mesh = scene.create_mesh(vertices.len(), indices.len());
         *mesh.vpos_mut(scene).unwrap() = vertices;
@@ -546,7 +546,7 @@ impl Quad {
 
         self.mid_coord_pos = self.mid_coord_pos(sphere);
 
-        self.patch_flags = PATCH_SIDE_NONE;
+        self.patch_flags = PATCH_FLAGS_NONE;
 
         // TODO: reduce cloning
         let self_object = self.behaviour.object(scene).unwrap().clone();
@@ -919,7 +919,7 @@ impl Quad {
             let q2 = north_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchSide::from(translate_quad_side(QuadSide::South, self.plane, north_borrow.plane));
+            let flags = PatchFlags::from(translate_quad_side(QuadSide::South, self.plane, north_borrow.plane));
             q1_borrow.patch_flags &= !flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -944,7 +944,7 @@ impl Quad {
             let q2 = south_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchSide::from(translate_quad_side(QuadSide::North, self.plane, south_borrow.plane));
+            let flags = PatchFlags::from(translate_quad_side(QuadSide::North, self.plane, south_borrow.plane));
             q1_borrow.patch_flags &= !flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -969,7 +969,7 @@ impl Quad {
             let q2 = east_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchSide::from(translate_quad_side(QuadSide::West, self.plane, east_borrow.plane));
+            let flags = PatchFlags::from(translate_quad_side(QuadSide::West, self.plane, east_borrow.plane));
             q1_borrow.patch_flags &= !flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -994,7 +994,7 @@ impl Quad {
             let q2 = west_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchSide::from(translate_quad_side(QuadSide::East, self.plane, west_borrow.plane));
+            let flags = PatchFlags::from(translate_quad_side(QuadSide::East, self.plane, west_borrow.plane));
             q1_borrow.patch_flags &= !flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -1018,23 +1018,23 @@ impl Quad {
             let mut lower_right = lower_right.borrow_mut();
 
             if !north_subdivided {
-                upper_left.patch_flags |= PATCH_SIDE_TOP;
-                upper_right.patch_flags |= PATCH_SIDE_TOP;
+                upper_left.patch_flags |= PATCH_FLAGS_NORTH;
+                upper_right.patch_flags |= PATCH_FLAGS_NORTH;
             }
 
             if !south_subdivided {
-                lower_left.patch_flags |= PATCH_SIDE_BOTTOM;
-                lower_right.patch_flags |= PATCH_SIDE_BOTTOM;
+                lower_left.patch_flags |= PATCH_FLAGS_SOUTH;
+                lower_right.patch_flags |= PATCH_FLAGS_SOUTH;
             }
 
             if !east_subdivided {
-                upper_right.patch_flags |= PATCH_SIDE_RIGHT;
-                lower_right.patch_flags |= PATCH_SIDE_RIGHT;
+                upper_right.patch_flags |= PATCH_FLAGS_EAST;
+                lower_right.patch_flags |= PATCH_FLAGS_EAST;
             }
 
             if !west_subdivided {
-                upper_left.patch_flags |= PATCH_SIDE_LEFT;
-                lower_left.patch_flags |= PATCH_SIDE_LEFT;
+                upper_left.patch_flags |= PATCH_FLAGS_WEST;
+                lower_left.patch_flags |= PATCH_FLAGS_WEST;
             }
         }
 
@@ -1069,7 +1069,7 @@ impl Quad {
             let q2 = north_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchSide::from(translate_quad_side(QuadSide::South, self.plane, north_borrow.plane));
+            let flags = PatchFlags::from(translate_quad_side(QuadSide::South, self.plane, north_borrow.plane));
             q1_borrow.patch_flags |= flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -1094,7 +1094,7 @@ impl Quad {
             let q2 = south_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchSide::from(translate_quad_side(QuadSide::North, self.plane, south_borrow.plane));
+            let flags = PatchFlags::from(translate_quad_side(QuadSide::North, self.plane, south_borrow.plane));
             q1_borrow.patch_flags |= flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -1119,7 +1119,7 @@ impl Quad {
             let q2 = east_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchSide::from(translate_quad_side(QuadSide::West, self.plane, east_borrow.plane));
+            let flags = PatchFlags::from(translate_quad_side(QuadSide::West, self.plane, east_borrow.plane));
             q1_borrow.patch_flags |= flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -1144,7 +1144,7 @@ impl Quad {
             let q2 = west_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchSide::from(translate_quad_side(QuadSide::East, self.plane, west_borrow.plane));
+            let flags = PatchFlags::from(translate_quad_side(QuadSide::East, self.plane, west_borrow.plane));
             q1_borrow.patch_flags |= flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -1161,7 +1161,7 @@ impl Quad {
             sphere.queue_normal_update(direct_west.clone());
         }
 
-        self.patch_flags = PATCH_SIDE_NONE;
+        self.patch_flags = PATCH_FLAGS_NONE;
         self.needs_normal_update = true;
         self.needs_normal_merge = true;
         sphere.queue_normal_update(self.self_ptr.as_ref().unwrap().upgrade().unwrap());
@@ -1238,7 +1238,7 @@ impl BehaviourMessages for Quad {
             base_coord: (0, 0),
             cur_subdivision: 0,
             mid_coord_pos: Vector3::new(0.0, 0.0, 0.0),
-            patch_flags: PATCH_SIDE_NONE,
+            patch_flags: PATCH_FLAGS_NONE,
 
             non_normalized: Vec::new(),
 
