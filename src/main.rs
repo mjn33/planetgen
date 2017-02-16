@@ -1676,7 +1676,7 @@ fn opposite_pos(pos: QuadPos) -> QuadPos {
 impl Quad {
     /// Get the direct (same subdivision level) neighbouring quad on the given
     /// side if it exists, otherwise returns `None`.
-    fn get_direct(&self, side: QuadSide) -> Option<Rc<RefCell<Quad>>> {
+    fn get_direct_side(&self, side: QuadSide) -> Option<Rc<RefCell<Quad>>> {
         match side {
             QuadSide::North => self.direct_north(),
             QuadSide::South => self.direct_south(),
@@ -1685,13 +1685,11 @@ impl Quad {
         }
     }
 
-    // TODO: the naming of this method is misleading as it doesn't always return
-    // an "indirect" neighbour
     /// Get the neighbouring quad on the given side. The given quad will be of a
     /// subdivision level which is guaranteed to exist and not change; thus the
     /// returned quad could be of the same subdivision level or one subdivision
     /// level lower.
-    fn get_indirect(&self, side: QuadSide) -> Rc<RefCell<Quad>> {
+    fn get_side(&self, side: QuadSide) -> Rc<RefCell<Quad>> {
         match side {
             QuadSide::North => self.north(),
             QuadSide::South => self.south(),
@@ -1750,7 +1748,7 @@ impl Quad {
         // This function purposefully doesn't handle the problem of quads
         // corners as this simplifies the logic.
         let quad_mesh_size = sphere.quad_mesh_size as i32;
-        let direct_side = self.get_direct(side);
+        let direct_side = self.get_direct_side(side);
         let (dir_sx, dir_sy) = match side {
             QuadSide::North => (1, 0),
             QuadSide::South => (1, 0),
@@ -1842,7 +1840,7 @@ impl Quad {
                                    quad_mesh_size + 1);
             }
         } else {
-            let indirect_side = self.get_indirect(side);
+            let indirect_side = self.get_side(side);
             let mut indirect_side = indirect_side.borrow_mut();
             // FIXME: copy paste code
             let (x, y) = match self.pos {
@@ -2040,13 +2038,13 @@ impl Quad {
 
         let (side1, side2) = split_pos(corner);
 
-        let (q1, q1_is_direct) = match self.get_direct(side1) {
+        let (q1, q1_is_direct) = match self.get_direct_side(side1) {
             Some(q1) => (q1, true),
-            None => (self.get_indirect(side1), false)
+            None => (self.get_side(side1), false)
         };
-        let (q2, q2_is_direct) = match self.get_direct(side2) {
+        let (q2, q2_is_direct) = match self.get_direct_side(side2) {
             Some(q2) => (q2, true),
-            None => (self.get_indirect(side2), false)
+            None => (self.get_side(side2), false)
         };
 
         let q1_plane = q1.borrow().plane;
@@ -2068,7 +2066,7 @@ impl Quad {
             }
         } else {
             // Note: we don't need to handle `QuadPos::None` here since we know we
-            // aren't of the lowest subdivision level, otherwise `get_direct()` would
+            // aren't of the lowest subdivision level, otherwise `get_direct_side()` would
             // have returned `Some(_)`.
             let (_, self_hside) = split_pos(self.pos);
             match (self_hside, side2) {
@@ -2112,7 +2110,7 @@ impl Quad {
             }
         } else {
             // Note: we don't need to handle `QuadPos::None` here since we know we
-            // aren't of the lowest subdivision level, otherwise `get_direct()` would
+            // aren't of the lowest subdivision level, otherwise `get_direct_side()` would
             // have returned `Some(_)`.
             let (self_vside, _) = split_pos(self.pos);
             match (self_vside, side1) {
@@ -2175,7 +2173,7 @@ impl Quad {
         } else {
             let side2 = translate_quad_side(side2, self.plane, q1_plane);
 
-            let mut q3 = q1.borrow().get_direct(side2).unwrap_or_else(|| q1.borrow().get_indirect(side2));
+            let mut q3 = q1.borrow().get_direct_side(side2).unwrap_or_else(|| q1.borrow().get_side(side2));
             let q3_plane = q3.borrow().plane;
             let q3_pos = opposite_pos(corner);
             let q3_pos = translate_quad_pos(q3_pos, self.plane, q3_plane);
