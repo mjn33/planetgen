@@ -76,6 +76,30 @@ impl QuadPos {
             QuadPos::SouthEast => 3,
         }
     }
+
+    /// Splits the given `pos` into its vertical and horizontal side,
+    /// e.g. upper-left maps to north and west.
+    fn split(self) -> (QuadSide, QuadSide) {
+        match self {
+            QuadPos::NorthWest => (QuadSide::North, QuadSide::West),
+            QuadPos::NorthEast => (QuadSide::North, QuadSide::East),
+            QuadPos::SouthWest => (QuadSide::South, QuadSide::West),
+            QuadPos::SouthEast => (QuadSide::South, QuadSide::East),
+            QuadPos::None => panic!("Cannot call `split` on QuadPos::None.")
+        }
+    }
+
+    /// Returns the position opposite to `pos`.
+    fn opposite(self) -> QuadPos {
+        match self {
+            QuadPos::NorthWest => QuadPos::SouthEast,
+            QuadPos::NorthEast => QuadPos::SouthWest,
+            QuadPos::SouthWest => QuadPos::NorthEast,
+            QuadPos::SouthEast => QuadPos::NorthWest,
+            QuadPos::None => panic!("Cannot call `opposite` on QuadPos::None.")
+        }
+    }
+
 }
 
 fn calc_plane_mapping<T: num::Signed>(src_plane: Plane, dst_plane: Plane) -> ((T, T), (T, T), (T, T)) {
@@ -1362,29 +1386,6 @@ fn test_map_vec_pos() {
                ((-2, 0), (8, 16)));
 }
 
-/// Splits the given `pos` into its vertical and horizontal side,
-/// e.g. upper-left maps to north and west.
-fn split_pos(pos: QuadPos) -> (QuadSide, QuadSide) {
-    match pos {
-        QuadPos::NorthWest => (QuadSide::North, QuadSide::West),
-        QuadPos::NorthEast => (QuadSide::North, QuadSide::East),
-        QuadPos::SouthWest => (QuadSide::South, QuadSide::West),
-        QuadPos::SouthEast => (QuadSide::South, QuadSide::East),
-        QuadPos::None => panic!("Cannot call `split_pos` on QuadPos::None.")
-    }
-}
-
-/// Returns the position opposite to `pos`.
-fn opposite_pos(pos: QuadPos) -> QuadPos {
-    match pos {
-        QuadPos::NorthWest => QuadPos::SouthEast,
-        QuadPos::NorthEast => QuadPos::SouthWest,
-        QuadPos::SouthWest => QuadPos::NorthEast,
-        QuadPos::SouthEast => QuadPos::NorthWest,
-        QuadPos::None => panic!("Cannot call `opposite_pos` on QuadPos::None.")
-    }
-}
-
 impl Quad {
     /// Get the direct (same subdivision level) neighbouring quad on the given
     /// side if it exists, otherwise returns `None`.
@@ -1748,7 +1749,7 @@ impl Quad {
         let max = quad_mesh_size;
         let half = quad_mesh_size / 2;
 
-        let (side1, side2) = split_pos(corner);
+        let (side1, side2) = corner.split();
 
         let (q1, q1_is_direct) = match self.get_direct_side(side1) {
             Some(q1) => (q1, true),
@@ -1780,7 +1781,7 @@ impl Quad {
             // Note: we don't need to handle `QuadPos::None` here since we know we
             // aren't of the lowest subdivision level, otherwise `get_direct_side()` would
             // have returned `Some(_)`.
-            let (_, self_hside) = split_pos(self.pos);
+            let (_, self_hside) = self.pos.split();
             match (self_hside, side2) {
                 (QuadSide::West, QuadSide::West) => 0,
                 (QuadSide::West, QuadSide::East) => half,
@@ -1824,7 +1825,7 @@ impl Quad {
             // Note: we don't need to handle `QuadPos::None` here since we know we
             // aren't of the lowest subdivision level, otherwise `get_direct_side()` would
             // have returned `Some(_)`.
-            let (self_vside, _) = split_pos(self.pos);
+            let (self_vside, _) = self.pos.split();
             match (self_vside, side1) {
                 (QuadSide::South, QuadSide::South) => 0,
                 (QuadSide::South, QuadSide::North) => half,
@@ -1887,7 +1888,7 @@ impl Quad {
 
             let mut q3 = q1.borrow().get_direct_side(side2).unwrap_or_else(|| q1.borrow().get_side(side2));
             let q3_plane = q3.borrow().plane;
-            let q3_pos = opposite_pos(corner);
+            let q3_pos = corner.opposite();
             let q3_pos = translate_quad_pos(q3_pos, self.plane, q3_plane);
 
             let (q3_x, q3_y) = match q3_pos {
