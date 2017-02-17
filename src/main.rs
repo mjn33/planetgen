@@ -254,7 +254,7 @@ impl Quad {
                                            self.base_coord.0 + x as u32 * vert_step,
                                            self.base_coord.1 + y as u32 * vert_step);
 
-                let vert_pos = map_vertcoord(vert_coord, sphere.max_coord).normalize();
+                let vert_pos = sphere.vc_to_pos(vert_coord).normalize();
                 let off = vert_off(x, y);
                 vertices[off as usize] = Vector3::new(vert_pos.x, vert_pos.y, vert_pos.z);
             }
@@ -329,7 +329,7 @@ impl Quad {
     fn mid_coord_pos(&self, sphere: &QuadSphere) -> Vector3<f32> {
         let half_quad_length = sphere.quad_length(self.cur_subdivision) / 2;
         let mid_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1 + half_quad_length);
-        map_vertcoord(VertCoord(self.plane, mid_coord.0, mid_coord.1), sphere.max_coord).normalize()
+        sphere.vc_to_pos(VertCoord(self.plane, mid_coord.0, mid_coord.1)).normalize()
     }
 
     fn in_subdivision_range(&self, sphere: &QuadSphere) -> bool {
@@ -1214,6 +1214,22 @@ impl QuadSphere {
         self.normal_update_queue.borrow_mut().push(quad);
     }
 
+    /// Converts a `VertCoord` to a position on the quad sphere (not
+    /// normalized).
+    fn vc_to_pos(&self, coord: VertCoord) -> Vector3<f32> {
+        let (x, y, z) = match coord {
+            VertCoord(Plane::XP, a, b) => (self.max_coord, b, self.max_coord - a),
+            VertCoord(Plane::XN, a, b) => (0, b, a),
+            VertCoord(Plane::YP, a, b) => (a, self.max_coord, self.max_coord - b),
+            VertCoord(Plane::YN, a, b) => (a, 0, b),
+            VertCoord(Plane::ZP, a, b) => (a, b, self.max_coord),
+            VertCoord(Plane::ZN, a, b) => (self.max_coord - a, b, 0),
+        };
+        Vector3::new(-1.0 + x as f32 * 2.0 / self.max_coord as f32,
+                     -1.0 + y as f32 * 2.0 / self.max_coord as f32,
+                     -1.0 + z as f32 * 2.0 / self.max_coord as f32)
+    }
+
     #[allow(dead_code)]
     fn debug_find_quad(&self, plane: Plane, path: &[QuadPos]) -> Rc<RefCell<Quad>> {
         let q = match plane {
@@ -1314,20 +1330,6 @@ impl BehaviourMessages for QuadSphere {
     fn material(&self) -> Option<&Material> {
         None
     }
-}
-
-fn map_vertcoord(coord: VertCoord, max_coord: u32) -> Vector3<f32> {
-    let (x, y, z) = match coord {
-        VertCoord(Plane::XP, a, b) => (max_coord, b, max_coord - a),
-        VertCoord(Plane::XN, a, b) => (0, b, a),
-        VertCoord(Plane::YP, a, b) => (a, max_coord, max_coord - b),
-        VertCoord(Plane::YN, a, b) => (a, 0, b),
-        VertCoord(Plane::ZP, a, b) => (a, b, max_coord),
-        VertCoord(Plane::ZN, a, b) => (max_coord - a, b, 0),
-    };
-    Vector3::new(-1.0 + x as f32 * 2.0 / max_coord as f32,
-                 -1.0 + y as f32 * 2.0 / max_coord as f32,
-                 -1.0 + z as f32 * 2.0 / max_coord as f32)
 }
 
 /// Maps a given vector and position on one plane to another. It allows other
