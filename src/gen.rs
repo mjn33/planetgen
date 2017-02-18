@@ -1,5 +1,3 @@
-use cgmath::Vector3;
-
 bitflags! {
     pub flags PatchFlags: u32 {
         const PATCH_FLAGS_NONE = 0x00,
@@ -18,19 +16,6 @@ pub fn vert_off(x: u16, y: u16, stride: u16) -> u16 {
 /// Utility function for pushing a triangle to an indices buffer.
 fn push_tri(indices: &mut Vec<u16>, a: u16, b: u16, c: u16) {
     indices.push(a); indices.push(b); indices.push(c);
-}
-
-/// Generate a `Vec` containing a `size + 1` by `size + 1` grid of vertices.
-pub fn gen_vertices(size: u16) -> Vec<Vector3<f32>> {
-    let adj_size = size + 1;
-    let mut vertices = Vec::new();
-    let diff = 2.0 / size as f32;
-    for x in 0..adj_size {
-        for y in 0..adj_size {
-            vertices.push(Vector3::new(-1.0 + x as f32 * diff, -1.0 + y as f32 * diff, 0.0));
-        }
-    }
-    vertices
 }
 
 /// Generate indices to fill the specified range on a grid of size `size`.

@@ -16,10 +16,10 @@ use glium::DisplayBuild;
 
 use num::{Zero, One};
 
-use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, Scene, Shader};
+use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, Object, Scene, Shader};
 
-use gen::{gen_indices, gen_vertices, vert_off, PatchFlags, PATCH_FLAGS_NONE, PATCH_FLAGS_NORTH,
-          PATCH_FLAGS_SOUTH, PATCH_FLAGS_EAST, PATCH_FLAGS_WEST};
+use gen::{gen_indices, vert_off, PatchFlags, PATCH_FLAGS_NONE, PATCH_FLAGS_NORTH, PATCH_FLAGS_SOUTH,
+          PATCH_FLAGS_EAST, PATCH_FLAGS_WEST};
 
 impl From<QuadSide> for PatchFlags {
     fn from(side: QuadSide) -> Self {
@@ -239,7 +239,7 @@ struct Quad {
     plane: Plane,
     pos: QuadPos,
     mesh: Option<Rc<Mesh>>,
-    shader: Option<Rc<Shader>>,
+    render: bool,
     material: Option<Rc<Material>>,
     base_coord: (u32, u32),
     cur_subdivision: u32,
@@ -264,55 +264,6 @@ struct Quad {
 }
 
 impl Quad {
-    fn init(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
-        let vert_step = 1 << (sphere.max_subdivision - self.cur_subdivision);
-        let adj_size = sphere.quad_mesh_size + 1;
-        let mut vertices = gen_vertices(sphere.quad_mesh_size);
-        let indices = gen_indices(sphere.quad_mesh_size, PATCH_FLAGS_NONE);
-
-        let vert_off = |x, y| vert_off(x, y, adj_size);
-        for x in 0..adj_size {
-            for y in 0..adj_size {
-                let vert_coord = VertCoord(self.plane,
-                                           self.base_coord.0 + x as u32 * vert_step,
-                                           self.base_coord.1 + y as u32 * vert_step);
-
-                let vert_pos = sphere.vc_to_pos(vert_coord).normalize();
-                let off = vert_off(x, y);
-                vertices[off as usize] = Vector3::new(vert_pos.x, vert_pos.y, vert_pos.z);
-            }
-        }
-
-        self.non_normalized.resize(vertices.len(), Vector3::zero());
-
-        // Base the mesh indices from `PATCH_FLAGS_NONE` since that generates the
-        // largest buffer size.
-        let mesh = scene.create_mesh(vertices.len(), indices.len());
-        *mesh.vpos_mut(scene).unwrap() = vertices;
-        *mesh.indices_mut(scene).unwrap() = indices;
-
-        let shader = scene.create_shader(
-            include_str!("default_vs.glsl"),
-            include_str!("default_fs.glsl"),
-            None);
-        let material = scene.create_material(shader.clone()).unwrap();
-
-        self.mesh = Some(mesh);
-        self.shader = Some(shader);
-        self.material = Some(material);
-
-        self.calc_normals(scene);
-
-        self.mid_coord_pos = self.mid_coord_pos(sphere);
-
-        self.patch_flags = PATCH_FLAGS_NONE;
-
-        // TODO: reduce cloning
-        let self_object = self.behaviour.object(scene).unwrap().clone();
-        let sphere_object = sphere.behaviour().object(scene).unwrap().clone();
-        scene.set_object_parent(&self_object, Some(&sphere_object));
-    }
-
     fn calc_normals(&mut self, scene: &mut Scene) {
         {
             let verts = self.mesh.as_ref().unwrap().vpos(scene).unwrap();
@@ -574,14 +525,27 @@ impl Quad {
     fn subdivide(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
         let half_quad_length = sphere.quad_length(self.cur_subdivision) / 2;
 
-        let upper_left_obj = scene.create_object();
-        let upper_left = scene.add_behaviour::<Quad>(&upper_left_obj).unwrap();
-        let upper_right_obj = scene.create_object();
-        let upper_right = scene.add_behaviour::<Quad>(&upper_right_obj).unwrap();
-        let lower_left_obj = scene.create_object();
-        let lower_left = scene.add_behaviour::<Quad>(&lower_left_obj).unwrap();
-        let lower_right_obj = scene.create_object();
-        let lower_right = scene.add_behaviour::<Quad>(&lower_right_obj).unwrap();
+        let upper_left_base_coord = (self.base_coord.0, self.base_coord.1 + half_quad_length);
+        let upper_right_base_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1 + half_quad_length);
+        let lower_left_base_coord = (self.base_coord.0, self.base_coord.1);
+        let lower_right_base_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1);
+
+        let (upper_left_vertices,
+             upper_right_vertices,
+             lower_left_vertices,
+             lower_right_vertices) =
+            sphere.calc_subdivided_verts(self.plane,
+                                         upper_left_base_coord,
+                                         upper_right_base_coord,
+                                         lower_left_base_coord,
+                                         lower_right_base_coord,
+                                         self.cur_subdivision + 1);
+
+        let sphere_obj = sphere.behaviour().object(scene).unwrap().clone();
+        let (upper_left_obj, upper_left) = sphere.quad_pool().get_quad(scene);
+        let (upper_right_obj, upper_right) = sphere.quad_pool().get_quad(scene);
+        let (lower_left_obj, lower_left) = sphere.quad_pool().get_quad(scene);
+        let (lower_right_obj, lower_right) = sphere.quad_pool().get_quad(scene);
 
         let direct_north = self.direct_north();
         let direct_south = self.direct_south();
@@ -601,8 +565,12 @@ impl Quad {
             upper_left.south = Some(Rc::downgrade(&lower_left));
             upper_left.west = direct_west.as_ref().map(Rc::downgrade);
             upper_left.cur_subdivision = self.cur_subdivision + 1;
-            upper_left.base_coord = (self.base_coord.0, self.base_coord.1 + half_quad_length);
-            upper_left.init(sphere, scene);
+            upper_left.base_coord = upper_left_base_coord;
+            upper_left.render = true;
+            upper_left.mid_coord_pos = upper_left.mid_coord_pos(sphere);
+            scene.set_object_parent(&upper_left_obj, Some(&sphere_obj));
+            let mesh = upper_left.mesh.as_ref().unwrap();
+            *mesh.vpos_mut(scene).unwrap() = upper_left_vertices;
         }
         sphere.queue_normal_update(upper_left.clone());
 
@@ -619,8 +587,12 @@ impl Quad {
             upper_right.south = Some(Rc::downgrade(&lower_right));
             upper_right.west = Some(Rc::downgrade(&upper_left));
             upper_right.cur_subdivision = self.cur_subdivision + 1;
-            upper_right.base_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1 + half_quad_length);
-            upper_right.init(sphere, scene);
+            upper_right.base_coord = upper_right_base_coord;
+            upper_right.render = true;
+            upper_right.mid_coord_pos = upper_right.mid_coord_pos(sphere);
+            scene.set_object_parent(&upper_right_obj, Some(&sphere_obj));
+            let mesh = upper_right.mesh.as_ref().unwrap();
+            *mesh.vpos_mut(scene).unwrap() = upper_right_vertices;
         }
         sphere.queue_normal_update(upper_right.clone());
 
@@ -637,8 +609,12 @@ impl Quad {
             lower_left.south = direct_south.as_ref().map(Rc::downgrade);
             lower_left.west = direct_west.as_ref().map(Rc::downgrade);
             lower_left.cur_subdivision = self.cur_subdivision + 1;
-            lower_left.base_coord = (self.base_coord.0, self.base_coord.1);
-            lower_left.init(sphere, scene);
+            lower_left.base_coord = lower_left_base_coord;
+            lower_left.render = true;
+            lower_left.mid_coord_pos = lower_left.mid_coord_pos(sphere);
+            scene.set_object_parent(&lower_left_obj, Some(&sphere_obj));
+            let mesh = lower_left.mesh.as_ref().unwrap();
+            *mesh.vpos_mut(scene).unwrap() = lower_left_vertices;
         }
         sphere.queue_normal_update(lower_left.clone());
 
@@ -655,8 +631,12 @@ impl Quad {
             lower_right.south = direct_south.as_ref().map(Rc::downgrade);
             lower_right.west = Some(Rc::downgrade(&lower_left));
             lower_right.cur_subdivision = self.cur_subdivision + 1;
-            lower_right.base_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1);
-            lower_right.init(sphere, scene);
+            lower_right.base_coord = lower_right_base_coord;
+            lower_right.render = true;
+            lower_right.mid_coord_pos = lower_right.mid_coord_pos(sphere);
+            scene.set_object_parent(&lower_right_obj, Some(&sphere_obj));
+            let mesh = lower_right.mesh.as_ref().unwrap();
+            *mesh.vpos_mut(scene).unwrap() = lower_right_vertices;
         }
         sphere.queue_normal_update(lower_right.clone());
 
@@ -803,11 +783,10 @@ impl Quad {
         self.children = Some([upper_left, upper_right, lower_left, lower_right]);
     }
 
-    fn collapse(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
+    fn collapse(&mut self, sphere: &QuadSphere) {
         for q in self.children.as_ref().unwrap() {
-            // TODO: reduce cloning
-            let q_obj = q.borrow().behaviour().object(scene).unwrap().clone();
-            scene.destroy_object(&q_obj);
+            q.borrow_mut().render = false;
+            sphere.quad_pool().recycle_quad(q.clone());
         }
 
         let direct_north = self.direct_north().unwrap();
@@ -941,7 +920,7 @@ impl Quad {
             && self.can_subdivide() {
             self.subdivide(sphere, scene);
         } else if self.is_subdivided() && self.in_collapse_range(sphere) && self.can_collapse() {
-            self.collapse(sphere, scene);
+            self.collapse(sphere);
         } else if self.is_subdivided() {
             for q in self.children.as_ref().unwrap() {
                 q.borrow_mut().check_subdivision(sphere, scene);
@@ -949,12 +928,24 @@ impl Quad {
         }
     }
 
+    /// Recurses through the quad tree destroying all quad objects.
+    fn cleanup(&mut self, scene: &mut Scene) {
+        if self.is_subdivided() {
+            for q in self.children.as_ref().unwrap() {
+                q.borrow_mut().cleanup(scene);
+            }
+        }
+        let self_obj = self.behaviour().object(scene).unwrap().clone();
+        scene.destroy_object(&self_obj);
+    }
+
     fn update_normals(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
         {
             let mesh = self.mesh.as_ref().unwrap();
-            // FIXME: inefficient, should be fixed in up-coming quad pooling patch
-            let indices = gen_indices(sphere.quad_mesh_size, self.patch_flags);
-            *mesh.indices_mut(scene).unwrap() = indices;
+            let indices = mesh.indices_mut(scene).unwrap();
+            let new_indices = sphere.quad_pool().get_indices(self.patch_flags);
+            indices.clear();
+            indices.extend(new_indices);
         }
         self.calc_normals(scene);
     }
@@ -992,7 +983,7 @@ impl BehaviourMessages for Quad {
             plane: Plane::XP,
             pos: QuadPos::None,
             mesh: None,
-            shader: None,
+            render: false,
             material: None,
             base_coord: (0, 0),
             cur_subdivision: 0,
@@ -1021,8 +1012,6 @@ impl BehaviourMessages for Quad {
 
     fn destroy(&mut self, scene: &mut Scene) {
         self.mesh.take().map(|mesh| scene.destroy_mesh(&*mesh));
-        self.material.take().map(|material| scene.destroy_material(&*material));
-        self.shader.take().map(|shader| scene.destroy_shader(&*shader));
     }
 
     fn behaviour(&self) -> &Behaviour {
@@ -1030,7 +1019,7 @@ impl BehaviourMessages for Quad {
     }
 
     fn mesh(&self) -> Option<&Mesh> {
-        if !self.is_subdivided() {
+        if self.render && !self.is_subdivided() {
             self.mesh.as_ref().map(|mesh| &**mesh)
         } else {
             None
@@ -1038,7 +1027,7 @@ impl BehaviourMessages for Quad {
     }
 
     fn material(&self) -> Option<&Material> {
-        if !self.is_subdivided() {
+        if self.render && !self.is_subdivided() {
             self.material.as_ref().map(|material| &**material)
         } else {
             None
@@ -1060,6 +1049,7 @@ struct QuadSphere {
     centre_pos: Vector3<f32>,
     faces: Option<[Rc<RefCell<Quad>>; 6]>,
     normal_update_queue: RefCell<Vec<Rc<RefCell<Quad>>>>,
+    quad_pool: Option<QuadPool>,
 }
 
 impl QuadSphere {
@@ -1074,24 +1064,29 @@ impl QuadSphere {
 
         self.calc_ranges();
 
-        let xp_quad_obj = scene.create_object();
-        let xp_quad = scene.add_behaviour::<Quad>(&xp_quad_obj).unwrap();
-        let xn_quad_obj = scene.create_object();
-        let xn_quad = scene.add_behaviour::<Quad>(&xn_quad_obj).unwrap();
-        let yp_quad_obj = scene.create_object();
-        let yp_quad = scene.add_behaviour::<Quad>(&yp_quad_obj).unwrap();
-        let yn_quad_obj = scene.create_object();
-        let yn_quad = scene.add_behaviour::<Quad>(&yn_quad_obj).unwrap();
-        let zp_quad_obj = scene.create_object();
-        let zp_quad = scene.add_behaviour::<Quad>(&zp_quad_obj).unwrap();
-        let zn_quad_obj = scene.create_object();
-        let zn_quad = scene.add_behaviour::<Quad>(&zn_quad_obj).unwrap();
+        self.quad_pool = Some(QuadPool::new(scene, quad_mesh_size, 500));
+
+        let xp_quad_vertices = self.calc_quad_verts(Plane::XP, (0, 0), 0);
+        let xn_quad_vertices = self.calc_quad_verts(Plane::XN, (0, 0), 0);
+        let yp_quad_vertices = self.calc_quad_verts(Plane::YP, (0, 0), 0);
+        let yn_quad_vertices = self.calc_quad_verts(Plane::YN, (0, 0), 0);
+        let zp_quad_vertices = self.calc_quad_verts(Plane::ZP, (0, 0), 0);
+        let zn_quad_vertices = self.calc_quad_verts(Plane::ZN, (0, 0), 0);
+
+        let (xp_quad_obj, xp_quad) = self.quad_pool.as_mut().unwrap().get_quad(scene);
+        let (xn_quad_obj, xn_quad) = self.quad_pool.as_mut().unwrap().get_quad(scene);
+        let (yp_quad_obj, yp_quad) = self.quad_pool.as_mut().unwrap().get_quad(scene);
+        let (yn_quad_obj, yn_quad) = self.quad_pool.as_mut().unwrap().get_quad(scene);
+        let (zp_quad_obj, zp_quad) = self.quad_pool.as_mut().unwrap().get_quad(scene);
+        let (zn_quad_obj, zn_quad) = self.quad_pool.as_mut().unwrap().get_quad(scene);
 
         {
             let self_ptr = Rc::downgrade(&xp_quad);
             let mut xp_quad = xp_quad.borrow_mut();
             xp_quad.plane = Plane::XP;
             xp_quad.pos = QuadPos::None;
+            xp_quad.needs_normal_update = true;
+            xp_quad.needs_normal_merge = true;
             xp_quad.self_ptr = Some(self_ptr);
             xp_quad.north = Some(Rc::downgrade(&yp_quad));
             xp_quad.south = Some(Rc::downgrade(&yn_quad));
@@ -1099,14 +1094,20 @@ impl QuadSphere {
             xp_quad.west = Some(Rc::downgrade(&zp_quad));
             xp_quad.cur_subdivision = 0;
             xp_quad.base_coord = (0, 0);
-            xp_quad.init(self, scene);
+            xp_quad.render = true;
+            xp_quad.mid_coord_pos = xp_quad.mid_coord_pos(self);
+            let mesh = xp_quad.mesh.as_ref().unwrap();
+            *mesh.vpos_mut(scene).unwrap() = xp_quad_vertices;
         }
+        self.queue_normal_update(xp_quad.clone());
 
         {
             let self_ptr = Rc::downgrade(&xn_quad);
             let mut xn_quad = xn_quad.borrow_mut();
             xn_quad.plane = Plane::XN;
             xn_quad.pos = QuadPos::None;
+            xn_quad.needs_normal_update = true;
+            xn_quad.needs_normal_merge = true;
             xn_quad.self_ptr = Some(self_ptr);
             xn_quad.north = Some(Rc::downgrade(&yp_quad));
             xn_quad.south = Some(Rc::downgrade(&yn_quad));
@@ -1114,14 +1115,20 @@ impl QuadSphere {
             xn_quad.west = Some(Rc::downgrade(&zn_quad));
             xn_quad.cur_subdivision = 0;
             xn_quad.base_coord = (0, 0);
-            xn_quad.init(self, scene);
+            xn_quad.render = true;
+            xn_quad.mid_coord_pos = xn_quad.mid_coord_pos(self);
+            let mesh = xn_quad.mesh.as_ref().unwrap();
+            *mesh.vpos_mut(scene).unwrap() = xn_quad_vertices;
         }
+        self.queue_normal_update(xn_quad.clone());
 
         {
             let self_ptr = Rc::downgrade(&yp_quad);
             let mut yp_quad = yp_quad.borrow_mut();
             yp_quad.plane = Plane::YP;
             yp_quad.pos = QuadPos::None;
+            yp_quad.needs_normal_update = true;
+            yp_quad.needs_normal_merge = true;
             yp_quad.self_ptr = Some(self_ptr);
             yp_quad.north = Some(Rc::downgrade(&zn_quad));
             yp_quad.south = Some(Rc::downgrade(&zp_quad));
@@ -1129,14 +1136,20 @@ impl QuadSphere {
             yp_quad.west = Some(Rc::downgrade(&xn_quad));
             yp_quad.cur_subdivision = 0;
             yp_quad.base_coord = (0, 0);
-            yp_quad.init(self, scene);
+            yp_quad.render = true;
+            yp_quad.mid_coord_pos = yp_quad.mid_coord_pos(self);
+            let mesh = yp_quad.mesh.as_ref().unwrap();
+            *mesh.vpos_mut(scene).unwrap() = yp_quad_vertices;
         }
+        self.queue_normal_update(yp_quad.clone());
 
         {
             let self_ptr = Rc::downgrade(&yn_quad);
             let mut yn_quad = yn_quad.borrow_mut();
             yn_quad.plane = Plane::YN;
             yn_quad.pos = QuadPos::None;
+            yn_quad.needs_normal_update = true;
+            yn_quad.needs_normal_merge = true;
             yn_quad.self_ptr = Some(self_ptr);
             yn_quad.north = Some(Rc::downgrade(&zp_quad));
             yn_quad.south = Some(Rc::downgrade(&zn_quad));
@@ -1144,14 +1157,20 @@ impl QuadSphere {
             yn_quad.west = Some(Rc::downgrade(&xn_quad));
             yn_quad.cur_subdivision = 0;
             yn_quad.base_coord = (0, 0);
-            yn_quad.init(self, scene);
+            yn_quad.render = true;
+            yn_quad.mid_coord_pos = yn_quad.mid_coord_pos(self);
+            let mesh = yn_quad.mesh.as_ref().unwrap();
+            *mesh.vpos_mut(scene).unwrap() = yn_quad_vertices;
         }
+        self.queue_normal_update(yn_quad.clone());
 
         {
             let self_ptr = Rc::downgrade(&zp_quad);
             let mut zp_quad = zp_quad.borrow_mut();
             zp_quad.plane = Plane::ZP;
             zp_quad.pos = QuadPos::None;
+            zp_quad.needs_normal_update = true;
+            zp_quad.needs_normal_merge = true;
             zp_quad.self_ptr = Some(self_ptr);
             zp_quad.north = Some(Rc::downgrade(&yp_quad));
             zp_quad.south = Some(Rc::downgrade(&yn_quad));
@@ -1159,14 +1178,20 @@ impl QuadSphere {
             zp_quad.west = Some(Rc::downgrade(&xn_quad));
             zp_quad.cur_subdivision = 0;
             zp_quad.base_coord = (0, 0);
-            zp_quad.init(self, scene);
+            zp_quad.render = true;
+            zp_quad.mid_coord_pos = zp_quad.mid_coord_pos(self);
+            let mesh = zp_quad.mesh.as_ref().unwrap();
+            *mesh.vpos_mut(scene).unwrap() = zp_quad_vertices;
         }
+        self.queue_normal_update(zp_quad.clone());
 
         {
             let self_ptr = Rc::downgrade(&zn_quad);
             let mut zn_quad = zn_quad.borrow_mut();
             zn_quad.plane = Plane::ZN;
             zn_quad.pos = QuadPos::None;
+            zn_quad.needs_normal_update = true;
+            zn_quad.needs_normal_merge = true;
             zn_quad.self_ptr = Some(self_ptr);
             zn_quad.north = Some(Rc::downgrade(&yp_quad));
             zn_quad.south = Some(Rc::downgrade(&yn_quad));
@@ -1174,10 +1199,13 @@ impl QuadSphere {
             zn_quad.west = Some(Rc::downgrade(&xp_quad));
             zn_quad.cur_subdivision = 0;
             zn_quad.base_coord = (0, 0);
-            zn_quad.init(self, scene);
+            zn_quad.render = true;
+            zn_quad.mid_coord_pos = zn_quad.mid_coord_pos(self);
+            let mesh = zn_quad.mesh.as_ref().unwrap();
+            *mesh.vpos_mut(scene).unwrap() = zn_quad_vertices;
         }
+        self.queue_normal_update(zn_quad.clone());
 
-        // TODO: reduce cloning
         let self_object = self.behaviour().object(scene).unwrap().clone();
         scene.set_object_parent(&xp_quad_obj, Some(&self_object));
         scene.set_object_parent(&xn_quad_obj, Some(&self_object));
@@ -1253,6 +1281,44 @@ impl QuadSphere {
                      -1.0 + z as f32 * 2.0 / self.max_coord as f32)
     }
 
+    fn calc_quad_verts(&self, plane: Plane, base_coord: (u32, u32), subdivision: u32) -> Vec<Vector3<f32>> {
+        let vert_step = 1 << (self.max_subdivision - subdivision);
+        let adj_size = self.quad_mesh_size as usize + 1;
+
+        let mut vertices = Vec::with_capacity(adj_size * adj_size);
+        for x in 0..adj_size {
+            for y in 0..adj_size {
+                let vert_coord = VertCoord(plane,
+                                           base_coord.0 + x as u32 * vert_step,
+                                           base_coord.1 + y as u32 * vert_step);
+
+                let vert_pos = self.vc_to_pos(vert_coord).normalize();
+                vertices.push(Vector3::new(vert_pos.x, vert_pos.y, vert_pos.z));
+            }
+        }
+
+        vertices
+    }
+
+    fn calc_subdivided_verts(&self,
+                             plane: Plane,
+                             base_coord1: (u32, u32),
+                             base_coord2: (u32, u32),
+                             base_coord3: (u32, u32),
+                             base_coord4: (u32, u32),
+                             subdivision: u32)
+                             -> (Vec<Vector3<f32>>, Vec<Vector3<f32>>, Vec<Vector3<f32>>, Vec<Vector3<f32>>) {
+        let v1 = self.calc_quad_verts(plane, base_coord1, subdivision);
+        let v2 = self.calc_quad_verts(plane, base_coord2, subdivision);
+        let v3 = self.calc_quad_verts(plane, base_coord3, subdivision);
+        let v4 = self.calc_quad_verts(plane, base_coord4, subdivision);
+        (v1, v2, v3, v4)
+    }
+
+    fn quad_pool(&self) -> &QuadPool {
+        self.quad_pool.as_ref().unwrap()
+    }
+
     #[allow(dead_code)]
     fn debug_find_quad(&self, plane: Plane, path: &[QuadPos]) -> Rc<RefCell<Quad>> {
         let q = match plane {
@@ -1288,6 +1354,7 @@ impl BehaviourMessages for QuadSphere {
             centre_pos: Vector3::unit_z(),
             faces: None,
             normal_update_queue: RefCell::new(Vec::new()),
+            quad_pool: None,
         }
     }
 
@@ -1300,14 +1367,14 @@ impl BehaviourMessages for QuadSphere {
         self.prev_instant = std::time::Instant::now();
         let secs = diff.as_secs() as f32 + diff.subsec_nanos() as f32 / 1000000000.0;
 
-        let dps = 5.0;
+        let dps = 1.0;
         let change_rot = Quaternion::one().nlerp(self.ninety_deg, (dps / 45.0) * secs);
 
         // TODO: reduce cloning
         let rot = self.old_rot * change_rot;
         self.old_rot = rot;
 
-        self.centre_pos = (rot.invert() * (Vector3::unit_z())).normalize();
+        self.centre_pos = (rot.invert() * (-Vector3::unit_z())).normalize();
         for i in 0..6 {
             let q = self.faces.as_ref().unwrap()[i].clone();
             q.borrow_mut().check_subdivision(self, scene);
@@ -1331,15 +1398,25 @@ impl BehaviourMessages for QuadSphere {
 
         self.normal_update_queue.borrow_mut().clear();
 
-        let cam_pos = 1.5f32 * self.centre_pos;
-        let cam_rot = Quaternion::look_at(self.centre_pos, Vector3::unit_x()).invert();
+        let extra_rot = Quaternion::one().nlerp(self.ninety_deg, (60.0 / 45.0));
+        let cam_dir = -self.centre_pos.cross(Vector3::unit_x());
+        let cam_rot = Quaternion::look_at(cam_dir, self.centre_pos).invert() * extra_rot.invert();
+        let cam_pos = 1.1f32 * self.centre_pos;
+        //let cam_rot = Quaternion::look_at(self.centre_pos, Vector3::unit_x()).invert();
 
         let camera = self.camera.as_ref().unwrap();
         camera.set_pos(scene, cam_pos).unwrap();
         camera.set_rot(scene, cam_rot).unwrap();
     }
 
-    fn destroy(&mut self, _scene: &mut Scene) {
+    fn destroy(&mut self, scene: &mut Scene) {
+        for i in 0..6 {
+            let q = self.faces.as_ref().unwrap()[i].clone();
+            let q_obj = q.borrow().behaviour().object(scene).unwrap().clone();
+            q.borrow_mut().cleanup(scene);
+            scene.destroy_object(&q_obj);
+        }
+        self.quad_pool.as_ref().map(|p| p.cleanup(scene));
     }
 
     fn behaviour(&self) -> &Behaviour {
@@ -1897,6 +1974,133 @@ impl Quad {
             q2.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap()[q2_idx] = normalized;
             q3.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap()[q3_idx] = normalized;
         }
+    }
+}
+
+struct QuadPool {
+    shader: Rc<Shader>,
+    quad_material: Rc<Material>,
+    indices_configs: Vec<Vec<u16>>,
+    vertices_cap: usize,
+    indices_cap: usize,
+    pool: RefCell<Vec<Rc<RefCell<Quad>>>>,
+}
+
+impl QuadPool {
+    fn new(scene: &mut Scene, quad_mesh_size: u16, initial_size: usize) -> QuadPool {
+        let shader = scene.create_shader(
+            include_str!("default_vs.glsl"),
+            include_str!("default_fs.glsl"),
+            None);
+        let quad_material = scene.create_material(shader.clone()).unwrap();
+
+        let mut indices_configs = Vec::with_capacity(16);
+        for i in 0..16 {
+            indices_configs.push(gen_indices(quad_mesh_size, PatchFlags::from_bits(i).unwrap()));
+        }
+
+        let adj_size = quad_mesh_size as usize + 1;
+        let vertices_cap = adj_size * adj_size;
+        // Base the mesh indices capacity from `PATCH_FLAGS_NONE` since that
+        // generates the largest buffer size.
+        let indices_cap = indices_configs[PATCH_FLAGS_NONE.bits() as usize].len();
+
+        let pool = QuadPool {
+            shader: shader,
+            quad_material: quad_material,
+            indices_configs: indices_configs,
+            vertices_cap: vertices_cap,
+            indices_cap: indices_cap,
+            pool: RefCell::new(Vec::new())
+        };
+
+        let mut pool_vec = Vec::new();
+        for _ in 0..initial_size {
+            let (_, q) = pool.create_quad(scene);
+            pool_vec.push(q);
+        }
+
+        *pool.pool.borrow_mut() = pool_vec;
+
+        pool
+    }
+
+    fn create_quad(&self, scene: &mut Scene) -> (Rc<Object>, Rc<RefCell<Quad>>) {
+        let q_obj = scene.create_object();
+        let q = scene.add_behaviour::<Quad>(&q_obj).unwrap();
+
+        {
+            let mut q_borrow = q.borrow_mut();
+            let mesh = scene.create_mesh(self.vertices_cap, self.indices_cap);
+
+            q_borrow.non_normalized = vec![Vector3::zero(); self.vertices_cap];
+            // Don't allocate for vpos since it will be allocated elsewhere
+            *mesh.vpos_mut(scene).unwrap() = Vec::new();
+            *mesh.vnorm_mut(scene).unwrap() = vec![Vector3::zero(); self.vertices_cap];
+            *mesh.indices_mut(scene).unwrap() = self.indices_configs[PATCH_FLAGS_NONE.bits() as usize].clone();
+            q_borrow.mesh = Some(mesh);
+            q_borrow.material = Some(self.quad_material.clone());
+        }
+
+        (q_obj, q)
+    }
+
+    /// Performs a partial default initialization of the given `Quad`
+    fn default_init_quad(quad: &mut Quad) {
+        quad.plane = Plane::XP;
+        quad.pos = QuadPos::None;
+
+        quad.render = false;
+
+        quad.base_coord = (0, 0);
+        quad.cur_subdivision = 0;
+        quad.mid_coord_pos = Vector3::new(0.0, 0.0, 0.0);
+        quad.patch_flags = PATCH_FLAGS_NONE;
+
+        quad.needs_normal_update = false;
+        quad.needs_normal_merge = false;
+
+        quad.self_ptr = None;
+        quad.children = None;
+        quad.north = None;
+        quad.south = None;
+        quad.east = None;
+        quad.west = None;
+    }
+
+    /// Get a quad from the pool, allocating a new one only if there are no more
+    /// quads remaining in the pool.
+    fn get_quad(&self, scene: &mut Scene) -> (Rc<Object>, Rc<RefCell<Quad>>) {
+        if let Some(q) = self.pool.borrow_mut().pop() {
+            QuadPool::default_init_quad(&mut *q.borrow_mut());
+            let q_obj = q.borrow().behaviour().object(scene).unwrap().clone();
+            (q_obj, q)
+        } else {
+            let (q_obj, q) = self.create_quad(scene);
+            QuadPool::default_init_quad(&mut *q.borrow_mut());
+            (q_obj, q)
+        }
+    }
+
+    /// Get the indices for a given `PatchFlags` configuration.
+    fn get_indices(&self, flags: PatchFlags) -> &Vec<u16> {
+        &self.indices_configs[flags.bits() as usize]
+    }
+
+    /// Release ownership of the given quad and add it to the pool.
+    fn recycle_quad(&self, quad: Rc<RefCell<Quad>>) {
+        self.pool.borrow_mut().push(quad);
+    }
+
+    /// Perform cleanup in preparation for being destroyed.
+    fn cleanup(&self, scene: &mut Scene) {
+        scene.destroy_material(&*self.quad_material);
+        scene.destroy_shader(&*self.shader);
+        for q in &*self.pool.borrow() {
+            let q_obj = q.borrow().behaviour().object(scene).unwrap().clone();
+            scene.destroy_object(&q_obj);
+        }
+        self.pool.borrow_mut().clear();
     }
 }
 
