@@ -1965,7 +1965,7 @@ fn main() {
     let quad_sphere_obj = scene.create_object();
     let quad_sphere = scene.add_behaviour::<QuadSphere>(&quad_sphere_obj).unwrap();
     quad_sphere.borrow_mut().camera = Some(camera);
-    quad_sphere.borrow_mut().init(&mut scene, 8, 5);
+    quad_sphere.borrow_mut().init(&mut scene, 8, 9);
     quad_sphere_obj.set_world_pos(&mut scene, Vector3::new(0.0, 0.0, 0.0)).unwrap();
     //quad_sphere.borrow().object().set_world_rot(&mut scene, Quaternion::from(Euler { x: Deg(45.0), y: Deg(0.0), z: Deg(0.0) })).unwrap();
 
