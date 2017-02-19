@@ -160,12 +160,6 @@ impl Camera {
 }
 
 #[derive(Copy, Clone)]
-pub struct Vertex {
-    pub vert_pos: [f32; 3],
-}
-implement_vertex!(Vertex, vert_pos);
-
-#[derive(Copy, Clone)]
 struct VertDataPN {
     vpos: [f32; 3],
     vnorm: [f32; 3],

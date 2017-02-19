@@ -2,9 +2,9 @@
 
 //! # Core engine
 
+#[cfg(test)]
 #[macro_use]
 extern crate approx;
-
 extern crate cgmath;
 #[macro_use]
 extern crate glium;
