@@ -10,6 +10,7 @@ extern crate cgmath;
 extern crate glium;
 extern crate num;
 
+pub mod error;
 mod scene;
 
 pub use self::scene::*;
