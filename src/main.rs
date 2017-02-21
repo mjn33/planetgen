@@ -2027,7 +2027,7 @@ impl QuadPool {
 
     fn create_quad(&self, scene: &mut Scene) -> (Rc<Object>, Rc<RefCell<Quad>>) {
         let q_obj = scene.create_object();
-        let q = scene.add_behaviour::<Quad>(&q_obj).unwrap();
+        let q = scene.add_component::<RefCell<Quad>>(&q_obj).unwrap();
 
         {
             let mut q_borrow = q.borrow_mut();
@@ -2162,12 +2162,13 @@ fn main() {
         .build_glium().unwrap();
 
     let mut scene = Scene::new(display);
-    let camera = scene.create_camera();
+    let camera_obj = scene.create_object();
+    let camera = scene.add_component::<Camera>(&*camera_obj).unwrap();//scene.create_camera();
     camera.set_near_clip(&mut scene, 0.01).unwrap();
     camera.set_far_clip(&mut scene, 10.0).unwrap();
 
     let quad_sphere_obj = scene.create_object();
-    let quad_sphere = scene.add_behaviour::<QuadSphere>(&quad_sphere_obj).unwrap();
+    let quad_sphere = scene.add_component::<RefCell<QuadSphere>>(&quad_sphere_obj).unwrap();
     quad_sphere.borrow_mut().camera = Some(camera);
     quad_sphere.borrow_mut().init(&mut scene, 8, 9);
     quad_sphere_obj.set_world_pos(&mut scene, Vector3::new(0.0, 0.0, 0.0)).unwrap();

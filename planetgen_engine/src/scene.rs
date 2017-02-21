@@ -6,10 +6,11 @@ use glium::{IndexBuffer, Program, Surface, VertexBuffer};
 use glium::backend::glutin_backend::GlutinFacade;
 use num::{Zero, One};
 use std;
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use traits::Component;
 
 fn post_add<T: Copy + std::ops::Add<Output=T>>(a: &mut T, b: T) -> T {
     let c = *a;
@@ -20,6 +21,8 @@ fn post_add<T: Copy + std::ops::Add<Output=T>>(a: &mut T, b: T) -> T {
 struct CameraData {
     /// Reference to the camera object.
     camera: Rc<Camera>,
+    /// Reference to the object we are a component of.
+    parent: Rc<Object>,
     /// True when this camera should be used for rendering.
     enabled: bool,
     /// True when the camera has been marked for destruction at the end of the
@@ -115,6 +118,44 @@ impl Camera {
 
     pub fn is_valid(&self) -> bool {
         self.idx.get().is_some()
+    }
+}
+
+impl Component for Camera {
+    fn init(scene: &mut Scene, object: &Object) -> Result<Rc<Camera>> {
+        scene.create_camera(object)
+    }
+
+    fn marked(&self, scene: &Scene) -> Result<bool> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                scene.camera_data[i].marked
+            })
+    }
+
+    fn destroy(&self, scene: &mut Scene) {
+        scene.destroy_camera(self);
+    }
+}
+
+impl<T> Component for RefCell<T> where T: BehaviourMessages + 'static {
+    fn init(scene: &mut Scene, object: &Object) -> Result<Rc<RefCell<T>>> {
+        scene.create_behaviour::<T>(object)
+    }
+
+    fn marked(&self, scene: &Scene) -> Result<bool> {
+        // FIXME: borrow() could fail, how should this be handled?
+        self.borrow().behaviour().idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                scene.behaviour_data[i].marked
+            })
+    }
+
+    fn destroy(&self, scene: &mut Scene) {
+        // FIXME: borrow() could fail, how should this be handled?
+        scene.destroy_behaviour2(&*self.borrow());
     }
 }
 
@@ -326,14 +367,36 @@ pub trait BehaviourMessages {
 
 trait AnyBehaviour: Any {
     fn as_any(&self) -> &Any;
+    /// Same as `Any::get_type_id` but stable.
+    fn type_id(&self) -> TypeId;
     fn borrow(&self) -> std::cell::Ref<BehaviourMessages>;
     fn borrow_mut(&self) -> std::cell::RefMut<BehaviourMessages>;
+}
+
+trait AnyComponent: Any + Component {
+    fn as_any(&self) -> &Any;
+    fn type_id(&self) -> TypeId;
+}
+
+impl<T: Component + 'static> AnyComponent for T {
+    fn as_any(&self) -> &Any {
+        self
+    }
+
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<Self>()
+    }
 }
 
 impl<T: BehaviourMessages + 'static> AnyBehaviour for RefCell<T> {
     fn as_any(&self) -> &Any {
         self
     }
+
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<Self>()
+    }
+
     fn borrow(&self) -> std::cell::Ref<BehaviourMessages> {
         RefCell::borrow(self)
     }
@@ -376,8 +439,8 @@ impl Behaviour {
 struct ObjectData {
     /// Reference to the object.
     object: Rc<Object>,
-    /// TODO: temporary, allow multiple behaviours / components
-    behaviour: Option<Rc<AnyBehaviour>>,
+    /// The components attached to this object.
+    components: HashMap<TypeId, Rc<AnyComponent>>,
     /// True when the object has been marked for destruction at the end of the
     /// frame.
     marked: bool,
@@ -580,10 +643,19 @@ impl Scene {
         }
     }
 
-    pub fn create_camera(&mut self) -> Rc<Camera> {
+    fn create_camera(&mut self, object: &Object) -> Result<Rc<Camera>> {
+        let obj_idx = match object.idx.get() {
+            Some(idx) => idx,
+            None => {
+                return Err(Error::ObjectDestroyed)
+            }
+        };
+        let obj_data = &mut self.object_data[obj_idx];
+
         let rv = Rc::new(Camera { idx: Cell::new(None) });
         let data = CameraData {
             camera: rv.clone(),
+            parent: obj_data.object.clone(),
             enabled: true,
             marked: false,
             rot: Quaternion::from(Euler {
@@ -600,7 +672,7 @@ impl Scene {
         };
         self.camera_data.push(data);
         rv.idx.set(Some(self.camera_data.len() - 1));
-        rv
+        Ok(rv)
     }
 
     pub fn create_mesh(&mut self, vert_capacity: usize, indices_capacity: usize) -> Rc<Mesh> {
@@ -677,30 +749,14 @@ impl Scene {
         rv
     }
 
-    pub fn add_behaviour<T: BehaviourMessages + 'static>(&mut self, object: &Object) -> Result<Rc<RefCell<T>>> {
+    fn create_behaviour<T: BehaviourMessages + 'static>(&mut self, object: &Object) -> Result<Rc<RefCell<T>>> {
         let obj_idx = match object.idx.get() {
             Some(idx) => idx,
             None => {
                 return Err(Error::ObjectDestroyed)
             }
         };
-
         let obj_data = &mut self.object_data[obj_idx];
-        {
-            let behaviour_data = &self.behaviour_data;
-            if obj_data.behaviour
-                .as_ref()
-                .and_then(|b| b.borrow().behaviour().idx.get())
-                .map_or(false, |idx| !behaviour_data[idx].marked) {
-                // TODO: dedicated error variant
-                return Err(Error::Other);
-            }
-        }
-        if obj_data.marked {
-            // TODO: dedicated error variant
-            return Err(Error::Other)
-        }
-
 
         let t = T::create(Behaviour { idx: Cell::new(None) });
         let rv = Rc::new(RefCell::new(t));
@@ -712,13 +768,10 @@ impl Scene {
         };
         self.behaviour_data.push(data);
         rv.borrow().behaviour().idx.set(Some(self.behaviour_data.len() - 1));
-
-        obj_data.behaviour = Some(rv.clone());
-
         Ok(rv)
     }
 
-    pub fn get_behaviour<T: BehaviourMessages + 'static>(&self, object: &Object) -> Result<Rc<RefCell<T>>> {
+    pub fn add_component<T: Component + 'static>(&mut self, object: &Object) -> Result<Rc<T>> {
         let obj_idx = match object.idx.get() {
             Some(idx) => idx,
             None => {
@@ -726,18 +779,54 @@ impl Scene {
             }
         };
 
-        let bhav = match self.object_data[obj_idx].behaviour {
-            Some(ref behaviour) => behaviour.clone(),
+        let id = TypeId::of::<T>();
+
+        {
+            let obj_data = &self.object_data[obj_idx];
+            // Only overwrite if it doesn't exist or is marked
+            let overwrite = obj_data.components.get(&id)
+                .map_or(Ok(true), |comp| comp.marked(self));
+            let overwrite = overwrite.expect("Destroyed component found still attached to object");
+            if !overwrite {
+                return Err(Error::Other);
+            }
+            if obj_data.marked {
+                // TODO: dedicated error variant
+                return Err(Error::Other)
+            }
+        }
+
+        let comp = try!(T::init(self, object));
+
+        let obj_data = &mut self.object_data[obj_idx];
+        obj_data.components.insert(id, comp.clone());
+
+        Ok(comp)
+    }
+
+    pub fn get_component<T: Component + 'static>(&self, object: &Object) -> Result<Rc<T>> {
+        let obj_idx = match object.idx.get() {
+            Some(idx) => idx,
+            None => {
+                return Err(Error::ObjectDestroyed)
+            }
+        };
+
+        let id = TypeId::of::<T>();
+
+        let comp = match self.object_data[obj_idx].components.get(&id) {
+            Some(comp) => comp.clone(),
             None => {
                 // TODO: dedicated error variant
                 return Err(Error::Other)
             }
         };
-        if bhav.as_any().is::<RefCell<T>>() {
+
+        if comp.as_any().is::<T>() {
             unsafe {
-                let raw: *mut AnyBehaviour = &*bhav as *const _ as *mut _;
-                std::mem::forget(bhav);
-                Ok(Rc::from_raw(raw as *mut RefCell<T>))
+                let raw: *mut AnyComponent = &*comp as *const _ as *mut _;
+                std::mem::forget(comp);
+                Ok(Rc::from_raw(raw as *mut T))
             }
         } else {
             // TODO: dedicated error variant
@@ -749,7 +838,7 @@ impl Scene {
         let rv = Rc::new(Object { idx: Cell::new(None) });
         let obj_data = ObjectData {
             object: rv.clone(),
-            behaviour: None,
+            components: HashMap::new(),
             marked: false,
         };
         let trans_data = TransformData {
@@ -877,24 +966,30 @@ impl Scene {
         self.destroy_object_internal(object_idx);
     }
 
+    fn destroy_behaviour2<T: BehaviourMessages>(&mut self, behaviour: &T) {
+        self.destroy_behaviour(behaviour.behaviour());
+    }
+
     fn destroy_object_internal(&mut self, idx: usize) {
-        let (was_marked, bhav_idx) = {
+        let (was_marked, mut components) = {
             // FIXME: This is one example of many of workarounds to placate the
             // borrow checker. If I understand correctly, non-lexically based
             // lifetimes based on liveness should help in most cases. Update the
             // code when NLL is implemented in Rust.
             let obj_data = unsafe { self.object_data.get_unchecked_mut(idx) };
-            let bhav_idx = obj_data.behaviour
-                .as_ref()
-                .and_then(|b| b.borrow().behaviour().idx.get());
+            // Swap map to placate the borrow checker
+            let mut components = HashMap::new();
+            std::mem::swap(&mut components, &mut obj_data.components);
             let was_marked = obj_data.marked;
             obj_data.marked = true;
-            (was_marked, bhav_idx)
+            (was_marked, components)
         };
 
-        if let Some(bhav_idx) = bhav_idx {
-            self.destroy_behaviour_internal(bhav_idx);
-        };
+        for v in components.values() {
+            v.destroy(self);
+        }
+
+        std::mem::swap(&mut components, &mut self.object_data[idx].components);
 
         // Swap vectors to placate the borrow checker
         let mut tmp_children = Vec::new();
@@ -985,11 +1080,8 @@ impl Scene {
 
         unsafe {
             self.cleanup_destroyed_behaviours();
+            self.cleanup_destroyed_cameras();
             self.cleanup_destroyed_objects();
-            Scene::cleanup_destroyed(
-                &mut self.camera_data, &mut self.destroyed_cameras,
-                |x| x.marked,
-                |x, idx| x.camera.idx.set(idx));
             Scene::cleanup_destroyed(
                 &mut self.mesh_data, &mut self.destroyed_meshes,
                 |x| x.marked,
@@ -1046,13 +1138,16 @@ impl Scene {
         let mut idx = 0;
         while idx < self.object_data.len() {
             let idx = post_add(&mut idx, 1);
-            let obj_data = unsafe { self.object_data.get_unchecked(idx) };
+            let _obj_data = unsafe { self.object_data.get_unchecked(idx) };
             let trans_data = unsafe { self.transform_data.get_unchecked(idx) };
+            /*
             // TODO: this looks a bit redundant...
             let behaviour =  obj_data.behaviour
                     .as_ref()
                     .and_then(|b| b.borrow().behaviour().idx.get())
-                    .map(|idx| self.behaviour_data[idx].behaviour.borrow());
+                    .map(|idx| self.behaviour_data[idx].behaviour.borrow());*/
+            // FIXME: Temporary measure, don't render anything
+            let behaviour: Option<std::cell::Ref<BehaviourMessages>> = None;
             let mesh = behaviour
                 .as_ref()
                 .and_then(|b| b.mesh())
@@ -1497,6 +1592,48 @@ impl Scene {
         self.destroyed_objects.clear();
     }
 
+    // TODO: I really need to think of a way to make these cleanup functions
+    // less horrendously ugly if possible.
+    unsafe fn cleanup_destroyed_cameras(&mut self) {
+        for &idx in &self.destroyed_cameras {
+            // Remove destroyed cameras at the back of the list
+            while self.camera_data.last().map_or(false, |x| x.marked) {
+                let removed = self.camera_data.pop().unwrap();
+                removed.camera.idx.set(None);
+                // The object should not have been destroyed yet, so `unwrap()`
+                // is safe.
+                let obj_data = &mut self.object_data[removed.parent.idx.get().unwrap()];
+                let id = removed.camera.type_id();
+                let should_remove = obj_data.components.get(&id)
+                    .map_or(false, |x| x.as_any() as *const _ == removed.camera.as_any());
+                if should_remove {
+                    obj_data.components.remove(&id);
+                }
+            }
+            if idx >= self.camera_data.len() {
+                continue
+            }
+
+            {
+                let removed = self.camera_data.get_unchecked(idx);
+                removed.camera.idx.set(None);
+                let obj_data = &mut self.object_data[removed.parent.idx.get().unwrap()];
+                let id = removed.camera.type_id();
+                let should_remove = obj_data.components.get(&id)
+                    .map_or(false, |x| x.as_any() as *const _ == removed.camera.as_any());
+                if should_remove {
+                    obj_data.components.remove(&id);
+                }
+
+                let swapped_idx = self.camera_data.len() - 1;
+                let swapped = &self.camera_data[swapped_idx];
+                swapped.camera.idx.set(Some(idx));
+            }
+            self.camera_data.swap_remove(idx);
+        }
+        self.destroyed_cameras.clear();
+    }
+
     unsafe fn cleanup_destroyed_behaviours(&mut self) {
         for &idx in &self.destroyed_behaviours {
             // Remove destroyed behaviours at the back of the list
@@ -1506,10 +1643,11 @@ impl Scene {
                 // The object should not have been destroyed yet, so `unwrap()`
                 // is safe.
                 let obj_data = &mut self.object_data[removed.parent.idx.get().unwrap()];
-                let should_remove = obj_data.behaviour.as_ref()
-                    .map_or(false, |x| &**x as *const _ == &*removed.behaviour as *const _);
+                let id = removed.behaviour.type_id();
+                let should_remove = obj_data.components.get(&id)
+                    .map_or(false, |x| x.as_any() as *const _ == removed.behaviour.as_any());
                 if should_remove {
-                    obj_data.behaviour = None;
+                    obj_data.components.remove(&id);
                 }
             }
             if idx >= self.behaviour_data.len() {
@@ -1520,10 +1658,11 @@ impl Scene {
                 let removed = self.behaviour_data.get_unchecked(idx);
                 removed.behaviour.borrow().behaviour().idx.set(None);
                 let obj_data = &mut self.object_data[removed.parent.idx.get().unwrap()];
-                let should_remove = obj_data.behaviour.as_ref()
-                    .map_or(false, |x| &**x as *const _ == &*removed.behaviour as *const _);
+                let id = removed.behaviour.type_id();
+                let should_remove = obj_data.components.get(&id)
+                    .map_or(false, |x| x.as_any() as *const _ == removed.behaviour.as_any());
                 if should_remove {
-                    obj_data.behaviour = None;
+                    obj_data.components.remove(&id);
                 }
 
                 let swapped_idx = self.behaviour_data.len() - 1;
@@ -1569,9 +1708,44 @@ mod test {
         id: u32
     }
 
+    struct TestBehaviour2 {
+        behaviour: Behaviour,
+        id: u32,
+    }
+
     impl BehaviourMessages for TestBehaviour {
         fn create(behaviour: Behaviour) -> TestBehaviour {
             TestBehaviour {
+                behaviour: behaviour,
+                id: 0
+            }
+        }
+
+        fn start(&mut self, _scene: &mut Scene) {
+        }
+
+        fn update(&mut self, _scene: &mut Scene) {
+        }
+
+        fn destroy(&mut self, _scene: &mut Scene) {
+        }
+
+        fn behaviour(&self) -> &Behaviour {
+            &self.behaviour
+        }
+
+        fn mesh(&self) -> Option<&Mesh> {
+            None
+        }
+
+        fn material(&self) -> Option<&Material> {
+            None
+        }
+    }
+
+    impl BehaviourMessages for TestBehaviour2 {
+        fn create(behaviour: Behaviour) -> TestBehaviour2 {
+            TestBehaviour2 {
                 behaviour: behaviour,
                 id: 0
             }
@@ -1796,31 +1970,33 @@ mod test {
     }
 
     #[test]
-    fn test_add_behaviour() {
+    fn test_add_component() {
         let mut scene = Scene::new_headless();
 
         let obj1 = scene.create_object();
 
         // Test creating behaviour works
-        let bhav = scene.add_behaviour::<TestBehaviour>(&obj1).ok().unwrap();
+        let bhav = scene.add_component::<RefCell<TestBehaviour>>(&obj1).ok().unwrap();
         bhav.borrow_mut().id = 444;
         // Test we can retrieve the behaviour
-        let bhav2 = scene.get_behaviour::<TestBehaviour>(&obj1).ok().unwrap();
+        let bhav2 = scene.get_component::<RefCell<TestBehaviour>>(&obj1).ok().unwrap();
         // These behaviours should be identical
         assert_eq!(bhav.borrow().id, bhav2.borrow().id);
 
         // Test we cannot overwrite the old behaviour
         // TODO: check specific enum variant when added
-        assert!(scene.add_behaviour::<TestBehaviour>(&obj1).is_err());
+        assert!(scene.add_component::<RefCell<TestBehaviour>>(&obj1).is_err());
+        // Test we can add components of other types
+        assert!(scene.add_component::<RefCell<TestBehaviour2>>(&obj1).is_ok());
 
         scene.destroy_behaviour(bhav.borrow().behaviour());
 
         // It should still be possible to retrieve the behaviour after it has
         // been marked for destruction
-        scene.get_behaviour::<TestBehaviour>(&obj1).ok().unwrap();
+        scene.get_component::<RefCell<TestBehaviour>>(&obj1).ok().unwrap();
 
         // It should now be possible to overwrite the old behaviour
-        let bhav3 = scene.add_behaviour::<TestBehaviour>(&obj1).ok().unwrap();
+        let bhav3 = scene.add_component::<RefCell<TestBehaviour>>(&obj1).ok().unwrap();
         bhav3.borrow_mut().id = 555;
 
         // This behaviour should be different from the old one
@@ -1833,17 +2009,22 @@ mod test {
         // It should no longer be possible to retrieve the behaviour in the next
         // frame
         // TODO: check specific enum variant when added
-        assert!(scene.get_behaviour::<TestBehaviour>(&obj1).is_err());
+        assert!(scene.get_component::<RefCell<TestBehaviour>>(&obj1).is_err());
+
+        // Other components should not be affected by one other component being
+        // removed.
+        let bhav4 = scene.get_component::<RefCell<TestBehaviour2>>(&obj1).unwrap();
+        assert_eq!(bhav4.borrow().id, 0);
 
         scene.destroy_object(&obj1);
 
         // It should not be possible to add a new behaviour to a "marked"
         // object.
         // TODO: check specific enum variant when added
-        assert!(scene.add_behaviour::<TestBehaviour>(&obj1).is_err());
+        assert!(scene.add_component::<RefCell<TestBehaviour>>(&obj1).is_err());
 
         let obj2 = scene.create_object();
-        let bhav4 = scene.add_behaviour::<TestBehaviour>(&obj2).ok().unwrap();
+        let bhav5 = scene.add_component::<RefCell<TestBehaviour>>(&obj2).ok().unwrap();
 
         scene.destroy_object(&obj2);
 
@@ -1852,5 +2033,6 @@ mod test {
         // Destroying the object a component is attached to should destroy the
         // component.
         assert!(!bhav4.borrow().behaviour().is_valid());
+        assert!(!bhav5.borrow().behaviour().is_valid());
     }
 }

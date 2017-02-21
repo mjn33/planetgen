@@ -12,5 +12,6 @@ extern crate num;
 
 pub mod error;
 mod scene;
+mod traits;
 
 pub use self::scene::*;
