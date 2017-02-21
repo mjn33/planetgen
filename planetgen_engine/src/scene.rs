@@ -1079,8 +1079,51 @@ impl Scene {
         }
 
         unsafe {
-            self.cleanup_destroyed_behaviours();
-            self.cleanup_destroyed_cameras();
+            let mut behaviour_data = Vec::new();
+            let mut destroyed_behaviours = Vec::new();
+            let mut camera_data = Vec::new();
+            let mut destroyed_cameras = Vec::new();
+
+            std::mem::swap(&mut behaviour_data, &mut self.behaviour_data);
+            std::mem::swap(&mut destroyed_behaviours, &mut self.destroyed_behaviours);
+            std::mem::swap(&mut camera_data, &mut self.camera_data);
+            std::mem::swap(&mut destroyed_cameras, &mut self.destroyed_cameras);
+
+            Scene::cleanup_destroyed(
+                &mut behaviour_data, &mut destroyed_behaviours,
+                |x| x.marked,
+                |x, idx| {
+                    x.behaviour.borrow().behaviour().idx.set(idx);
+                    if idx.is_none() {
+                        // The object should not have been destroyed yet, so `unwrap()`
+                        // is safe.
+                        let obj_data = &mut self.object_data[x.parent.idx.get().unwrap()];
+                        let id = x.behaviour.type_id();
+                        let should_remove = obj_data.components.get(&id)
+                            .map_or(false, |y| y.as_any() as *const _ == x.behaviour.as_any());
+                        if should_remove {
+                            obj_data.components.remove(&id);
+                        }
+                    }
+                });
+            Scene::cleanup_destroyed(
+                &mut camera_data, &mut destroyed_cameras,
+                |x| x.marked,
+                |x, idx| {
+                    x.camera.idx.set(idx);
+                    if idx.is_none() {
+                        // The object should not have been destroyed yet, so `unwrap()`
+                        // is safe.
+                        let obj_data = &mut self.object_data[x.parent.idx.get().unwrap()];
+                        let id = x.camera.type_id();
+                        let should_remove = obj_data.components.get(&id)
+                            .map_or(false, |y| y.as_any() as *const _ == x.camera.as_any());
+                        if should_remove {
+                            obj_data.components.remove(&id);
+                        }
+                    }
+                });
+
             self.cleanup_destroyed_objects();
             Scene::cleanup_destroyed(
                 &mut self.mesh_data, &mut self.destroyed_meshes,
@@ -1094,6 +1137,11 @@ impl Scene {
                 &mut self.shader_data, &mut self.destroyed_shaders,
                 |x| x.marked,
                 |x, idx| x.object.idx.set(idx));
+
+            std::mem::swap(&mut behaviour_data, &mut self.behaviour_data);
+            std::mem::swap(&mut destroyed_behaviours, &mut self.destroyed_behaviours);
+            std::mem::swap(&mut camera_data, &mut self.camera_data);
+            std::mem::swap(&mut destroyed_cameras, &mut self.destroyed_cameras);
         }
 
         true
@@ -1592,93 +1640,11 @@ impl Scene {
         self.destroyed_objects.clear();
     }
 
-    // TODO: I really need to think of a way to make these cleanup functions
-    // less horrendously ugly if possible.
-    unsafe fn cleanup_destroyed_cameras(&mut self) {
-        for &idx in &self.destroyed_cameras {
-            // Remove destroyed cameras at the back of the list
-            while self.camera_data.last().map_or(false, |x| x.marked) {
-                let removed = self.camera_data.pop().unwrap();
-                removed.camera.idx.set(None);
-                // The object should not have been destroyed yet, so `unwrap()`
-                // is safe.
-                let obj_data = &mut self.object_data[removed.parent.idx.get().unwrap()];
-                let id = removed.camera.type_id();
-                let should_remove = obj_data.components.get(&id)
-                    .map_or(false, |x| x.as_any() as *const _ == removed.camera.as_any());
-                if should_remove {
-                    obj_data.components.remove(&id);
-                }
-            }
-            if idx >= self.camera_data.len() {
-                continue
-            }
-
-            {
-                let removed = self.camera_data.get_unchecked(idx);
-                removed.camera.idx.set(None);
-                let obj_data = &mut self.object_data[removed.parent.idx.get().unwrap()];
-                let id = removed.camera.type_id();
-                let should_remove = obj_data.components.get(&id)
-                    .map_or(false, |x| x.as_any() as *const _ == removed.camera.as_any());
-                if should_remove {
-                    obj_data.components.remove(&id);
-                }
-
-                let swapped_idx = self.camera_data.len() - 1;
-                let swapped = &self.camera_data[swapped_idx];
-                swapped.camera.idx.set(Some(idx));
-            }
-            self.camera_data.swap_remove(idx);
-        }
-        self.destroyed_cameras.clear();
-    }
-
-    unsafe fn cleanup_destroyed_behaviours(&mut self) {
-        for &idx in &self.destroyed_behaviours {
-            // Remove destroyed behaviours at the back of the list
-            while self.behaviour_data.last().map_or(false, |x| x.marked) {
-                let removed = self.behaviour_data.pop().unwrap();
-                removed.behaviour.borrow().behaviour().idx.set(None);
-                // The object should not have been destroyed yet, so `unwrap()`
-                // is safe.
-                let obj_data = &mut self.object_data[removed.parent.idx.get().unwrap()];
-                let id = removed.behaviour.type_id();
-                let should_remove = obj_data.components.get(&id)
-                    .map_or(false, |x| x.as_any() as *const _ == removed.behaviour.as_any());
-                if should_remove {
-                    obj_data.components.remove(&id);
-                }
-            }
-            if idx >= self.behaviour_data.len() {
-                continue
-            }
-
-            {
-                let removed = self.behaviour_data.get_unchecked(idx);
-                removed.behaviour.borrow().behaviour().idx.set(None);
-                let obj_data = &mut self.object_data[removed.parent.idx.get().unwrap()];
-                let id = removed.behaviour.type_id();
-                let should_remove = obj_data.components.get(&id)
-                    .map_or(false, |x| x.as_any() as *const _ == removed.behaviour.as_any());
-                if should_remove {
-                    obj_data.components.remove(&id);
-                }
-
-                let swapped_idx = self.behaviour_data.len() - 1;
-                let swapped = &self.behaviour_data[swapped_idx];
-                swapped.behaviour.borrow().behaviour().idx.set(Some(idx));
-            }
-            self.behaviour_data.swap_remove(idx);
-        }
-        self.destroyed_behaviours.clear();
-    }
-
     unsafe fn cleanup_destroyed<T, F, G>(items: &mut Vec<T>,
                                          destroyed_items: &mut Vec<usize>,
                                          is_destroyed: F,
-                                         set_idx: G)
-        where F: Fn(&T) -> bool, G: Fn(&T, Option<usize>) {
+                                         mut set_idx: G)
+        where F: Fn(&T) -> bool, G: FnMut(&T, Option<usize>) {
         for &idx in destroyed_items.iter() {
             // Remove destroyed objects at the back of the list
             while items.last().map_or(false, |x| is_destroyed(x)) {
