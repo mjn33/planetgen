@@ -349,6 +349,83 @@ impl Material {
     }
 }
 
+struct MeshRendererData {
+    /// Reference to the mesh renderer object.
+    object: Rc<MeshRenderer>,
+    /// Reference to the object we are a component of.
+    parent: Rc<Object>,
+    /// True when the mesh renderer has been marked for destruction at the end
+    /// of the frame.
+    marked: bool,
+    enabled: bool,
+    mesh: Option<Rc<Mesh>>,
+    material: Option<Rc<Material>>,
+}
+
+pub struct MeshRenderer {
+    idx: Cell<Option<usize>>,
+}
+
+impl MeshRenderer {
+    pub fn set_enabled(&self, scene: &mut Scene, enabled: bool) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| scene.mrenderer_data[i].enabled = enabled)
+    }
+
+    pub fn set_mesh(&self, scene: &mut Scene, mesh: Option<Rc<Mesh>>) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| scene.mrenderer_data[i].mesh = mesh)
+    }
+
+    pub fn set_material(&self, scene: &mut Scene, material: Option<Rc<Material>>) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| scene.mrenderer_data[i].material = material)
+    }
+
+    pub fn enabled(&self, scene: &mut Scene) -> Result<bool> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| scene.mrenderer_data[i].enabled)
+    }
+
+    pub fn mesh<'a>(&self, scene: &'a mut Scene) -> Result<Option<&'a Rc<Mesh>>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(move |i| scene.mrenderer_data[i].mesh.as_ref())
+    }
+
+    pub fn material<'a>(&self, scene: &'a mut Scene) -> Result<Option<&'a Rc<Material>>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(move |i| scene.mrenderer_data[i].material.as_ref())
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.idx.get().is_some()
+    }
+}
+
+impl Component for MeshRenderer {
+    fn init(scene: &mut Scene, object: &Object) -> Result<Rc<MeshRenderer>> {
+        scene.create_mrenderer(object)
+    }
+
+    fn marked(&self, scene: &Scene) -> Result<bool> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                scene.mrenderer_data[i].marked
+            })
+    }
+
+    fn destroy(&self, scene: &mut Scene) {
+        scene.destroy_mrenderer(self);
+    }
+}
+
 pub trait BehaviourMessages {
     fn create(behaviour: Behaviour) -> Self where Self: Sized;
 
@@ -359,10 +436,6 @@ pub trait BehaviourMessages {
     fn destroy(&mut self, scene: &mut Scene);
 
     fn behaviour(&self) -> &Behaviour;
-
-    fn mesh(&self) -> Option<&Mesh>;
-
-    fn material(&self) -> Option<&Material>;
 }
 
 trait AnyBehaviour: Any {
@@ -586,6 +659,7 @@ pub struct Scene {
     camera_data: Vec<CameraData>,
     mesh_data: Vec<MeshData>,
     material_data: Vec<MaterialData>,
+    mrenderer_data: Vec<MeshRendererData>,
     shader_data: Vec<ShaderData>,
     behaviour_data: Vec<BehaviourData>,
     object_data: Vec<ObjectData>,
@@ -593,6 +667,7 @@ pub struct Scene {
     destroyed_cameras: Vec<usize>,
     destroyed_meshes: Vec<usize>,
     destroyed_materials: Vec<usize>,
+    destroyed_mrenderers: Vec<usize>,
     destroyed_shaders: Vec<usize>,
     destroyed_behaviours: Vec<usize>,
     destroyed_objects: Vec<usize>,
@@ -607,6 +682,7 @@ impl Scene {
             camera_data: Vec::new(),
             mesh_data: Vec::new(),
             material_data: Vec::new(),
+            mrenderer_data: Vec::new(),
             shader_data: Vec::new(),
             behaviour_data: Vec::new(),
             object_data: Vec::new(),
@@ -614,6 +690,7 @@ impl Scene {
             destroyed_cameras: Vec::new(),
             destroyed_meshes: Vec::new(),
             destroyed_materials: Vec::new(),
+            destroyed_mrenderers: Vec::new(),
             destroyed_shaders: Vec::new(),
             destroyed_behaviours: Vec::new(),
             destroyed_objects: Vec::new(),
@@ -629,6 +706,7 @@ impl Scene {
             camera_data: Vec::new(),
             mesh_data: Vec::new(),
             material_data: Vec::new(),
+            mrenderer_data: Vec::new(),
             shader_data: Vec::new(),
             behaviour_data: Vec::new(),
             object_data: Vec::new(),
@@ -636,6 +714,7 @@ impl Scene {
             destroyed_cameras: Vec::new(),
             destroyed_meshes: Vec::new(),
             destroyed_materials: Vec::new(),
+            destroyed_mrenderers: Vec::new(),
             destroyed_shaders: Vec::new(),
             destroyed_behaviours: Vec::new(),
             destroyed_objects: Vec::new(),
@@ -726,6 +805,29 @@ impl Scene {
         };
         self.material_data.push(data);
         rv.idx.set(Some(self.material_data.len() - 1));
+        Ok(rv)
+    }
+
+    fn create_mrenderer(&mut self, object: &Object) -> Result<Rc<MeshRenderer>> {
+        let obj_idx = match object.idx.get() {
+            Some(idx) => idx,
+            None => {
+                return Err(Error::ObjectDestroyed)
+            }
+        };
+        let obj_data = &mut self.object_data[obj_idx];
+
+        let rv = Rc::new(MeshRenderer { idx: Cell::new(None) });
+        let data = MeshRendererData {
+            object: rv.clone(),
+            parent: obj_data.object.clone(),
+            marked: false,
+            enabled: true,
+            mesh: None,
+            material: None,
+        };
+        self.mrenderer_data.push(data);
+        rv.idx.set(Some(self.mrenderer_data.len() - 1));
         Ok(rv)
     }
 
@@ -913,6 +1015,22 @@ impl Scene {
         }
     }
 
+    pub fn destroy_mrenderer(&mut self, mrenderer: &MeshRenderer) {
+        let mrenderer_idx = match mrenderer.idx.get() {
+            Some(mrenderer_idx) => mrenderer_idx,
+            None => {
+                println!("[WARNING] destroy_mrenderer called on a mesh renderer without a valid handle!");
+                return
+            }
+        };
+        let mrenderer_data = &mut self.mrenderer_data[mrenderer_idx];
+
+        if !mrenderer_data.marked {
+            self.destroyed_mrenderers.push(mrenderer_idx);
+            mrenderer_data.marked = true;
+        }
+    }
+
     pub fn destroy_shader(&mut self, shader: &Shader) {
         let shader_idx = match shader.idx.get() {
             Some(shader_idx) => shader_idx,
@@ -1083,11 +1201,15 @@ impl Scene {
             let mut destroyed_behaviours = Vec::new();
             let mut camera_data = Vec::new();
             let mut destroyed_cameras = Vec::new();
+            let mut mrenderer_data = Vec::new();
+            let mut destroyed_mrenderers = Vec::new();
 
             std::mem::swap(&mut behaviour_data, &mut self.behaviour_data);
             std::mem::swap(&mut destroyed_behaviours, &mut self.destroyed_behaviours);
             std::mem::swap(&mut camera_data, &mut self.camera_data);
             std::mem::swap(&mut destroyed_cameras, &mut self.destroyed_cameras);
+            std::mem::swap(&mut mrenderer_data, &mut self.mrenderer_data);
+            std::mem::swap(&mut destroyed_mrenderers, &mut self.destroyed_mrenderers);
 
             Scene::cleanup_destroyed(
                 &mut behaviour_data, &mut destroyed_behaviours,
@@ -1123,6 +1245,23 @@ impl Scene {
                         }
                     }
                 });
+            Scene::cleanup_destroyed(
+                &mut mrenderer_data, &mut destroyed_mrenderers,
+                |x| x.marked,
+                |x, idx| {
+                    x.object.idx.set(idx);
+                    if idx.is_none() {
+                        // The object should not have been destroyed yet, so `unwrap()`
+                        // is safe.
+                        let obj_data = &mut self.object_data[x.parent.idx.get().unwrap()];
+                        let id = x.object.type_id();
+                        let should_remove = obj_data.components.get(&id)
+                            .map_or(false, |y| y.as_any() as *const _ == x.object.as_any());
+                        if should_remove {
+                            obj_data.components.remove(&id);
+                        }
+                    }
+                });
 
             self.cleanup_destroyed_objects();
             Scene::cleanup_destroyed(
@@ -1142,6 +1281,8 @@ impl Scene {
             std::mem::swap(&mut destroyed_behaviours, &mut self.destroyed_behaviours);
             std::mem::swap(&mut camera_data, &mut self.camera_data);
             std::mem::swap(&mut destroyed_cameras, &mut self.destroyed_cameras);
+            std::mem::swap(&mut mrenderer_data, &mut self.mrenderer_data);
+            std::mem::swap(&mut destroyed_mrenderers, &mut self.destroyed_mrenderers);
         }
 
         true
@@ -1182,42 +1323,38 @@ impl Scene {
             }
         }
 
-        //for data in &self.object_data {
-        let mut idx = 0;
-        while idx < self.object_data.len() {
-            let idx = post_add(&mut idx, 1);
-            let _obj_data = unsafe { self.object_data.get_unchecked(idx) };
-            let trans_data = unsafe { self.transform_data.get_unchecked(idx) };
-            /*
-            // TODO: this looks a bit redundant...
-            let behaviour =  obj_data.behaviour
-                    .as_ref()
-                    .and_then(|b| b.borrow().behaviour().idx.get())
-                    .map(|idx| self.behaviour_data[idx].behaviour.borrow());*/
-            // FIXME: Temporary measure, don't render anything
-            let behaviour: Option<std::cell::Ref<BehaviourMessages>> = None;
-            let mesh = behaviour
+        for data in &self.mrenderer_data {
+            if !data.enabled {
+                continue;
+            }
+
+            let trans_data = data.parent.idx.get()
+                .map(|idx| &self.transform_data[idx]);
+            let trans_data = match trans_data {
+                Some(trans_data) => trans_data,
+                None => continue
+            };
+
+            let mesh = data.mesh
                 .as_ref()
-                .and_then(|b| b.mesh())
                 .and_then(|x| x.idx.get())
-                .and_then(|idx| unsafe { Some(self.mesh_data.get_unchecked(idx)) });
+                .map(|idx| &self.mesh_data[idx]);
             let mesh = match mesh {
                 Some(mesh) => mesh,
                 None => continue
             };
 
-            let material = behaviour
+            let material = data.material
                 .as_ref()
-                .and_then(|b| b.material())
                 .and_then(|x| x.idx.get())
-                .and_then(|idx| unsafe { Some(self.material_data.get_unchecked(idx)) });
+                .map(|idx| &self.material_data[idx]);
             let material = match material {
                 Some(material) => material,
                 None => continue
             };
 
             let shader = material.shader.idx.get()
-                .and_then(|idx| unsafe { Some(self.shader_data.get_unchecked(idx)) });
+                .and_then(|idx| Some(&self.shader_data[idx]));
             let shader = match shader {
                 Some(shader) => shader,
                 None => continue
@@ -1699,14 +1836,6 @@ mod test {
         fn behaviour(&self) -> &Behaviour {
             &self.behaviour
         }
-
-        fn mesh(&self) -> Option<&Mesh> {
-            None
-        }
-
-        fn material(&self) -> Option<&Material> {
-            None
-        }
     }
 
     impl BehaviourMessages for TestBehaviour2 {
@@ -1728,14 +1857,6 @@ mod test {
 
         fn behaviour(&self) -> &Behaviour {
             &self.behaviour
-        }
-
-        fn mesh(&self) -> Option<&Mesh> {
-            None
-        }
-
-        fn material(&self) -> Option<&Material> {
-            None
         }
     }
 

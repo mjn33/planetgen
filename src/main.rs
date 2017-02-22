@@ -16,7 +16,7 @@ use glium::DisplayBuild;
 
 use num::{Zero, One};
 
-use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, Object, Scene, Shader};
+use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, MeshRenderer, Object, Scene, Shader};
 
 use gen::{gen_indices, vert_off, PatchFlags, PATCH_FLAGS_NONE, PATCH_FLAGS_NORTH, PATCH_FLAGS_SOUTH,
           PATCH_FLAGS_EAST, PATCH_FLAGS_WEST};
@@ -238,9 +238,8 @@ struct Quad {
     behaviour: Behaviour,
     plane: Plane,
     pos: QuadPos,
+    mrenderer: Option<Rc<MeshRenderer>>,
     mesh: Option<Rc<Mesh>>,
-    render: bool,
-    material: Option<Rc<Material>>,
     base_coord: (u32, u32),
     cur_subdivision: u32,
     mid_coord_pos: Vector3<f32>,
@@ -566,7 +565,7 @@ impl Quad {
             upper_left.west = direct_west.as_ref().map(Rc::downgrade);
             upper_left.cur_subdivision = self.cur_subdivision + 1;
             upper_left.base_coord = upper_left_base_coord;
-            upper_left.render = true;
+            upper_left.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             upper_left.mid_coord_pos = upper_left.mid_coord_pos(sphere);
             scene.set_object_parent(&upper_left_obj, Some(&sphere_obj));
             let mesh = upper_left.mesh.as_ref().unwrap();
@@ -588,7 +587,7 @@ impl Quad {
             upper_right.west = Some(Rc::downgrade(&upper_left));
             upper_right.cur_subdivision = self.cur_subdivision + 1;
             upper_right.base_coord = upper_right_base_coord;
-            upper_right.render = true;
+            upper_right.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             upper_right.mid_coord_pos = upper_right.mid_coord_pos(sphere);
             scene.set_object_parent(&upper_right_obj, Some(&sphere_obj));
             let mesh = upper_right.mesh.as_ref().unwrap();
@@ -610,7 +609,7 @@ impl Quad {
             lower_left.west = direct_west.as_ref().map(Rc::downgrade);
             lower_left.cur_subdivision = self.cur_subdivision + 1;
             lower_left.base_coord = lower_left_base_coord;
-            lower_left.render = true;
+            lower_left.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             lower_left.mid_coord_pos = lower_left.mid_coord_pos(sphere);
             scene.set_object_parent(&lower_left_obj, Some(&sphere_obj));
             let mesh = lower_left.mesh.as_ref().unwrap();
@@ -632,7 +631,7 @@ impl Quad {
             lower_right.west = Some(Rc::downgrade(&lower_left));
             lower_right.cur_subdivision = self.cur_subdivision + 1;
             lower_right.base_coord = lower_right_base_coord;
-            lower_right.render = true;
+            lower_right.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             lower_right.mid_coord_pos = lower_right.mid_coord_pos(sphere);
             scene.set_object_parent(&lower_right_obj, Some(&sphere_obj));
             let mesh = lower_right.mesh.as_ref().unwrap();
@@ -777,15 +776,17 @@ impl Quad {
             }
         }
 
+        self.mrenderer.as_ref().unwrap().set_enabled(scene, false).unwrap();
+
         self.needs_normal_update = false;
         self.needs_normal_merge = false;
 
         self.children = Some([upper_left, upper_right, lower_left, lower_right]);
     }
 
-    fn collapse(&mut self, sphere: &QuadSphere) {
+    fn collapse(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
         for q in self.children.as_ref().unwrap() {
-            q.borrow_mut().render = false;
+            q.borrow().mrenderer.as_ref().unwrap().set_enabled(scene, false).unwrap();
             sphere.quad_pool().recycle_quad(q.clone());
         }
 
@@ -910,6 +911,8 @@ impl Quad {
             c_borrow.needs_normal_merge = false;
         }
 
+        self.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
+
         self.children = None;
     }
 
@@ -920,7 +923,7 @@ impl Quad {
             && self.can_subdivide() {
             self.subdivide(sphere, scene);
         } else if self.is_subdivided() && self.in_collapse_range(sphere) && self.can_collapse() {
-            self.collapse(sphere);
+            self.collapse(sphere, scene);
         } else if self.is_subdivided() {
             for q in self.children.as_ref().unwrap() {
                 q.borrow_mut().check_subdivision(sphere, scene);
@@ -982,9 +985,8 @@ impl BehaviourMessages for Quad {
             behaviour: behaviour,
             plane: Plane::XP,
             pos: QuadPos::None,
+            mrenderer: None,
             mesh: None,
-            render: false,
-            material: None,
             base_coord: (0, 0),
             cur_subdivision: 0,
             mid_coord_pos: Vector3::new(0.0, 0.0, 0.0),
@@ -1017,22 +1019,6 @@ impl BehaviourMessages for Quad {
     fn behaviour(&self) -> &Behaviour {
         &self.behaviour
     }
-
-    fn mesh(&self) -> Option<&Mesh> {
-        if self.render && !self.is_subdivided() {
-            self.mesh.as_ref().map(|mesh| &**mesh)
-        } else {
-            None
-        }
-    }
-
-    fn material(&self) -> Option<&Material> {
-        if self.render && !self.is_subdivided() {
-            self.material.as_ref().map(|material| &**material)
-        } else {
-            None
-        }
-    }
 }
 
 struct QuadSphere {
@@ -1064,7 +1050,7 @@ impl QuadSphere {
 
         self.calc_ranges();
 
-        self.quad_pool = Some(QuadPool::new(scene, quad_mesh_size, 500));
+        self.quad_pool = Some(QuadPool::new(scene, quad_mesh_size, 1000));
 
         let xp_quad_vertices = self.calc_quad_verts(Plane::XP, (0, 0), 0);
         let xn_quad_vertices = self.calc_quad_verts(Plane::XN, (0, 0), 0);
@@ -1094,7 +1080,7 @@ impl QuadSphere {
             xp_quad.west = Some(Rc::downgrade(&zp_quad));
             xp_quad.cur_subdivision = 0;
             xp_quad.base_coord = (0, 0);
-            xp_quad.render = true;
+            xp_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             xp_quad.mid_coord_pos = xp_quad.mid_coord_pos(self);
             let mesh = xp_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = xp_quad_vertices;
@@ -1115,7 +1101,7 @@ impl QuadSphere {
             xn_quad.west = Some(Rc::downgrade(&zn_quad));
             xn_quad.cur_subdivision = 0;
             xn_quad.base_coord = (0, 0);
-            xn_quad.render = true;
+            xn_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             xn_quad.mid_coord_pos = xn_quad.mid_coord_pos(self);
             let mesh = xn_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = xn_quad_vertices;
@@ -1136,7 +1122,7 @@ impl QuadSphere {
             yp_quad.west = Some(Rc::downgrade(&xn_quad));
             yp_quad.cur_subdivision = 0;
             yp_quad.base_coord = (0, 0);
-            yp_quad.render = true;
+            yp_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             yp_quad.mid_coord_pos = yp_quad.mid_coord_pos(self);
             let mesh = yp_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = yp_quad_vertices;
@@ -1157,7 +1143,7 @@ impl QuadSphere {
             yn_quad.west = Some(Rc::downgrade(&xn_quad));
             yn_quad.cur_subdivision = 0;
             yn_quad.base_coord = (0, 0);
-            yn_quad.render = true;
+            yn_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             yn_quad.mid_coord_pos = yn_quad.mid_coord_pos(self);
             let mesh = yn_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = yn_quad_vertices;
@@ -1178,7 +1164,7 @@ impl QuadSphere {
             zp_quad.west = Some(Rc::downgrade(&xn_quad));
             zp_quad.cur_subdivision = 0;
             zp_quad.base_coord = (0, 0);
-            zp_quad.render = true;
+            zp_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             zp_quad.mid_coord_pos = zp_quad.mid_coord_pos(self);
             let mesh = zp_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = zp_quad_vertices;
@@ -1199,7 +1185,7 @@ impl QuadSphere {
             zn_quad.west = Some(Rc::downgrade(&xp_quad));
             zn_quad.cur_subdivision = 0;
             zn_quad.base_coord = (0, 0);
-            zn_quad.render = true;
+            zn_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             zn_quad.mid_coord_pos = zn_quad.mid_coord_pos(self);
             let mesh = zn_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = zn_quad_vertices;
@@ -1421,14 +1407,6 @@ impl BehaviourMessages for QuadSphere {
 
     fn behaviour(&self) -> &Behaviour {
         &self.behaviour
-    }
-
-    fn mesh(&self) -> Option<&Mesh> {
-        None
-    }
-
-    fn material(&self) -> Option<&Material> {
-        None
     }
 }
 
@@ -2031,6 +2009,7 @@ impl QuadPool {
 
         {
             let mut q_borrow = q.borrow_mut();
+            let mrenderer = scene.add_component::<MeshRenderer>(&q_obj).unwrap();
             let mesh = scene.create_mesh(self.vertices_cap, self.indices_cap);
 
             q_borrow.non_normalized = vec![Vector3::zero(); self.vertices_cap];
@@ -2038,8 +2017,11 @@ impl QuadPool {
             *mesh.vpos_mut(scene).unwrap() = Vec::new();
             *mesh.vnorm_mut(scene).unwrap() = vec![Vector3::zero(); self.vertices_cap];
             *mesh.indices_mut(scene).unwrap() = self.indices_configs[PATCH_FLAGS_NONE.bits() as usize].clone();
+            mrenderer.set_enabled(scene, false).unwrap();
+            mrenderer.set_mesh(scene, Some(mesh.clone())).unwrap();
+            mrenderer.set_material(scene, Some(self.quad_material.clone())).unwrap();
+            q_borrow.mrenderer = Some(mrenderer);
             q_borrow.mesh = Some(mesh);
-            q_borrow.material = Some(self.quad_material.clone());
         }
 
         (q_obj, q)
@@ -2049,9 +2031,6 @@ impl QuadPool {
     fn default_init_quad(quad: &mut Quad) {
         quad.plane = Plane::XP;
         quad.pos = QuadPos::None;
-
-        quad.render = false;
-
         quad.base_coord = (0, 0);
         quad.cur_subdivision = 0;
         quad.mid_coord_pos = Vector3::new(0.0, 0.0, 0.0);
