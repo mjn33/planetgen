@@ -242,7 +242,7 @@ struct Quad {
     mesh: Option<Rc<Mesh>>,
     base_coord: (u32, u32),
     cur_subdivision: u32,
-    mid_coord_pos: Vector3<f32>,
+    mid_coord_pos: Vector3<f64>,
     patch_flags: PatchFlags,
 
     non_normalized: Vec<Vector3<f32>>,
@@ -299,10 +299,19 @@ impl Quad {
     }
 
     /// Calculates the coordinates of the middle of this quad.
-    fn mid_coord_pos(&self, sphere: &QuadSphere) -> Vector3<f32> {
+    fn mid_coord_pos(&self, sphere: &QuadSphere) -> Vector3<f64> {
         let half_quad_length = sphere.quad_length(self.cur_subdivision) / 2;
         let mid_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1 + half_quad_length);
         sphere.vc_to_pos(VertCoord(self.plane, mid_coord.0, mid_coord.1)).normalize()
+    }
+
+    /// Computes the dot product of two vectors, assuming both vectors are unit
+    /// vectors.
+    fn dot(a: Vector3<f64>, b: Vector3<f64>) -> f64 {
+        let c = a - b;
+        let c_mag2 = c.magnitude2();
+        let cos_gamma = (2.0 - c_mag2) * 0.5;
+        cos_gamma
     }
 
     fn in_subdivision_range(&self, sphere: &QuadSphere) -> bool {
@@ -313,7 +322,7 @@ impl Quad {
         let range = sphere.subdivide_range(self.cur_subdivision);
 
         let centre_pos = sphere.centre_pos();
-        let cur_range = centre_pos.dot(self.mid_coord_pos);
+        let cur_range = Quad::dot(centre_pos, self.mid_coord_pos);
 
         // Note: comparison may seem swapped since lower values mean a greater
         // angle / arc.
@@ -324,7 +333,7 @@ impl Quad {
         let range = sphere.collapse_range(self.cur_subdivision);
 
         let centre_pos = sphere.centre_pos();
-        let cur_range = centre_pos.dot(self.mid_coord_pos);
+        let cur_range = Quad::dot(centre_pos, self.mid_coord_pos);
 
         // Note: comparison may seem swapped since higher values mean a smaller
         // angle / arc.
@@ -1042,9 +1051,9 @@ struct QuadSphere {
     quad_mesh_size: u16,
     max_subdivision: u32,
     max_coord: u32,
-    collapse_ranges: Vec<f32>,
-    subdivide_ranges: Vec<f32>,
-    centre_pos: Vector3<f32>,
+    collapse_ranges: Vec<f64>,
+    subdivide_ranges: Vec<f64>,
+    centre_pos: Vector3<f64>,
     faces: Option<[Rc<RefCell<Quad>>; 6]>,
     normal_update_queue: RefCell<Vec<Rc<RefCell<Quad>>>>,
     quad_pool: Option<QuadPool>,
@@ -1218,23 +1227,23 @@ impl QuadSphere {
     fn calc_ranges(&mut self)  {
         self.collapse_ranges = Vec::with_capacity(self.max_subdivision as usize + 1);
         self.subdivide_ranges = Vec::with_capacity(self.max_subdivision as usize + 1);
+
         for lvl in 0..(self.max_subdivision + 1) {
-            let extra = (1.05 as f64).powf((self.max_subdivision - lvl) as f64);
-
-            // Quad length changes when deformed into sphere
-            let pi_div_4 = std::f64::consts::PI / 4.0;
             let quad_length = self.quad_length(lvl);
-            let real_quad_length = 2.0 * (quad_length as f64 / self.max_coord as f64) * pi_div_4;
+            // Multiply by two since a plane ranges from -1.0 to +1.0
+            let real_quad_length = 2.0 * (quad_length as f64 / self.max_coord as f64);
 
-            let collapse_range = extra * 2.0 * 1.5 * real_quad_length;
-            let subdivide_range = extra * 1.5 * real_quad_length;
+            // sqrt(0.5^2 + 1.5^2) = ~1.6, this means any point within a quad
+            // will cause all four neighbours to be subdivided as well.
+            let collapse_range = 2.0 * 1.6 * real_quad_length;
+            let subdivide_range = 1.6 * real_quad_length;
 
             let r = 1.0;
             let collapse_cos_theta = f64::cos(f64::min(std::f64::consts::PI, collapse_range / r));
             let subdivide_cos_theta = f64::cos(f64::min(std::f64::consts::PI, subdivide_range / r));
 
-            self.collapse_ranges.push(collapse_cos_theta as f32);
-            self.subdivide_ranges.push(subdivide_cos_theta as f32);
+            self.collapse_ranges.push(collapse_cos_theta);
+            self.subdivide_ranges.push(subdivide_cos_theta);
         }
     }
 
@@ -1242,20 +1251,20 @@ impl QuadSphere {
         (1 << (self.max_subdivision - level)) * (self.quad_mesh_size as u32)
     }
 
-    fn centre_pos(&self) -> Vector3<f32> {
+    fn centre_pos(&self) -> Vector3<f64> {
         self.centre_pos
     }
 
     /// Lookup the range required for us to try collapsing a quad for a given
     /// subdivision level. The returned value isn't a distance, but instead the
     /// cosine of the angle of the arc formed over that distance.
-    fn collapse_range(&self, subdivision: u32) -> f32 {
+    fn collapse_range(&self, subdivision: u32) -> f64 {
         self.collapse_ranges[subdivision as usize]
     }
 
     /// Lookup the range required for us to try subdividing a quad for a given
     /// subdivision level. See `collapse_range()` for more details.
-    fn subdivide_range(&self, subdivision: u32) -> f32 {
+    fn subdivide_range(&self, subdivision: u32) -> f64 {
         self.subdivide_ranges[subdivision as usize]
     }
 
@@ -1265,7 +1274,7 @@ impl QuadSphere {
 
     /// Converts a `VertCoord` to a position on the quad sphere (not
     /// normalized).
-    fn vc_to_pos(&self, coord: VertCoord) -> Vector3<f32> {
+    fn vc_to_pos(&self, coord: VertCoord) -> Vector3<f64> {
         let (x, y, z) = match coord {
             VertCoord(Plane::XP, a, b) => (self.max_coord, b, self.max_coord - a),
             VertCoord(Plane::XN, a, b) => (0, b, a),
@@ -1274,9 +1283,9 @@ impl QuadSphere {
             VertCoord(Plane::ZP, a, b) => (a, b, self.max_coord),
             VertCoord(Plane::ZN, a, b) => (self.max_coord - a, b, 0),
         };
-        Vector3::new(-1.0 + x as f32 * 2.0 / self.max_coord as f32,
-                     -1.0 + y as f32 * 2.0 / self.max_coord as f32,
-                     -1.0 + z as f32 * 2.0 / self.max_coord as f32)
+        Vector3::new(-1.0 + x as f64 * 2.0 / self.max_coord as f64,
+                     -1.0 + y as f64 * 2.0 / self.max_coord as f64,
+                     -1.0 + z as f64 * 2.0 / self.max_coord as f64)
     }
 
     fn calc_quad_verts(&self, plane: Plane, base_coord: (u32, u32), subdivision: u32) -> Vec<Vector3<f32>> {
@@ -1290,7 +1299,7 @@ impl QuadSphere {
                                            base_coord.0 + x as u32 * vert_step,
                                            base_coord.1 + y as u32 * vert_step);
 
-                let vert_pos = self.vc_to_pos(vert_coord).normalize();
+                let vert_pos = self.vc_to_pos(vert_coord).cast().normalize();
                 vertices.push(Vector3::new(vert_pos.x, vert_pos.y, vert_pos.z));
             }
         }
@@ -1399,7 +1408,8 @@ impl BehaviourMessages for QuadSphere {
         let rot = self.old_rot * change_rot;
         self.old_rot = rot;
 
-        self.centre_pos = (rot.invert() * (-Vector3::unit_z())).normalize();
+        let centre_pos = (rot.invert() * (-Vector3::unit_z())).normalize();
+        self.centre_pos = centre_pos.cast();
         for i in 0..6 {
             let q = self.faces.as_ref().unwrap()[i].clone();
             q.borrow_mut().check_subdivision(self, scene);
@@ -1424,9 +1434,9 @@ impl BehaviourMessages for QuadSphere {
         self.normal_update_queue.borrow_mut().clear();
 
         let extra_rot = Quaternion::one().nlerp(self.ninety_deg, (60.0 / 45.0));
-        let cam_dir = -self.centre_pos.cross(Vector3::unit_x());
-        let cam_rot = Quaternion::look_at(cam_dir, self.centre_pos).invert() * extra_rot.invert();
-        let cam_pos = 1.1f32 * self.centre_pos;
+        let cam_dir = -centre_pos.cross(Vector3::unit_x());
+        let cam_rot = Quaternion::look_at(cam_dir, centre_pos).invert() * extra_rot.invert();
+        let cam_pos = 1.1f32 * centre_pos;
         //let cam_rot = Quaternion::look_at(self.centre_pos, Vector3::unit_x()).invert();
 
         let camera = self.camera.as_ref().unwrap();
