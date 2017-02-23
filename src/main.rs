@@ -965,6 +965,18 @@ impl Quad {
     }
 
     #[allow(dead_code)]
+    fn debug_get_stats(&self, level_count: &mut [usize], visible_level_count: &mut [usize]) {
+        level_count[self.cur_subdivision as usize] += 1;
+        if self.is_subdivided() {
+            for q in self.children.as_ref().unwrap() {
+                q.borrow().debug_get_stats(level_count, visible_level_count);
+            }
+        } else {
+            visible_level_count[self.cur_subdivision as usize] += 1;
+        }
+    }
+
+    #[allow(dead_code)]
     fn debug_find_quad(&self, path: &[QuadPos]) -> Rc<RefCell<Quad>> {
         if !self.is_subdivided() {
             panic!("Quad doesn't exist!");
@@ -1303,6 +1315,33 @@ impl QuadSphere {
 
     fn quad_pool(&self) -> &QuadPool {
         self.quad_pool.as_ref().unwrap()
+    }
+
+    #[allow(dead_code)]
+    fn debug_print_stats(&self) {
+        let mut level_count = vec![0; self.max_subdivision as usize + 1];
+        let mut visible_level_count = vec![0; self.max_subdivision as usize + 1];
+
+        for i in 0..6 {
+            let q = self.faces.as_ref().unwrap()[i].clone();
+            q.borrow().debug_get_stats(&mut level_count, &mut visible_level_count);
+        }
+
+        println!("------");
+        println!("Levels");
+        println!("------");
+        for (i, l) in level_count.iter().enumerate() {
+            println!("Level {} = {}", i, l);
+        }
+        println!("");
+
+        println!("--------------");
+        println!("Visible levels");
+        println!("--------------");
+        for (i, l) in visible_level_count.iter().enumerate() {
+            println!("Visible level {} = {}", i, l);
+        }
+        println!("");
     }
 
     #[allow(dead_code)]
