@@ -7,7 +7,7 @@ extern crate planetgen_engine;
 
 mod gen;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use cgmath::{Deg, Euler, InnerSpace, Rotation, Quaternion, Vector3};
@@ -1962,6 +1962,7 @@ struct QuadPool {
     vertices_cap: usize,
     indices_cap: usize,
     pool: RefCell<Vec<Rc<RefCell<Quad>>>>,
+    in_use: Cell<usize>,
 }
 
 impl QuadPool {
@@ -1989,7 +1990,8 @@ impl QuadPool {
             indices_configs: indices_configs,
             vertices_cap: vertices_cap,
             indices_cap: indices_cap,
-            pool: RefCell::new(Vec::new())
+            pool: RefCell::new(Vec::new()),
+            in_use: Cell::new(0),
         };
 
         let mut pool_vec = Vec::new();
@@ -2053,10 +2055,12 @@ impl QuadPool {
         if let Some(q) = self.pool.borrow_mut().pop() {
             QuadPool::default_init_quad(&mut *q.borrow_mut());
             let q_obj = q.borrow().behaviour().object(scene).unwrap().clone();
+            self.in_use.set(self.in_use.get() + 1);
             (q_obj, q)
         } else {
             let (q_obj, q) = self.create_quad(scene);
             QuadPool::default_init_quad(&mut *q.borrow_mut());
+            self.in_use.set(self.in_use.get() + 1);
             (q_obj, q)
         }
     }
@@ -2069,6 +2073,14 @@ impl QuadPool {
     /// Release ownership of the given quad and add it to the pool.
     fn recycle_quad(&self, quad: Rc<RefCell<Quad>>) {
         self.pool.borrow_mut().push(quad);
+        self.in_use.set(self.in_use.get() - 1);
+    }
+
+    #[allow(dead_code)]
+    fn debug_print_stats(&self) {
+        let in_use = self.in_use.get();
+        let total = in_use + self.pool.borrow().len();
+        println!("In use = {} / {}", in_use, total);
     }
 
     /// Perform cleanup in preparation for being destroyed.
