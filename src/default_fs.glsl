@@ -1,6 +1,7 @@
 #version 330 core
 
-//in vec3 _mat_colour;
+uniform vec3 _colour;
+
 in vec3 world_vpos;
 in vec3 world_vnorm;
 in vec3 world_view_dir;

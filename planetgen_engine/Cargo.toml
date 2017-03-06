@@ -9,5 +9,6 @@ panic = "abort"
 [dependencies]
 approx = "0.1"
 num = "0.1"
-glium = "0.15"
+sdl2 = "0.29.0"
+gl = "0.6.1"
 cgmath = "0.11"

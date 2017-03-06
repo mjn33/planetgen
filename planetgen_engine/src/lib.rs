@@ -6,11 +6,12 @@
 #[macro_use]
 extern crate approx;
 extern crate cgmath;
-#[macro_use]
-extern crate glium;
+extern crate gl;
 extern crate num;
+extern crate sdl2;
 
 pub mod error;
+mod gl_util;
 mod scene;
 mod traits;
 

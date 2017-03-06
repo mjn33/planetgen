@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate bitflags;
 extern crate cgmath;
-extern crate glium;
+extern crate sdl2;
 extern crate num;
 extern crate planetgen_engine;
 
@@ -11,8 +11,6 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use cgmath::{Deg, Euler, InnerSpace, Rotation, Quaternion, Vector3};
-
-use glium::DisplayBuild;
 
 use num::{Zero, One};
 
@@ -2196,12 +2194,10 @@ mod test {
 }
 
 fn main() {
-    let display = glium::glutin::WindowBuilder::new()
-        .with_multisampling(8)
-        .with_depth_buffer(24)
-        .build_glium().unwrap();
+    let sdl = sdl2::init()
+        .expect("Failed to initialize SDL2");
 
-    let mut scene = Scene::new(display);
+    let mut scene = Scene::new(sdl);
     let camera_obj = scene.create_object();
     let camera = scene.add_component::<Camera>(&*camera_obj).unwrap();//scene.create_camera();
     camera.set_near_clip(&mut scene, 0.01).unwrap();

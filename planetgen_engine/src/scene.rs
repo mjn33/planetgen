@@ -1,14 +1,18 @@
 use cgmath;
 use cgmath::{Deg, Euler, Matrix4, Quaternion, Rotation, Vector3};
 use error::{Error, Result};
-use glium;
-use glium::{IndexBuffer, Program, Surface, VertexBuffer};
-use glium::backend::glutin_backend::GlutinFacade;
+use gl;
+use gl::types::*;
+use gl_util::Program;
 use num::{Zero, One};
+use sdl2::{EventPump, Sdl};
+use sdl2::event::Event;
+use sdl2::video::{GLContext, GLProfile, Window};
 use std;
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::HashMap;
+use std::ptr;
 use std::rc::Rc;
 use traits::Component;
 
@@ -159,13 +163,6 @@ impl<T> Component for RefCell<T> where T: BehaviourMessages + 'static {
     }
 }
 
-#[derive(Copy, Clone)]
-struct VertDataPN {
-    vpos: [f32; 3],
-    vnorm: [f32; 3],
-}
-implement_vertex!(VertDataPN, vpos, vnorm);
-
 struct MeshData {
     /// Reference to the mesh object.
     object: Rc<Mesh>,
@@ -175,12 +172,15 @@ struct MeshData {
     vpos_vec: Vec<Vector3<f32>>,
     vnorm_vec: Vec<Vector3<f32>>,
     indices_vec: Vec<u16>,
+    vao_id: GLuint,
     /// True if `vertex_buf` needs to be updated.
     vertex_buf_dirty: bool,
-    vertex_buf: VertexBuffer<VertDataPN>,
+    vertex_buf_id: GLuint,
+    vertex_buf_capacity: usize,
     /// True if `indices_buf` needs to be updated.
-    indices_buf_dirty: bool,
-    indices_buf: IndexBuffer<u16>,
+    index_buf_dirty: bool,
+    index_buf_id: GLuint,
+    index_buf_capacity: usize,
 }
 
 pub struct Mesh {
@@ -237,7 +237,7 @@ impl Mesh {
             .ok_or(Error::ObjectDestroyed)
             .map(move |i| {
                 let data = &mut scene.mesh_data[i];
-                data.indices_buf_dirty = true;
+                data.index_buf_dirty = true;
                 &mut data.indices_vec
             })
     }
@@ -250,6 +250,10 @@ struct ShaderData {
     /// frame.
     marked: bool,
     program: Program,
+    obj_matrix_uniform: GLint,
+    cam_pos_uniform: GLint,
+    cam_matrix_uniform: GLint,
+    colour_uniform: GLint,
 }
 
 pub struct Shader {
@@ -654,8 +658,10 @@ impl Object {
 }
 
 pub struct Scene {
-    /// The display used for rendering, None if in headless mode.
-    display: Option<GlutinFacade>,
+    /// The OpenGL used for rendering, None if in headless mode.
+    ctx: Option<GLContext>,
+    window: Option<Window>,
+    event_pump: Option<EventPump>,
     camera_data: Vec<CameraData>,
     mesh_data: Vec<MeshData>,
     material_data: Vec<MaterialData>,
@@ -676,9 +682,32 @@ pub struct Scene {
 }
 
 impl Scene {
-    pub fn new(display: GlutinFacade) -> Scene {
+    pub fn new(sdl: Sdl) -> Scene {
+        let video_sys = sdl.video()
+            .expect("Failed to initialize the Video subsystem");
+        let event_pump = sdl.event_pump()
+            .expect("Failed to obtain the SDL event pump");
+        let window = video_sys.window("SDL2 Application", 800, 600)
+            .position_centered()
+            .resizable()
+            .opengl()
+            .build()
+            .expect("Failed to create a window");
+
+        video_sys.gl_attr().set_context_profile(GLProfile::Core);
+
+        let ctx = window.gl_create_context()
+            .expect("Failed to create GL context");
+
+        gl::load_with(|name| video_sys.gl_get_proc_address(name) as *const _);
+
+        // V-Sync
+        video_sys.gl_set_swap_interval(1);
+
         Scene {
-            display: Some(display),
+            ctx: Some(ctx),
+            window: Some(window),
+            event_pump: Some(event_pump),
             camera_data: Vec::new(),
             mesh_data: Vec::new(),
             material_data: Vec::new(),
@@ -702,7 +731,9 @@ impl Scene {
     /// operations will not work currently.
     pub fn new_headless() -> Scene {
         Scene {
-            display: None,
+            ctx: None,
+            window: None,
+            event_pump: None,
             camera_data: Vec::new(),
             mesh_data: Vec::new(),
             material_data: Vec::new(),
@@ -755,13 +786,42 @@ impl Scene {
     }
 
     pub fn create_mesh(&mut self, vert_capacity: usize, indices_capacity: usize) -> Rc<Mesh> {
-        let display = match self.display {
-            Some(ref display) => display,
-            None => {
-                // TODO: In the future implement some kind of dummy mesh?
-                panic!("Tried to create mesh in headless mode.");
-            }
-        };
+        if self.ctx.is_none() {
+            // TODO: In the future implement some kind of dummy mesh?
+            panic!("Tried to create mesh in headless mode.");
+        }
+
+        let vertex_buf_size = (vert_capacity * 9 * 4) as GLsizeiptr;
+        let index_buf_size = (indices_capacity * 2) as GLsizeiptr;
+
+        let mut vao_id = 0;
+        let mut vertex_buf_id = 0;
+        let mut index_buf_id = 0;
+
+        unsafe {
+            gl::GenVertexArrays(1, &mut vao_id);
+            gl::GenBuffers(1, &mut vertex_buf_id);
+            gl::GenBuffers(1, &mut index_buf_id);
+
+            gl::BindVertexArray(vao_id);
+
+            gl::BindBuffer(gl::ARRAY_BUFFER, vertex_buf_id);
+            gl::BufferData(gl::ARRAY_BUFFER, vertex_buf_size, ptr::null(), gl::STATIC_DRAW);
+            gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, 36, 0 as *const _);
+            gl::EnableVertexAttribArray(0);
+
+            gl::VertexAttribPointer(1, 3, gl::FLOAT, gl::FALSE, 36, 12 as *const _);
+            gl::EnableVertexAttribArray(1);
+
+            gl::VertexAttribPointer(2, 3, gl::FLOAT, gl::FALSE, 36, 24 as *const _);
+            gl::EnableVertexAttribArray(2);
+
+            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, index_buf_id);
+            gl::BufferData(gl::ELEMENT_ARRAY_BUFFER, index_buf_size, ptr::null(), gl::STATIC_DRAW);
+
+            gl::BindVertexArray(0);
+        }
+
         let rv = Rc::new(Mesh { idx: Cell::new(None) });
         let data = MeshData {
             object: rv.clone(),
@@ -769,10 +829,13 @@ impl Scene {
             vpos_vec: Vec::new(),
             vnorm_vec: Vec::new(),
             indices_vec: Vec::new(),
+            vao_id: vao_id,
             vertex_buf_dirty: false,
-            vertex_buf: VertexBuffer::empty(display, vert_capacity).unwrap(),
-            indices_buf_dirty: false,
-            indices_buf: IndexBuffer::empty(display, glium::index::PrimitiveType::TrianglesList, indices_capacity).unwrap(),
+            vertex_buf_capacity: vert_capacity,
+            vertex_buf_id: vertex_buf_id,
+            index_buf_dirty: false,
+            index_buf_capacity: indices_capacity,
+            index_buf_id: index_buf_id,
         };
         self.mesh_data.push(data);
         rv.idx.set(Some(self.mesh_data.len() - 1));
@@ -787,12 +850,12 @@ impl Scene {
                 .map(|i| unsafe { self.shader_data.get_unchecked(i) }));
 
             let mut map = HashMap::new();
-            for (name, _) in shader_data.program.uniforms() {
-                // Names starting with "_" are reserved for our own use
-                if name.starts_with("_") {
-                    map.insert(name.clone(), UnsafeCell::new(None));
-                }
-            }
+            //for (name, _) in shader_data.program.uniforms() {
+            //    // Names starting with "_" are reserved for our own use
+            //    if name.starts_with("_") {
+            //        map.insert(name.clone(), UnsafeCell::new(None));
+            //    }
+            //}
             map
         };
 
@@ -831,20 +894,35 @@ impl Scene {
         Ok(rv)
     }
 
-    pub fn create_shader(&mut self, vs_src: &str, fs_src: &str, gs_src: Option<&str>) -> Rc<Shader> {
-        let display = match self.display {
-            Some(ref display) => display,
-            None => {
-                // TODO: In the future implement some kind of dummy shader?
-                panic!("Tried to create shader in headless mode.");
-            }
-        };
+    pub fn create_shader(&mut self, vs_src: &str, fs_src: &str, _gs_src: Option<&str>) -> Rc<Shader> {
+        if self.ctx.is_none() {
+            // TODO: In the future implement some kind of dummy shader?
+            panic!("Tried to create shader in headless mode.");
+        }
+
         let rv = Rc::new(Shader { idx: Cell::new(None) });
-        let program = Program::from_source(display, vs_src, fs_src, gs_src).unwrap();
+        let program = Program::new(vs_src, fs_src).unwrap();
+        let obj_matrix_uniform = unsafe {
+            gl::GetUniformLocation(program.program, "_obj_matrix\0".as_ptr() as *const GLchar)
+        };
+        let cam_pos_uniform = unsafe {
+            gl::GetUniformLocation(program.program, "_cam_pos\0".as_ptr() as *const GLchar)
+        };
+        let cam_matrix_uniform = unsafe {
+            gl::GetUniformLocation(program.program, "_cam_matrix\0".as_ptr() as *const GLchar)
+        };
+        let colour_uniform = unsafe {
+            gl::GetUniformLocation(program.program, "_colour\0".as_ptr() as *const GLchar)
+        };
+
         let data = ShaderData {
             object: rv.clone(),
             marked: false,
             program: program,
+            obj_matrix_uniform: obj_matrix_uniform,
+            cam_pos_uniform: cam_pos_uniform,
+            cam_matrix_uniform: cam_matrix_uniform,
+            colour_uniform: colour_uniform,
         };
         self.shader_data.push(data);
         rv.idx.set(Some(self.shader_data.len() - 1));
@@ -1190,9 +1268,11 @@ impl Scene {
             }
         }
 
-        if self.display.is_some() {
-            if !self.draw() {
-                return false
+        if self.window.is_some() {
+            unsafe {
+                if !self.draw() {
+                    return false
+                }
             }
         }
 
@@ -1288,38 +1368,68 @@ impl Scene {
         true
     }
 
-    pub fn draw(&mut self) -> bool {
-        let display = self.display.as_ref().unwrap();
-        let mut target = display.draw();
-        target.clear_color_and_depth((0.8, 0.8, 0.8, 1.0), 1.0);
+    pub unsafe fn draw(&mut self) -> bool {
+        let window = self.window.as_ref().unwrap();
+
+        gl::Enable(gl::CULL_FACE);
+        gl::Enable(gl::DEPTH_TEST);
+        gl::DepthFunc(gl::LESS);
+        gl::ClearColor(0.8, 0.8, 0.8, 1.0);
+        gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
 
         for data in &mut self.mesh_data {
             if data.vertex_buf_dirty {
+                gl::BindBuffer(gl::ARRAY_BUFFER, data.vertex_buf_id);
                 let vertex_buf_len = std::cmp::max(data.vpos_vec.len(), data.vnorm_vec.len());
-                if vertex_buf_len > data.vertex_buf.len() {
+                if vertex_buf_len > data.vertex_buf_capacity {
                     // Resize buffer
-                    data.vertex_buf = VertexBuffer::empty(display, vertex_buf_len * 2).unwrap();
+                    let vert_capacity = vertex_buf_len * 2;
+                    let vertex_buf_size = (vert_capacity * 9 * 4) as GLsizeiptr;
+                    gl::BufferData(gl::ARRAY_BUFFER, vertex_buf_size, ptr::null(), gl::STATIC_DRAW);
                 }
 
-                let mut map = data.vertex_buf.map_write();
+                let range = (vertex_buf_len * 9 * 4) as GLsizeiptr;
+
+                let map = gl::MapBufferRange(gl::ARRAY_BUFFER, 0, range, gl::MAP_WRITE_BIT) as *mut f32;
+
                 for i in 0..vertex_buf_len {
-                    map.set(i, VertDataPN {
-                        vpos: (*data.vpos_vec.get(i).unwrap_or(&Vector3::zero())).into(),
-                        vnorm: (*data.vnorm_vec.get(i).unwrap_or(&Vector3::zero())).into()
-                    });
+                    let vpos = data.vpos_vec.get(i).map(|x| *x).unwrap_or(Vector3::zero());
+                    let vnorm = data.vnorm_vec.get(i).map(|x| *x).unwrap_or(Vector3::zero());
+                    let vcolour = Vector3::zero();
+                    let base = map.offset(i as isize * 9);
+                    *base.offset(0) = vpos.x;
+                    *base.offset(1) = vpos.y;
+                    *base.offset(2) = vpos.z;
+                    *base.offset(3) = vnorm.x;
+                    *base.offset(4) = vnorm.y;
+                    *base.offset(5) = vnorm.z;
+                    *base.offset(6) = vcolour.x;
+                    *base.offset(7) = vcolour.y;
+                    *base.offset(8) = vcolour.z;
                 }
+
+                gl::UnmapBuffer(gl::ARRAY_BUFFER);
                 data.vertex_buf_dirty = false;
             }
 
-            if data.indices_buf_dirty {
+            if data.index_buf_dirty {
+                gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, data.index_buf_id);
                 let indices_buf_len = data.indices_vec.len();
-                if indices_buf_len > data.indices_buf.len() {
+                if indices_buf_len > data.index_buf_capacity {
                     // Resize buffer
-                    data.indices_buf = IndexBuffer::empty(display, glium::index::PrimitiveType::TrianglesList, indices_buf_len * 2).unwrap();
+                    let indices_capacity = indices_buf_len * 2;
+                    let index_buf_size = (indices_capacity * 2) as GLsizeiptr;
+                    gl::BufferData(gl::ELEMENT_ARRAY_BUFFER, index_buf_size, ptr::null(), gl::STATIC_DRAW);
                 }
 
-                data.indices_buf.slice(0..indices_buf_len).unwrap().write(&data.indices_vec);
-                data.indices_buf_dirty = false;
+                let range = (indices_buf_len * 2) as GLsizeiptr;
+                let map = gl::MapBufferRange(gl::ELEMENT_ARRAY_BUFFER, 0, range, gl::MAP_WRITE_BIT) as *mut u16;
+
+                ptr::copy_nonoverlapping(data.indices_vec.as_ptr(), map, indices_buf_len);
+
+                gl::UnmapBuffer(gl::ELEMENT_ARRAY_BUFFER);
+
+                data.index_buf_dirty = false;
             }
         }
 
@@ -1360,17 +1470,6 @@ impl Scene {
                 None => continue
             };
 
-            let draw_params = glium::DrawParameters {
-                backface_culling: glium::draw_parameters::BackfaceCullingMode::CullClockwise,
-                polygon_mode: glium::draw_parameters::PolygonMode::Fill,
-                depth: glium::Depth {
-                    test: glium::draw_parameters::DepthTest::IfLess,
-                    write: true,
-                    .. Default::default()
-                },
-                .. Default::default()
-            };
-
             // Check whether we need to recalculate the local-to-world matrix.
             let mut opt_data = Some(trans_data);
             let mut recalc = false;
@@ -1397,56 +1496,31 @@ impl Scene {
 
             // TODO: multiple cameras
             let cam_matrix = self.camera_data[0].calc_matrix();
-            let cam_pos = self.camera_data[0].pos.into();
+            let cam_pos: [f32; 3] = self.camera_data[0].pos.into();
 
             let colour = [material.colour.0, material.colour.1, material.colour.2];
 
-            struct TmpUniforms<'a, 'b> {
-                scene: &'a Scene,
-                uniforms: &'b HashMap<String, UnsafeCell<Option<UniformValue>>>,
-                cam_matrix: [[f32; 4]; 4],
-                cam_pos: [f32; 3],
-                obj_matrix: [[f32; 4]; 4],
-                colour: [f32; 3]
-            }
+            gl::UseProgram(shader.program.program);
+            gl::BindVertexArray(mesh.vao_id);
+            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, mesh.index_buf_id);
 
-            impl<'a, 'b> glium::uniforms::Uniforms for TmpUniforms<'a, 'b> {
-                fn visit_values<'c, F: FnMut(&str, glium::uniforms::UniformValue<'c>)>(&'c self, mut f: F) {
-                    f("_obj_matrix", glium::uniforms::UniformValue::Mat4(self.obj_matrix));
-                    f("_cam_pos", glium::uniforms::UniformValue::Vec3(self.cam_pos));
-                    f("_cam_matrix", glium::uniforms::UniformValue::Mat4(self.cam_matrix));
-                    f("_colour", glium::uniforms::UniformValue::Vec3(self.colour));
-                    for (name, entry) in self.uniforms {
-                        let entry = unsafe { (&*entry.get()) };
-                        entry.as_ref()
-                            .map(|v| self.scene.to_glium_uniform_value(&v))
-                            .map(|v| f(&name, v));
-                    }
-                }
-            }
+            gl::UniformMatrix4fv(shader.obj_matrix_uniform, 1, gl::FALSE, trans_data.ltw_matrix.get().as_ptr() as *const _);
+            gl::Uniform3fv(shader.cam_pos_uniform, 1, cam_pos.as_ptr());
+            gl::UniformMatrix4fv(shader.cam_matrix_uniform, 1, gl::FALSE, cam_matrix.as_ptr() as *const _);
+            gl::Uniform3fv(shader.colour_uniform, 1, colour.as_ptr());
 
-            let uniforms = TmpUniforms {
-                scene: self,
-                uniforms: &material.uniforms,
-                cam_matrix: cam_matrix,
-                cam_pos: cam_pos,
-                obj_matrix: trans_data.ltw_matrix.get(),
-                colour: colour
-            };
+            // TODO: support custom uniform values again
 
-            let vertex_buf_len = std::cmp::max(mesh.vpos_vec.len(), mesh.vnorm_vec.len());
-            let indices_buf_len = mesh.indices_vec.len();
-            // TODO: unsuprisingly this is the most resource intensive method,
-            // investigate ways of providing abstractions over multi-draw, etc.
-            target.draw(mesh.vertex_buf.slice(0..vertex_buf_len).unwrap(),
-                        mesh.indices_buf.slice(0..indices_buf_len).unwrap(),
-                        &shader.program,
-                        &uniforms,
-                        &draw_params)
-                .unwrap();
+            // TODO: investigate ways of providing abstractions over multi-draw,
+            // etc.
+
+            gl::DrawElements(gl::TRIANGLES,
+                             mesh.indices_vec.len() as GLsizei,
+                             gl::UNSIGNED_SHORT,
+                             0 as *const GLvoid);
         }
 
-        target.finish().unwrap();
+        window.gl_swap_window();
 
         // All local-to-world matrices have been recomputed where necessary,
         // mark as valid going in to the next frame.
@@ -1454,54 +1528,56 @@ impl Scene {
             trans_data.ltw_valid.set(true);
         }
 
-        for ev in self.display.as_ref().unwrap().poll_events() {
-            match ev {
-                glium::glutin::Event::Closed => return false,
-                _ => ()
+        // Event loop
+        for event in self.event_pump.as_mut().unwrap().poll_iter() {
+            match event {
+                Event::Quit {..} => return false,
+                Event::AppTerminating {..} => return false,
+                _ => (),
             }
-        }
+        };
 
         true
     }
 
-    fn to_glium_uniform_value<'a>(&self, value: &UniformValue) -> glium::uniforms::UniformValue<'a> {
-        match *value {
-            UniformValue::Int(x) => glium::uniforms::UniformValue::SignedInt(x),
-            UniformValue::UnsignedInt(x) => glium::uniforms::UniformValue::UnsignedInt(x),
-            UniformValue::Float(x) => glium::uniforms::UniformValue::Float(x),
-            UniformValue::Mat2(x) => glium::uniforms::UniformValue::Mat2(x),
-            UniformValue::Mat3(x) => glium::uniforms::UniformValue::Mat3(x),
-            UniformValue::Mat4(x) => glium::uniforms::UniformValue::Mat4(x),
-            UniformValue::Vec2(x) => glium::uniforms::UniformValue::Vec2(x),
-            UniformValue::Vec3(x) => glium::uniforms::UniformValue::Vec3(x),
-            UniformValue::Vec4(x) => glium::uniforms::UniformValue::Vec4(x),
-            UniformValue::IntVec2(x) => glium::uniforms::UniformValue::IntVec2(x),
-            UniformValue::IntVec3(x) => glium::uniforms::UniformValue::IntVec3(x),
-            UniformValue::IntVec4(x) => glium::uniforms::UniformValue::IntVec4(x),
-            UniformValue::UIntVec2(x) => glium::uniforms::UniformValue::UnsignedIntVec2(x),
-            UniformValue::UIntVec3(x) => glium::uniforms::UniformValue::UnsignedIntVec3(x),
-            UniformValue::UIntVec4(x) => glium::uniforms::UniformValue::UnsignedIntVec4(x),
-            UniformValue::Bool(x) => glium::uniforms::UniformValue::Bool(x),
-            UniformValue::BoolVec2(x) => glium::uniforms::UniformValue::BoolVec2(x),
-            UniformValue::BoolVec3(x) => glium::uniforms::UniformValue::BoolVec3(x),
-            UniformValue::BoolVec4(x) => glium::uniforms::UniformValue::BoolVec4(x),
-            UniformValue::Double(x) => glium::uniforms::UniformValue::Double(x),
-            UniformValue::DoubleVec2(x) => glium::uniforms::UniformValue::DoubleVec2(x),
-            UniformValue::DoubleVec3(x) => glium::uniforms::UniformValue::DoubleVec3(x),
-            UniformValue::DoubleVec4(x) => glium::uniforms::UniformValue::DoubleVec4(x),
-            UniformValue::DoubleMat2(x) => glium::uniforms::UniformValue::DoubleMat2(x),
-            UniformValue::DoubleMat3(x) => glium::uniforms::UniformValue::DoubleMat3(x),
-            UniformValue::DoubleMat4(x) => glium::uniforms::UniformValue::DoubleMat4(x),
-            UniformValue::Int64(x) => glium::uniforms::UniformValue::Int64(x),
-            UniformValue::Int64Vec2(x) => glium::uniforms::UniformValue::Int64Vec2(x),
-            UniformValue::Int64Vec3(x) => glium::uniforms::UniformValue::Int64Vec3(x),
-            UniformValue::Int64Vec4(x) => glium::uniforms::UniformValue::Int64Vec4(x),
-            UniformValue::UInt64(x) => glium::uniforms::UniformValue::UnsignedInt64(x),
-            UniformValue::UInt64Vec2(x) => glium::uniforms::UniformValue::UnsignedInt64Vec2(x),
-            UniformValue::UInt64Vec3(x) => glium::uniforms::UniformValue::UnsignedInt64Vec3(x),
-            UniformValue::UInt64Vec4(x) => glium::uniforms::UniformValue::UnsignedInt64Vec4(x)
-        }
-    }
+    //fn to_glium_uniform_value<'a>(&self, value: &UniformValue) -> glium::uniforms::UniformValue<'a> {
+    //    match *value {
+    //        UniformValue::Int(x) => glium::uniforms::UniformValue::SignedInt(x),
+    //        UniformValue::UnsignedInt(x) => glium::uniforms::UniformValue::UnsignedInt(x),
+    //        UniformValue::Float(x) => glium::uniforms::UniformValue::Float(x),
+    //        UniformValue::Mat2(x) => glium::uniforms::UniformValue::Mat2(x),
+    //        UniformValue::Mat3(x) => glium::uniforms::UniformValue::Mat3(x),
+    //        UniformValue::Mat4(x) => glium::uniforms::UniformValue::Mat4(x),
+    //        UniformValue::Vec2(x) => glium::uniforms::UniformValue::Vec2(x),
+    //        UniformValue::Vec3(x) => glium::uniforms::UniformValue::Vec3(x),
+    //        UniformValue::Vec4(x) => glium::uniforms::UniformValue::Vec4(x),
+    //        UniformValue::IntVec2(x) => glium::uniforms::UniformValue::IntVec2(x),
+    //        UniformValue::IntVec3(x) => glium::uniforms::UniformValue::IntVec3(x),
+    //        UniformValue::IntVec4(x) => glium::uniforms::UniformValue::IntVec4(x),
+    //        UniformValue::UIntVec2(x) => glium::uniforms::UniformValue::UnsignedIntVec2(x),
+    //        UniformValue::UIntVec3(x) => glium::uniforms::UniformValue::UnsignedIntVec3(x),
+    //        UniformValue::UIntVec4(x) => glium::uniforms::UniformValue::UnsignedIntVec4(x),
+    //        UniformValue::Bool(x) => glium::uniforms::UniformValue::Bool(x),
+    //        UniformValue::BoolVec2(x) => glium::uniforms::UniformValue::BoolVec2(x),
+    //        UniformValue::BoolVec3(x) => glium::uniforms::UniformValue::BoolVec3(x),
+    //        UniformValue::BoolVec4(x) => glium::uniforms::UniformValue::BoolVec4(x),
+    //        UniformValue::Double(x) => glium::uniforms::UniformValue::Double(x),
+    //        UniformValue::DoubleVec2(x) => glium::uniforms::UniformValue::DoubleVec2(x),
+    //        UniformValue::DoubleVec3(x) => glium::uniforms::UniformValue::DoubleVec3(x),
+    //        UniformValue::DoubleVec4(x) => glium::uniforms::UniformValue::DoubleVec4(x),
+    //        UniformValue::DoubleMat2(x) => glium::uniforms::UniformValue::DoubleMat2(x),
+    //        UniformValue::DoubleMat3(x) => glium::uniforms::UniformValue::DoubleMat3(x),
+    //        UniformValue::DoubleMat4(x) => glium::uniforms::UniformValue::DoubleMat4(x),
+    //        UniformValue::Int64(x) => glium::uniforms::UniformValue::Int64(x),
+    //        UniformValue::Int64Vec2(x) => glium::uniforms::UniformValue::Int64Vec2(x),
+    //        UniformValue::Int64Vec3(x) => glium::uniforms::UniformValue::Int64Vec3(x),
+    //        UniformValue::Int64Vec4(x) => glium::uniforms::UniformValue::Int64Vec4(x),
+    //        UniformValue::UInt64(x) => glium::uniforms::UniformValue::UnsignedInt64(x),
+    //        UniformValue::UInt64Vec2(x) => glium::uniforms::UniformValue::UnsignedInt64Vec2(x),
+    //        UniformValue::UInt64Vec3(x) => glium::uniforms::UniformValue::UnsignedInt64Vec3(x),
+    //        UniformValue::UInt64Vec4(x) => glium::uniforms::UniformValue::UnsignedInt64Vec4(x)
+    //    }
+    //}
 
     fn local_to_world_pos_rot(&self,
                               parent_data: Option<&TransformData>,
