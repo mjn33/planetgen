@@ -11,9 +11,10 @@ use sdl2::video::{GLContext, GLProfile, Window};
 use std;
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell, UnsafeCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ptr;
 use std::rc::Rc;
+use std::time::Instant;
 use traits::Component;
 
 fn post_add<T: Copy + std::ops::Add<Output=T>>(a: &mut T, b: T) -> T {
@@ -657,6 +658,8 @@ impl Object {
     }
 }
 
+const FRAME_TIME_MAX_SAMPLES: usize = 60;
+
 pub struct Scene {
     /// The OpenGL used for rendering, None if in headless mode.
     ctx: Option<GLContext>,
@@ -678,7 +681,10 @@ pub struct Scene {
     destroyed_behaviours: Vec<usize>,
     destroyed_objects: Vec<usize>,
     /// Temporary vector used in `local_to_world_pos_rot()`
-    tmp_vec: UnsafeCell<Vec<(Vector3<f32>, Quaternion<f32>)>>
+    tmp_vec: UnsafeCell<Vec<(Vector3<f32>, Quaternion<f32>)>>,
+    /// Times spent on rendering a frame, first value is in behaviour updates,
+    /// second value is in drawing, third value is in object destruction
+    frame_times: VecDeque<(f32, f32, f32)>,
 }
 
 impl Scene {
@@ -723,7 +729,8 @@ impl Scene {
             destroyed_shaders: Vec::new(),
             destroyed_behaviours: Vec::new(),
             destroyed_objects: Vec::new(),
-            tmp_vec: UnsafeCell::new(Vec::new())
+            tmp_vec: UnsafeCell::new(Vec::new()),
+            frame_times: VecDeque::with_capacity(FRAME_TIME_MAX_SAMPLES),
         }
     }
 
@@ -749,7 +756,8 @@ impl Scene {
             destroyed_shaders: Vec::new(),
             destroyed_behaviours: Vec::new(),
             destroyed_objects: Vec::new(),
-            tmp_vec: UnsafeCell::new(Vec::new())
+            tmp_vec: UnsafeCell::new(Vec::new()),
+            frame_times: VecDeque::with_capacity(FRAME_TIME_MAX_SAMPLES),
         }
     }
 
@@ -1224,6 +1232,8 @@ impl Scene {
             self.debug_check();
         }
 
+        let start_time = Instant::now();
+
         let mut idx = 0;
         while idx < self.behaviour_data.len() {
             let idx = post_add(&mut idx, 1);
@@ -1268,6 +1278,8 @@ impl Scene {
             }
         }
 
+        let draw_start_time = Instant::now();
+
         if self.window.is_some() {
             unsafe {
                 if !self.draw() {
@@ -1275,6 +1287,8 @@ impl Scene {
                 }
             }
         }
+
+        let draw_end_time = Instant::now();
 
         unsafe {
             let mut behaviour_data = Vec::new();
@@ -1365,7 +1379,70 @@ impl Scene {
             std::mem::swap(&mut destroyed_mrenderers, &mut self.destroyed_mrenderers);
         }
 
+        let destroy_end_time = Instant::now();
+
+        let update_time = draw_start_time - start_time;
+        let draw_time = draw_end_time - draw_start_time;
+        let destroy_time = destroy_end_time - draw_end_time;
+
+        let update_time_millis = (update_time.as_secs() as f32) * 1000.0 + update_time.subsec_nanos() as f32 / 1000000.0;
+        let draw_time_millis = (draw_time.as_secs() as f32) * 1000.0 + draw_time.subsec_nanos() as f32 / 1000000.0;
+        let destroy_time_millis = (destroy_time.as_secs() as f32) * 1000.0 + destroy_time.subsec_nanos() as f32 / 1000000.0;
+
+        if self.frame_times.len() == FRAME_TIME_MAX_SAMPLES {
+            self.frame_times.pop_back();
+        }
+
+        self.frame_times.push_front((update_time_millis, draw_time_millis, destroy_time_millis));
+
         true
+    }
+
+    pub fn print_frame_stats(&self) {
+        let (mut min_update_time, mut max_update_time, mut sum_update_time) =
+            (std::f32::MAX, std::f32::MIN, 0.0);
+        let (mut min_draw_time, mut max_draw_time, mut sum_draw_time) =
+            (std::f32::MAX, std::f32::MIN, 0.0);
+        let (mut min_destroy_time, mut max_destroy_time, mut sum_destroy_time) =
+            (std::f32::MAX, std::f32::MIN, 0.0);
+        let (mut min_total_time, mut max_total_time, mut sum_total_time) =
+            (std::f32::MAX, std::f32::MIN, 0.0);
+
+        for &(update_time, draw_time, destroy_time) in &self.frame_times {
+            let total_time = update_time + draw_time + destroy_time;
+
+            min_update_time = f32::min(min_update_time, update_time);
+            max_update_time = f32::max(max_update_time, update_time);
+            sum_update_time += update_time;
+
+            min_draw_time = f32::min(min_draw_time, draw_time);
+            max_draw_time = f32::max(max_draw_time, draw_time);
+            sum_draw_time += draw_time;
+
+            min_destroy_time = f32::min(min_destroy_time, destroy_time);
+            max_destroy_time = f32::max(max_destroy_time, destroy_time);
+            sum_destroy_time += destroy_time;
+
+            min_total_time = f32::min(min_total_time, total_time);
+            max_total_time = f32::max(max_total_time, total_time);
+            sum_total_time += total_time;
+        }
+
+        let avg_update_time = sum_update_time / self.frame_times.len() as f32;
+        let avg_draw_time = sum_draw_time / self.frame_times.len() as f32;
+        let avg_destroy_time = sum_destroy_time / self.frame_times.len() as f32;
+        let avg_total_time = sum_total_time / self.frame_times.len() as f32;
+
+        println!("Update:  min = {} ms, max = {} ms, avg = {} ms",
+                 min_update_time, max_update_time, avg_update_time);
+        println!("Draw:    min = {} ms, max = {} ms, avg = {} ms",
+                 min_draw_time, max_draw_time, avg_draw_time);
+        println!("Destroy: min = {} ms, max = {} ms, avg = {} ms",
+                 min_destroy_time, max_destroy_time, avg_destroy_time);
+        println!("Total:   min = {} ms, max = {} ms, avg = {} ms",
+                 min_total_time, max_total_time, avg_total_time);
+        println!("FPS:     min = {}, max = {}, avg = {}",
+                 1000.0 / max_total_time, 1000.0 / min_total_time, 1000.0 / avg_total_time);
     }
 
     pub unsafe fn draw(&mut self) -> bool {
