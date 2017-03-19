@@ -1,3 +1,4 @@
+use alloc::{AllocRange, SimpleAllocator};
 use cgmath;
 use cgmath::{Deg, Euler, Matrix4, Quaternion, Rotation, Vector3};
 use error::{Error, Result};
@@ -11,6 +12,7 @@ use sdl2::video::{GLContext, GLProfile, Window};
 use std;
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell, UnsafeCell};
+use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::ptr;
 use std::rc::Rc;
@@ -173,14 +175,20 @@ struct MeshData {
     vpos_vec: Vec<Vector3<f32>>,
     vnorm_vec: Vec<Vector3<f32>>,
     indices_vec: Vec<u16>,
-    vao_id: GLuint,
-    /// True if `vertex_buf` needs to be updated.
+    /// True if vertex buffer data needs to be updated.
     vertex_buf_dirty: bool,
-    vertex_buf_id: GLuint,
+    /// A tuple containing a vertex buffer index and an allocation range
+    /// indicating where the vertex data for this mesh is. `None` if not
+    /// allocated yet.
+    vertex_buf_alloc: Option<(usize, AllocRange)>,
+    // TODO: AllocRange stores this as well, use that instead
     vertex_buf_capacity: usize,
-    /// True if `indices_buf` needs to be updated.
+    /// True if index buffer data needs to be updated.
     index_buf_dirty: bool,
-    index_buf_id: GLuint,
+    /// A tuple containing a index buffer index and an allocation range
+    /// indicating where the index data for this mesh is. `None` if not
+    /// allocated yet.
+    index_buf_alloc: Option<(usize, AllocRange)>,
     index_buf_capacity: usize,
 }
 
@@ -244,6 +252,14 @@ impl Mesh {
     }
 }
 
+struct DrawInfo {
+    material_idx: usize,
+    vertex_buf_idx: usize,
+    index_buf_idx: usize,
+    trans_idx: usize,
+    mesh_idx: usize,
+}
+
 struct ShaderData {
     /// Reference to the shader object.
     object: Rc<Shader>,
@@ -251,6 +267,8 @@ struct ShaderData {
     /// frame.
     marked: bool,
     program: Program,
+    /// A vector containing the draw commands to be executed using this shader.
+    draw_cmds: Vec<DrawInfo>,
     obj_matrix_uniform: GLint,
     cam_pos_uniform: GLint,
     cam_matrix_uniform: GLint,
@@ -659,6 +677,8 @@ impl Object {
 }
 
 const FRAME_TIME_MAX_SAMPLES: usize = 60;
+const INITIAL_VERTEX_BUF_CAPACITY: usize = 1 * 1024 * 1024;
+const INITIAL_INDEX_BUF_CAPACITY: usize = 1 * 1024 * 1024;
 
 pub struct Scene {
     /// The OpenGL used for rendering, None if in headless mode.
@@ -680,11 +700,87 @@ pub struct Scene {
     destroyed_shaders: Vec<usize>,
     destroyed_behaviours: Vec<usize>,
     destroyed_objects: Vec<usize>,
+
+    vertex_bufs: Vec<VertexBuffer>,
+    index_bufs: Vec<IndexBuffer>,
+
     /// Temporary vector used in `local_to_world_pos_rot()`
     tmp_vec: UnsafeCell<Vec<(Vector3<f32>, Quaternion<f32>)>>,
+
+    /// Temporary vector used when freeing unused vertex buffer ranges.
+    vertex_to_free: Vec<(usize, AllocRange)>,
+    /// Temporary vector used when freeing unused index buffer ranges.
+    index_to_free: Vec<(usize, AllocRange)>,
+
     /// Times spent on rendering a frame, first value is in behaviour updates,
     /// second value is in drawing, third value is in object destruction
     frame_times: VecDeque<(f32, f32, f32)>,
+}
+
+struct VertexBuffer {
+    alloc: SimpleAllocator,
+    vao_id: GLuint,
+    buf_id: GLuint,
+}
+
+struct IndexBuffer {
+    alloc: SimpleAllocator,
+    buf_id: GLuint,
+}
+
+impl VertexBuffer {
+    fn new(vert_capacity: usize) -> VertexBuffer {
+        let alloc = SimpleAllocator::new(vert_capacity);
+        let buf_size = (vert_capacity * 9 * 4) as GLsizeiptr;
+        let mut vao_id = 0;
+        let mut buf_id = 0;
+
+        unsafe {
+            gl::GenVertexArrays(1, &mut vao_id);
+            gl::GenBuffers(1, &mut buf_id);
+
+            gl::BindVertexArray(vao_id);
+
+            gl::BindBuffer(gl::ARRAY_BUFFER, buf_id);
+            gl::BufferData(gl::ARRAY_BUFFER, buf_size, ptr::null(), gl::STATIC_DRAW);
+            gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, 36, 0 as *const _);
+            gl::EnableVertexAttribArray(0);
+
+            gl::VertexAttribPointer(1, 3, gl::FLOAT, gl::FALSE, 36, 12 as *const _);
+            gl::EnableVertexAttribArray(1);
+
+            gl::VertexAttribPointer(2, 3, gl::FLOAT, gl::FALSE, 36, 24 as *const _);
+            gl::EnableVertexAttribArray(2);
+
+            gl::BindVertexArray(0);
+        }
+
+        VertexBuffer {
+            alloc,
+            vao_id,
+            buf_id,
+        }
+    }
+}
+
+impl IndexBuffer {
+    fn new(indices_capacity: usize) -> IndexBuffer {
+        let alloc = SimpleAllocator::new(indices_capacity);
+        let buf_size = (indices_capacity * 2) as GLsizeiptr;
+        let mut buf_id = 0;
+
+        unsafe {
+            gl::GenBuffers(1, &mut buf_id);
+
+            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, buf_id);
+            gl::BufferData(gl::ELEMENT_ARRAY_BUFFER, buf_size, ptr::null(), gl::STATIC_DRAW);
+        }
+
+        IndexBuffer {
+            alloc,
+            buf_id,
+        }
+    }
 }
 
 impl Scene {
@@ -710,7 +806,7 @@ impl Scene {
         // V-Sync
         video_sys.gl_set_swap_interval(1);
 
-        Scene {
+        let mut scene = Scene {
             ctx: Some(ctx),
             window: Some(window),
             event_pump: Some(event_pump),
@@ -729,9 +825,21 @@ impl Scene {
             destroyed_shaders: Vec::new(),
             destroyed_behaviours: Vec::new(),
             destroyed_objects: Vec::new(),
+
+            vertex_bufs: Vec::new(),
+            index_bufs: Vec::new(),
+
+            vertex_to_free: Vec::new(),
+            index_to_free: Vec::new(),
+
             tmp_vec: UnsafeCell::new(Vec::new()),
             frame_times: VecDeque::with_capacity(FRAME_TIME_MAX_SAMPLES),
-        }
+        };
+
+        Scene::create_new_vertex_buffer(&mut scene.vertex_bufs);
+        Scene::create_new_index_buffer(&mut scene.index_bufs);
+
+        scene
     }
 
     /// Creates a new scene in "headless" mode (no graphical capabilities). Many
@@ -756,9 +864,26 @@ impl Scene {
             destroyed_shaders: Vec::new(),
             destroyed_behaviours: Vec::new(),
             destroyed_objects: Vec::new(),
+
+            index_bufs: Vec::new(),
+            vertex_bufs: Vec::new(),
+
+            vertex_to_free: Vec::new(),
+            index_to_free: Vec::new(),
+
             tmp_vec: UnsafeCell::new(Vec::new()),
             frame_times: VecDeque::with_capacity(FRAME_TIME_MAX_SAMPLES),
         }
+    }
+
+    fn create_new_vertex_buffer(vertex_bufs: &mut Vec<VertexBuffer>) {
+        let vertex_buf = VertexBuffer::new(INITIAL_VERTEX_BUF_CAPACITY);
+        vertex_bufs.push(vertex_buf);
+    }
+
+    fn create_new_index_buffer(index_bufs: &mut Vec<IndexBuffer>) {
+        let index_buf = IndexBuffer::new(INITIAL_INDEX_BUF_CAPACITY);
+        index_bufs.push(index_buf);
     }
 
     fn create_camera(&mut self, object: &Object) -> Result<Rc<Camera>> {
@@ -799,37 +924,6 @@ impl Scene {
             panic!("Tried to create mesh in headless mode.");
         }
 
-        let vertex_buf_size = (vert_capacity * 9 * 4) as GLsizeiptr;
-        let index_buf_size = (indices_capacity * 2) as GLsizeiptr;
-
-        let mut vao_id = 0;
-        let mut vertex_buf_id = 0;
-        let mut index_buf_id = 0;
-
-        unsafe {
-            gl::GenVertexArrays(1, &mut vao_id);
-            gl::GenBuffers(1, &mut vertex_buf_id);
-            gl::GenBuffers(1, &mut index_buf_id);
-
-            gl::BindVertexArray(vao_id);
-
-            gl::BindBuffer(gl::ARRAY_BUFFER, vertex_buf_id);
-            gl::BufferData(gl::ARRAY_BUFFER, vertex_buf_size, ptr::null(), gl::STATIC_DRAW);
-            gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, 36, 0 as *const _);
-            gl::EnableVertexAttribArray(0);
-
-            gl::VertexAttribPointer(1, 3, gl::FLOAT, gl::FALSE, 36, 12 as *const _);
-            gl::EnableVertexAttribArray(1);
-
-            gl::VertexAttribPointer(2, 3, gl::FLOAT, gl::FALSE, 36, 24 as *const _);
-            gl::EnableVertexAttribArray(2);
-
-            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, index_buf_id);
-            gl::BufferData(gl::ELEMENT_ARRAY_BUFFER, index_buf_size, ptr::null(), gl::STATIC_DRAW);
-
-            gl::BindVertexArray(0);
-        }
-
         let rv = Rc::new(Mesh { idx: Cell::new(None) });
         let data = MeshData {
             object: rv.clone(),
@@ -837,13 +931,12 @@ impl Scene {
             vpos_vec: Vec::new(),
             vnorm_vec: Vec::new(),
             indices_vec: Vec::new(),
-            vao_id: vao_id,
             vertex_buf_dirty: false,
+            vertex_buf_alloc: None,
             vertex_buf_capacity: vert_capacity,
-            vertex_buf_id: vertex_buf_id,
             index_buf_dirty: false,
+            index_buf_alloc: None,
             index_buf_capacity: indices_capacity,
-            index_buf_id: index_buf_id,
         };
         self.mesh_data.push(data);
         rv.idx.set(Some(self.mesh_data.len() - 1));
@@ -927,6 +1020,7 @@ impl Scene {
             object: rv.clone(),
             marked: false,
             program: program,
+            draw_cmds: Vec::new(),
             obj_matrix_uniform: obj_matrix_uniform,
             cam_pos_uniform: cam_pos_uniform,
             cam_matrix_uniform: cam_matrix_uniform,
@@ -1290,6 +1384,11 @@ impl Scene {
 
         let draw_end_time = Instant::now();
 
+        //// Just block for until a new line is received
+        //println!("Enter newline to continue...");
+        //let mut _tmp = String::new();
+        //std::io::stdin().read_line(&mut _tmp).unwrap();
+
         unsafe {
             let mut behaviour_data = Vec::new();
             let mut destroyed_behaviours = Vec::new();
@@ -1445,29 +1544,250 @@ impl Scene {
                  1000.0 / max_total_time, 1000.0 / min_total_time, 1000.0 / avg_total_time);
     }
 
-    pub unsafe fn draw(&mut self) -> bool {
-        let window = self.window.as_ref().unwrap();
+    fn get_alloc_buffers(&mut self, idx: usize) -> (Option<(usize, usize)>, Option<(usize, usize)>) {
+        let data = &self.mesh_data[idx];
+        let vertex_buf_len = std::cmp::max(data.vpos_vec.len(), data.vnorm_vec.len());
+        let indices_buf_len = data.indices_vec.len();
 
+        let vb_needs_alloc = if data.vertex_buf_dirty {
+            data.vertex_buf_alloc.is_none() || vertex_buf_len > data.vertex_buf_capacity
+        } else {
+            false
+        };
+        let ib_needs_alloc = if data.index_buf_dirty {
+            data.index_buf_alloc.is_none() || indices_buf_len > data.index_buf_capacity
+        } else {
+            false
+        };
+
+        let vert_capacity = if vertex_buf_len > data.vertex_buf_capacity {
+            vertex_buf_len * 2
+        } else {
+            data.vertex_buf_capacity
+        };
+        let indices_capacity = if indices_buf_len > data.index_buf_capacity {
+            indices_buf_len * 2
+        } else {
+            data.index_buf_capacity
+        };
+
+        if ib_needs_alloc && vb_needs_alloc {
+            // Try to allocate in same buffer first
+            let (mut vb_idx, mut ib_idx) = (None, None);
+            for i in 0..std::cmp::max(self.vertex_bufs.len(), self.index_bufs.len()) {
+                let vb = &self.vertex_bufs.get(i);
+                let ib = &self.index_bufs.get(i);
+
+                let vb_ok = vb.map_or(false, |vb| vb.alloc.max_alloc() >= vert_capacity);
+                let ib_ok = ib.map_or(false, |ib| ib.alloc.max_alloc() >= indices_capacity);
+
+                if vb_ok && ib_ok {
+                    vb_idx = Some(i);
+                    ib_idx = Some(i);
+                    break;
+                } else if vb_ok && vb_idx.is_none() {
+                    vb_idx = Some(i);
+                } else if ib_ok && ib_idx.is_none() {
+                    ib_idx = Some(i);
+                }
+            }
+
+            let (vb_idx, ib_idx) = match (vb_idx, ib_idx) {
+                (Some(vb_idx), Some(ib_idx)) => (vb_idx, ib_idx),
+                (Some(vb_idx), None) => {
+                    // No index buffer has space, need to allocate new index buffer
+                    if self.index_bufs.len() < self.vertex_bufs.len() {
+                        // Check for an opportunity for index and vertex
+                        // buffers to use the same index.
+                        let ib_idx = self.index_bufs.len();
+                        let vb = &self.vertex_bufs[ib_idx];
+                        let vb_idx = if vb.alloc.max_alloc() >= vert_capacity {
+                            ib_idx
+                        } else {
+                            vb_idx
+                        };
+                        Scene::create_new_index_buffer(&mut self.index_bufs);
+                        (vb_idx, ib_idx)
+                    } else {
+                        let ib_idx = self.index_bufs.len();
+                        Scene::create_new_index_buffer(&mut self.index_bufs);
+                        (vb_idx, ib_idx)
+                    }
+                },
+                (None, Some(ib_idx)) => {
+                    // No vertex buffer has space, need to allocate new vertex buffer
+                    if self.vertex_bufs.len() < self.index_bufs.len() {
+                        // Check for an opportunity for index and vertex
+                        // buffers to use the same index.
+                        let vb_idx = self.vertex_bufs.len();
+                        let ib = &self.index_bufs[vb_idx];
+                        let ib_idx = if ib.alloc.max_alloc() >= vert_capacity {
+                            vb_idx
+                        } else {
+                            ib_idx
+                        };
+                        Scene::create_new_vertex_buffer(&mut self.vertex_bufs);
+                        (vb_idx, ib_idx)
+                    } else {
+                        let vb_idx = self.vertex_bufs.len();
+                        Scene::create_new_vertex_buffer(&mut self.vertex_bufs);
+                        (vb_idx, ib_idx)
+                    }
+                },
+                (None, None) => {
+                    // No space, need to allocate new buffers
+                    let (vb_idx, ib_idx) = (self.vertex_bufs.len(), self.index_bufs.len());
+                    Scene::create_new_vertex_buffer(&mut self.vertex_bufs);
+                    Scene::create_new_index_buffer(&mut self.index_bufs);
+                    (vb_idx, ib_idx)
+                },
+            };
+
+            (Some((vb_idx, vert_capacity)), Some((ib_idx, indices_capacity)))
+        } else if ib_needs_alloc {
+            let vb_idx = data.vertex_buf_alloc
+                .as_ref()
+                .map(|&(ref idx, _)| *idx)
+                .expect("Expected vertex buffer to be already allocated");
+            let mut ib_idx = None;
+            for i in 0..self.index_bufs.len() {
+                let ib = &self.index_bufs[i];
+
+                let ib_ok = ib.alloc.max_alloc() >= indices_capacity;
+
+                if ib_ok && i == vb_idx {
+                    // Allocate in same buffer as vertex data
+                    ib_idx = Some(i);
+                    break;
+                } else if ib_ok && ib_idx.is_none() {
+                    ib_idx = Some(i);
+                }
+            }
+
+            let ib_idx = match ib_idx {
+                Some(ib_idx) => ib_idx,
+                None => {
+                    // No index buffer has space, need to allocate new index buffer
+                    let ib_idx = self.index_bufs.len();
+                    Scene::create_new_index_buffer(&mut self.index_bufs);
+                    ib_idx
+                }
+            };
+
+            (None, Some((ib_idx, indices_capacity)))
+        } else if vb_needs_alloc {
+            let ib_idx = data.index_buf_alloc
+                .as_ref()
+                .map(|&(ref idx, _)| *idx)
+                .expect("Expected index buffer to be already allocated");
+            let mut vb_idx = None;
+            for i in 0..self.vertex_bufs.len() {
+                let vb = &self.vertex_bufs[i];
+
+                let vb_ok = vb.alloc.max_alloc() >= vert_capacity;
+
+                if vb_ok && i == ib_idx {
+                    // Allocate in same buffer as index data
+                    vb_idx = Some(i);
+                    break;
+                } else if vb_ok && vb_idx.is_none() {
+                    vb_idx = Some(i);
+                }
+            }
+
+            let vb_idx = match vb_idx {
+                Some(vb_idx) => vb_idx,
+                None => {
+                    // No index buffer has space, need to allocate new index buffer
+                    let vb_idx = self.vertex_bufs.len();
+                    Scene::create_new_vertex_buffer(&mut self.vertex_bufs);
+                    vb_idx
+                }
+            };
+
+            (Some((vb_idx, vert_capacity)), None)
+        } else {
+            (None, None)
+        }
+    }
+
+    pub unsafe fn draw(&mut self) -> bool {
         gl::Enable(gl::CULL_FACE);
         gl::Enable(gl::DEPTH_TEST);
         gl::DepthFunc(gl::LESS);
         gl::ClearColor(0.8, 0.8, 0.8, 1.0);
         gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
 
+        let mut vertex_to_free = Vec::new();
+        let mut index_to_free = Vec::new();
+
+        std::mem::swap(&mut vertex_to_free, &mut self.vertex_to_free);
+        std::mem::swap(&mut vertex_to_free, &mut self.index_to_free);
+
+        // Reallocate mesh buffers if necessary
+        for i in 0..self.mesh_data.len() {
+            let (vb_alloc, ib_alloc) = self.get_alloc_buffers(i);
+            let data = &mut self.mesh_data[i];
+
+            if let Some((vb_idx, vert_capacity)) = vb_alloc {
+                // Free a previous allocation if there was one
+                data.vertex_buf_alloc.take().map(|alloc| {
+                    vertex_to_free.push(alloc);
+                });
+
+                let range = self.vertex_bufs[vb_idx].alloc.alloc(vert_capacity)
+                    .expect("unexpected allocation failure");
+
+                data.vertex_buf_alloc = Some((vb_idx, range));
+            }
+
+            if let Some((ib_idx, indices_capacity)) = ib_alloc {
+                // Free a previous allocation if there was one
+                data.index_buf_alloc.take().map(|alloc| {
+                    index_to_free.push(alloc);
+                });
+
+                let range = self.index_bufs[ib_idx].alloc.alloc(indices_capacity)
+                    .expect("unexpected allocation failure");
+
+                data.index_buf_alloc = Some((ib_idx, range));
+            }
+        }
+
+        for (vb_idx, range) in vertex_to_free.drain(..) {
+            self.vertex_bufs[vb_idx].alloc.free(range);
+        }
+
+        for (ib_idx, range) in index_to_free.drain(..) {
+            self.index_bufs[ib_idx].alloc.free(range);
+        }
+
+        std::mem::swap(&mut vertex_to_free, &mut self.vertex_to_free);
+        std::mem::swap(&mut vertex_to_free, &mut self.index_to_free);
+
+        let mut prev_vertex_buf_idx = None;
+        let mut prev_index_buf_idx = None;
+
+        // Update mesh buffers
         for data in &mut self.mesh_data {
             if data.vertex_buf_dirty {
-                gl::BindBuffer(gl::ARRAY_BUFFER, data.vertex_buf_id);
-                let vertex_buf_len = std::cmp::max(data.vpos_vec.len(), data.vnorm_vec.len());
-                if vertex_buf_len > data.vertex_buf_capacity {
-                    // Resize buffer
-                    let vert_capacity = vertex_buf_len * 2;
-                    let vertex_buf_size = (vert_capacity * 9 * 4) as GLsizeiptr;
-                    gl::BufferData(gl::ARRAY_BUFFER, vertex_buf_size, ptr::null(), gl::STATIC_DRAW);
+                let vertex_buf_len = std::cmp::max(data.vpos_vec.len(), data.vnorm_vec.len());;
+
+                let (vertex_buf_idx, range_start) = data.vertex_buf_alloc
+                    .as_ref()
+                    .map(|&(ref idx, ref range)| (*idx, range.start()))
+                    .expect("Expected vertex buffer to be already allocated");
+
+                let map_base = (range_start * 9 * 4) as GLsizeiptr;
+                let map_size = (vertex_buf_len * 9 * 4) as GLsizeiptr;
+
+                // TODO: try to batch these buffer updates?
+                if prev_vertex_buf_idx != Some(vertex_buf_idx) {
+                    let vertex_buf_id = self.vertex_bufs[vertex_buf_idx].buf_id;
+                    gl::BindBuffer(gl::ARRAY_BUFFER, vertex_buf_id);
+                    prev_vertex_buf_idx = Some(vertex_buf_idx);
                 }
-
-                let range = (vertex_buf_len * 9 * 4) as GLsizeiptr;
-
-                let map = gl::MapBufferRange(gl::ARRAY_BUFFER, 0, range, gl::MAP_WRITE_BIT) as *mut f32;
+                let map = gl::MapBufferRange(gl::ARRAY_BUFFER, map_base, map_size, gl::MAP_WRITE_BIT) as *mut f32;
 
                 for i in 0..vertex_buf_len {
                     let vpos = data.vpos_vec.get(i).map(|x| *x).unwrap_or(Vector3::zero());
@@ -1490,17 +1810,23 @@ impl Scene {
             }
 
             if data.index_buf_dirty {
-                gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, data.index_buf_id);
                 let indices_buf_len = data.indices_vec.len();
-                if indices_buf_len > data.index_buf_capacity {
-                    // Resize buffer
-                    let indices_capacity = indices_buf_len * 2;
-                    let index_buf_size = (indices_capacity * 2) as GLsizeiptr;
-                    gl::BufferData(gl::ELEMENT_ARRAY_BUFFER, index_buf_size, ptr::null(), gl::STATIC_DRAW);
-                }
 
-                let range = (indices_buf_len * 2) as GLsizeiptr;
-                let map = gl::MapBufferRange(gl::ELEMENT_ARRAY_BUFFER, 0, range, gl::MAP_WRITE_BIT) as *mut u16;
+                let (index_buf_idx, range_start) = data.index_buf_alloc
+                    .as_ref()
+                    .map(|&(ref idx, ref range)| (*idx, range.start()))
+                    .expect("Expected index buffer to be already allocated");
+
+                let map_base = (range_start * 2) as GLsizeiptr;
+                let map_size = (indices_buf_len * 2) as GLsizeiptr;
+
+                // TODO: try to batch these buffer updates?
+                if prev_index_buf_idx != Some(index_buf_idx) {
+                    let index_buf_id = self.index_bufs[index_buf_idx].buf_id;
+                    gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, index_buf_id);
+                    prev_index_buf_idx = Some(index_buf_idx);
+                }
+                let map = gl::MapBufferRange(gl::ELEMENT_ARRAY_BUFFER, map_base, map_size, gl::MAP_WRITE_BIT) as *mut u16;
 
                 ptr::copy_nonoverlapping(data.indices_vec.as_ptr(), map, indices_buf_len);
 
@@ -1510,42 +1836,70 @@ impl Scene {
             }
         }
 
+        for shader in &mut self.shader_data {
+            shader.draw_cmds.clear();
+        }
+
+        // Generate draw commands
         for data in &self.mrenderer_data {
             if !data.enabled {
                 continue;
             }
 
-            let trans_data = data.parent.idx.get()
-                .map(|idx| &self.transform_data[idx]);
-            let trans_data = match trans_data {
-                Some(trans_data) => trans_data,
-                None => continue
+            let trans_idx = data.parent.idx.get();
+            let trans_idx = match trans_idx {
+                Some(trans_idx) => trans_idx,
+                None => continue,
             };
+            let trans_data = &self.transform_data[trans_idx];
 
-            let mesh = data.mesh
+            let mesh_idx = data.mesh
                 .as_ref()
-                .and_then(|x| x.idx.get())
-                .map(|idx| &self.mesh_data[idx]);
-            let mesh = match mesh {
-                Some(mesh) => mesh,
-                None => continue
+                .and_then(|x| x.idx.get());
+            let mesh_idx = match mesh_idx {
+                Some(mesh_idx) => mesh_idx,
+                None => continue,
             };
+            let mesh = &self.mesh_data[mesh_idx];
 
-            let material = data.material
+            let material_idx = data.material
                 .as_ref()
-                .and_then(|x| x.idx.get())
-                .map(|idx| &self.material_data[idx]);
-            let material = match material {
-                Some(material) => material,
+                .and_then(|x| x.idx.get());
+            let material_idx = match material_idx {
+                Some(material_idx) => material_idx,
+                None => continue,
+            };
+            let material = &self.material_data[material_idx];
+
+            let shader_idx = material.shader.idx.get();
+            let shader_idx = match shader_idx {
+                Some(shader_idx) => shader_idx,
                 None => continue
             };
 
-            let shader = material.shader.idx.get()
-                .and_then(|idx| Some(&self.shader_data[idx]));
-            let shader = match shader {
-                Some(shader) => shader,
-                None => continue
+            let vertex_buf_idx = mesh.vertex_buf_alloc
+                .as_ref()
+                .map(|&(ref idx, _)| *idx)
+                .expect("Expected vertex buffer to be already allocated");
+            let index_buf_idx = mesh.index_buf_alloc
+                .as_ref()
+                .map(|&(ref idx, _)| *idx)
+                .expect("Expected index buffer to be already allocated");
+
+            let info = DrawInfo {
+                material_idx,
+                vertex_buf_idx: vertex_buf_idx,
+                index_buf_idx: index_buf_idx,
+                trans_idx,
+                mesh_idx
             };
+
+            self.shader_data[shader_idx].draw_cmds.push(info);
+
+            // TODO: culling would be done here
+
+            // FIXME: move this elsewhere since later code assumes all
+            // transforms are updated (when they aren't in fact)
 
             // Check whether we need to recalculate the local-to-world matrix.
             let mut opt_data = Some(trans_data);
@@ -1570,34 +1924,88 @@ impl Scene {
                     * Matrix4::from(world_rot)).into();
                 trans_data.ltw_matrix.set(local_to_world);
             }
-
-            // TODO: multiple cameras
-            let cam_matrix = self.camera_data[0].calc_matrix();
-            let cam_pos: [f32; 3] = self.camera_data[0].pos.into();
-
-            let colour = [material.colour.0, material.colour.1, material.colour.2];
-
-            gl::UseProgram(shader.program.program);
-            gl::BindVertexArray(mesh.vao_id);
-            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, mesh.index_buf_id);
-
-            gl::UniformMatrix4fv(shader.obj_matrix_uniform, 1, gl::FALSE, trans_data.ltw_matrix.get().as_ptr() as *const _);
-            gl::Uniform3fv(shader.cam_pos_uniform, 1, cam_pos.as_ptr());
-            gl::UniformMatrix4fv(shader.cam_matrix_uniform, 1, gl::FALSE, cam_matrix.as_ptr() as *const _);
-            gl::Uniform3fv(shader.colour_uniform, 1, colour.as_ptr());
-
-            // TODO: support custom uniform values again
-
-            // TODO: investigate ways of providing abstractions over multi-draw,
-            // etc.
-
-            gl::DrawElements(gl::TRIANGLES,
-                             mesh.indices_vec.len() as GLsizei,
-                             gl::UNSIGNED_SHORT,
-                             0 as *const GLvoid);
         }
 
-        window.gl_swap_window();
+        // Sort draw commands for batching
+        for shader in &mut self.shader_data {
+            shader.draw_cmds.sort_by(|a, b| {
+                match a.material_idx.cmp(&b.material_idx) {
+                    Ordering::Equal => (),
+                    order => return order,
+                }
+
+                match a.vertex_buf_idx.cmp(&b.vertex_buf_idx) {
+                    Ordering::Equal => (),
+                    order => return order,
+                }
+
+                match a.index_buf_idx.cmp(&b.index_buf_idx) {
+                    Ordering::Equal => (),
+                    order => return order,
+                }
+
+                Ordering::Equal
+            });
+        }
+
+        let mut prev_material_idx = None;
+        let mut prev_vertex_buf_idx = None;
+        let mut prev_index_buf_idx = None;
+
+        // Execute draw commands
+        for shader in &self.shader_data {
+            gl::UseProgram(shader.program.program);
+            for info in &shader.draw_cmds {
+                if prev_material_idx != Some(info.material_idx) {
+                    // TODO: support custom uniform values again
+                    prev_material_idx = Some(info.material_idx);
+                }
+                if prev_vertex_buf_idx != Some(info.vertex_buf_idx) {
+                    let vao_id = self.vertex_bufs[info.vertex_buf_idx].vao_id;
+                    gl::BindVertexArray(vao_id);
+                    prev_vertex_buf_idx = Some(info.vertex_buf_idx);
+                }
+                if prev_index_buf_idx != Some(info.index_buf_idx) {
+                    let index_buf_id = self.index_bufs[info.index_buf_idx].buf_id;
+                    gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, index_buf_id);
+                    prev_index_buf_idx = Some(info.index_buf_idx);
+                }
+
+                let trans_data = &self.transform_data[info.trans_idx];
+                let mesh = &self.mesh_data[info.mesh_idx];
+                let material = &self.material_data[info.material_idx];
+
+                let vertex_base = mesh.vertex_buf_alloc
+                    .as_ref()
+                    .map(|&(_, ref range)| range.start())
+                    .expect("Expected vertex buffer to be already allocated");
+                let index_base = mesh.index_buf_alloc
+                    .as_ref()
+                    .map(|&(_, ref range)| range.start())
+                    .expect("Expected index buffer to be already allocated");
+
+                // TODO: multiple cameras
+                let cam_matrix = self.camera_data[0].calc_matrix();
+                let cam_pos: [f32; 3] = self.camera_data[0].pos.into();
+
+                let colour = [material.colour.0, material.colour.1, material.colour.2];
+
+                gl::UniformMatrix4fv(shader.obj_matrix_uniform, 1, gl::FALSE, trans_data.ltw_matrix.get().as_ptr() as *const _);
+                gl::Uniform3fv(shader.cam_pos_uniform, 1, cam_pos.as_ptr());
+                gl::UniformMatrix4fv(shader.cam_matrix_uniform, 1, gl::FALSE, cam_matrix.as_ptr() as *const _);
+                gl::Uniform3fv(shader.colour_uniform, 1, colour.as_ptr());
+
+                // TODO: exploit multi-draw where possible
+
+                gl::DrawElementsBaseVertex(gl::TRIANGLES,
+                                           mesh.indices_vec.len() as GLsizei,
+                                           gl::UNSIGNED_SHORT,
+                                           (index_base * 2) as *const GLvoid,
+                                           vertex_base as GLint);
+            }
+        }
+
+        self.window.as_ref().unwrap().gl_swap_window();
 
         // All local-to-world matrices have been recomputed where necessary,
         // mark as valid going in to the next frame.
