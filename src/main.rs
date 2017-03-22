@@ -241,6 +241,9 @@ struct Quad {
     base_coord: (u32, u32),
     cur_subdivision: u32,
     mid_coord_pos: Vector3<f64>,
+    /// A tuple containing the sine and cosine of an angle which encloses the
+    /// entire quad.
+    angle_size: (f64, f64),
     patch_flags: PatchFlags,
 
     non_normalized: Vec<Vector3<f32>>,
@@ -301,6 +304,33 @@ impl Quad {
         let half_quad_length = sphere.quad_length(self.cur_subdivision) / 2;
         let mid_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1 + half_quad_length);
         sphere.vc_to_pos(VertCoord(self.plane, mid_coord.0, mid_coord.1)).normalize()
+    }
+
+    fn angle_size(&self, sphere: &QuadSphere) -> (f64, f64) {
+        let quad_length = sphere.quad_length(self.cur_subdivision);
+        let c0 = (self.base_coord.0, self.base_coord.1);
+        let c1 = (self.base_coord.0 + quad_length, self.base_coord.1);
+        let c2 = (self.base_coord.0, self.base_coord.1 + quad_length);
+        let c3 = (self.base_coord.0 + quad_length, self.base_coord.1 + quad_length);
+
+        let c0_pos = sphere.vc_to_pos(VertCoord(self.plane, c0.0, c0.1)).normalize();
+        let c1_pos = sphere.vc_to_pos(VertCoord(self.plane, c1.0, c1.1)).normalize();
+        let c2_pos = sphere.vc_to_pos(VertCoord(self.plane, c2.0, c2.1)).normalize();
+        let c3_pos = sphere.vc_to_pos(VertCoord(self.plane, c3.0, c3.1)).normalize();
+
+        let c0_cos_alpha = Quad::dot(self.mid_coord_pos, c0_pos);
+        let c1_cos_alpha = Quad::dot(self.mid_coord_pos, c1_pos);
+        let c2_cos_alpha = Quad::dot(self.mid_coord_pos, c2_pos);
+        let c3_cos_alpha = Quad::dot(self.mid_coord_pos, c3_pos);
+
+        // Use the furthest away corner (lowest cos(alpha))
+        let tmp1 = f64::min(c0_cos_alpha, c1_cos_alpha);
+        let tmp2 = f64::min(c2_cos_alpha, c3_cos_alpha);
+        let cos_alpha = f64::min(tmp1, tmp2);
+
+        let sin_alpha = f64::sqrt(1.0 - cos_alpha * cos_alpha);
+
+        (sin_alpha, cos_alpha)
     }
 
     /// Computes the dot product of two vectors, assuming both vectors are unit
@@ -574,6 +604,8 @@ impl Quad {
             upper_left.base_coord = upper_left_base_coord;
             upper_left.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             upper_left.mid_coord_pos = upper_left.mid_coord_pos(sphere);
+            upper_left.angle_size = upper_left.angle_size(sphere);
+
             scene.set_object_parent(&upper_left_obj, Some(&sphere_obj));
             let mesh = upper_left.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = upper_left_vertices;
@@ -596,6 +628,8 @@ impl Quad {
             upper_right.base_coord = upper_right_base_coord;
             upper_right.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             upper_right.mid_coord_pos = upper_right.mid_coord_pos(sphere);
+            upper_right.angle_size = upper_right.angle_size(sphere);
+
             scene.set_object_parent(&upper_right_obj, Some(&sphere_obj));
             let mesh = upper_right.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = upper_right_vertices;
@@ -618,6 +652,8 @@ impl Quad {
             lower_left.base_coord = lower_left_base_coord;
             lower_left.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             lower_left.mid_coord_pos = lower_left.mid_coord_pos(sphere);
+            lower_left.angle_size = lower_left.angle_size(sphere);
+
             scene.set_object_parent(&lower_left_obj, Some(&sphere_obj));
             let mesh = lower_left.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = lower_left_vertices;
@@ -640,6 +676,8 @@ impl Quad {
             lower_right.base_coord = lower_right_base_coord;
             lower_right.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             lower_right.mid_coord_pos = lower_right.mid_coord_pos(sphere);
+            lower_right.angle_size = lower_right.angle_size(sphere);
+
             scene.set_object_parent(&lower_right_obj, Some(&sphere_obj));
             let mesh = lower_right.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = lower_right_vertices;
@@ -923,6 +961,24 @@ impl Quad {
         self.children = None;
     }
 
+    fn in_horizon_cull_range(&self, sphere: &QuadSphere) -> bool {
+        let range = sphere.horizon_cull_range(self.angle_size);
+
+        let centre_pos = sphere.centre_pos();
+        let cur_range = Quad::dot(centre_pos, self.mid_coord_pos);
+
+        // Note: comparison may seem swapped since higher values mean a smaller
+        // angle / arc.
+        cur_range <= range
+    }
+
+    fn update_visibility(&self, sphere: &QuadSphere, scene: &mut Scene) {
+        let enabled = !self.is_subdivided() && !self.in_horizon_cull_range(sphere);
+        // TODO: investigate: this line showed up in profiling for some reason,
+        // maybe use dirty-state tracking for this?
+        self.mrenderer.as_ref().unwrap().set_enabled(scene, enabled).unwrap();
+    }
+
     fn check_subdivision(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
         if !self.is_subdivided()
             && self.cur_subdivision < sphere.max_subdivision
@@ -936,6 +992,8 @@ impl Quad {
                 q.borrow_mut().check_subdivision(sphere, scene);
             }
         }
+
+        self.update_visibility(sphere, scene);
     }
 
     /// Recurses through the quad tree destroying all quad objects.
@@ -972,11 +1030,31 @@ impl Quad {
     }
 
     #[allow(dead_code)]
-    fn debug_get_stats(&self, level_count: &mut [usize], visible_level_count: &mut [usize]) {
+    fn debug_get_stats(&self,
+                       sphere: &QuadSphere,
+                       level_count: &mut [usize],
+                       visible_level_count: &mut [usize],
+                       horizon_cull_count: &mut usize,
+                       horizon_cull_visible_count: &mut usize) {
+        let ihcr = self.in_horizon_cull_range(sphere);
+        let subdivided = self.is_subdivided();
+
+        if !subdivided && ihcr {
+            *horizon_cull_visible_count += 1;
+        }
+        if ihcr {
+            *horizon_cull_count += 1;
+        }
+
         level_count[self.cur_subdivision as usize] += 1;
         if self.is_subdivided() {
             for q in self.children.as_ref().unwrap() {
-                q.borrow().debug_get_stats(level_count, visible_level_count);
+                q.borrow().debug_get_stats(
+                    sphere,
+                    level_count,
+                    visible_level_count,
+                    horizon_cull_count,
+                    horizon_cull_visible_count);
             }
         } else {
             visible_level_count[self.cur_subdivision as usize] += 1;
@@ -1009,6 +1087,7 @@ impl BehaviourMessages for Quad {
             base_coord: (0, 0),
             cur_subdivision: 0,
             mid_coord_pos: Vector3::new(0.0, 0.0, 0.0),
+            angle_size: (1.0, 1.0),
             patch_flags: PATCH_FLAGS_NONE,
 
             non_normalized: Vec::new(),
@@ -1051,14 +1130,19 @@ struct QuadSphere {
     max_coord: u32,
     collapse_ranges: Vec<f64>,
     subdivide_ranges: Vec<f64>,
+    min_radius: f64,
+    max_radius: f64,
     centre_pos: Vector3<f64>,
+    centre_dist: f64,
+    cull_sin_theta: f64,
+    cull_cos_theta: f64,
     faces: Option<[Rc<RefCell<Quad>>; 6]>,
     normal_update_queue: RefCell<Vec<Rc<RefCell<Quad>>>>,
     quad_pool: Option<QuadPool>,
 }
 
 impl QuadSphere {
-    fn init(&mut self, scene: &mut Scene, quad_mesh_size: u16, max_subdivision: u32) {
+    fn init(&mut self, scene: &mut Scene, quad_mesh_size: u16, max_subdivision: u32, min_radius: f64, max_radius: f64) {
         assert!(quad_mesh_size > 1);
         let bits =  (quad_mesh_size as u32 - 1).leading_zeros();
         assert!(max_subdivision <= (bits - 1));
@@ -1066,6 +1150,8 @@ impl QuadSphere {
         self.quad_mesh_size = quad_mesh_size;
         self.max_subdivision = max_subdivision;
         self.max_coord = (1 << max_subdivision) * quad_mesh_size as u32;
+        self.min_radius = min_radius;
+        self.max_radius = max_radius;
 
         self.calc_ranges();
 
@@ -1266,6 +1352,32 @@ impl QuadSphere {
         self.subdivide_ranges[subdivision as usize]
     }
 
+    fn calc_cull_range(&mut self) {
+        let d = self.centre_dist;
+        let r0 = self.min_radius;
+        let r1 = self.max_radius;
+
+        let a = f64::sqrt(d * d - r0 * r0);
+        let b = f64::sqrt(r1 * r1 - r0 * r0);
+        let e = a + b;
+
+        let cos_theta = (e * e + d * d - r1 * r1) / 2.0 * d * r1;
+        let sin_theta = f64::sqrt(1.0 - cos_theta * cos_theta);
+
+        self.cull_sin_theta = sin_theta;
+        self.cull_cos_theta = cos_theta;
+    }
+
+    fn horizon_cull_range(&self, angle_size: (f64, f64)) -> f64 {
+        let (sin_alpha, cos_alpha) = angle_size;
+
+        // Addition rule
+        let range = self.cull_cos_theta * cos_alpha - self.cull_sin_theta * sin_alpha;
+        let range = f64::max(0.0, range);
+
+        range
+    }
+
     fn queue_normal_update(&self, quad: Rc<RefCell<Quad>>) {
         self.normal_update_queue.borrow_mut().push(quad);
     }
@@ -1297,8 +1409,12 @@ impl QuadSphere {
                                            base_coord.0 + x as u32 * vert_step,
                                            base_coord.1 + y as u32 * vert_step);
 
-                let vert_pos = self.vc_to_pos(vert_coord).cast().normalize();
-                vertices.push(Vector3::new(vert_pos.x, vert_pos.y, vert_pos.z));
+                let vert_pos = self.vc_to_pos(vert_coord).normalize();
+                let height = 0.0;
+                let height = self.min_radius + height * (self.max_radius - self.min_radius);
+                let vert_pos = vert_pos * height;
+
+                vertices.push(vert_pos.cast());
             }
         }
 
@@ -1328,11 +1444,21 @@ impl QuadSphere {
     fn debug_print_stats(&self) {
         let mut level_count = vec![0; self.max_subdivision as usize + 1];
         let mut visible_level_count = vec![0; self.max_subdivision as usize + 1];
+        let mut horizon_cull_count = 0;
+        let mut horizon_cull_visible_count = 0;
 
         for i in 0..6 {
             let q = self.faces.as_ref().unwrap()[i].clone();
-            q.borrow().debug_get_stats(&mut level_count, &mut visible_level_count);
+            q.borrow().debug_get_stats(
+                self,
+                &mut level_count,
+                &mut visible_level_count,
+                &mut horizon_cull_count,
+                &mut horizon_cull_visible_count);
         }
+
+        println!("Horizon culled count = {} ({} total)", horizon_cull_visible_count, horizon_cull_count);
+        println!("");
 
         println!("------");
         println!("Levels");
@@ -1383,7 +1509,12 @@ impl BehaviourMessages for QuadSphere {
             max_coord: 0,
             collapse_ranges: Vec::new(),
             subdivide_ranges: Vec::new(),
+            min_radius: 1.0,
+            max_radius: 1.0,
             centre_pos: Vector3::unit_z(),
+            centre_dist: 1.0,
+            cull_sin_theta: 0.0,
+            cull_cos_theta: 0.0,
             faces: None,
             normal_update_queue: RefCell::new(Vec::new()),
             quad_pool: None,
@@ -1408,6 +1539,9 @@ impl BehaviourMessages for QuadSphere {
 
         let centre_pos = (rot.invert() * (-Vector3::unit_z())).normalize();
         self.centre_pos = centre_pos.cast();
+        self.centre_dist = 1.1; // Camera distance from centre
+        self.calc_cull_range();
+
         for i in 0..6 {
             let q = self.faces.as_ref().unwrap()[i].clone();
             q.borrow_mut().check_subdivision(self, scene);
@@ -2206,7 +2340,7 @@ fn main() {
     let quad_sphere_obj = scene.create_object();
     let quad_sphere = scene.add_component::<RefCell<QuadSphere>>(&quad_sphere_obj).unwrap();
     quad_sphere.borrow_mut().camera = Some(camera);
-    quad_sphere.borrow_mut().init(&mut scene, 8, 9);
+    quad_sphere.borrow_mut().init(&mut scene, 8, 9, 1.0, 1.1);
     quad_sphere_obj.set_world_pos(&mut scene, Vector3::new(0.0, 0.0, 0.0)).unwrap();
     //quad_sphere.borrow().object().set_world_rot(&mut scene, Quaternion::from(Euler { x: Deg(45.0), y: Deg(0.0), z: Deg(0.0) })).unwrap();
 
