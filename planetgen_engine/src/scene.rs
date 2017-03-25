@@ -1621,7 +1621,7 @@ impl Scene {
                         // buffers to use the same index.
                         let vb_idx = self.vertex_bufs.len();
                         let ib = &self.index_bufs[vb_idx];
-                        let ib_idx = if ib.alloc.max_alloc() >= vert_capacity {
+                        let ib_idx = if ib.alloc.max_alloc() >= indices_capacity {
                             vb_idx
                         } else {
                             ib_idx
