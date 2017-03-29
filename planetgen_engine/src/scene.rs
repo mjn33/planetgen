@@ -14,6 +14,7 @@ use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
+use std::ffi::CStr;
 use std::ptr;
 use std::rc::Rc;
 use std::time::Instant;
@@ -683,6 +684,9 @@ const INITIAL_INDEX_BUF_CAPACITY: usize = 1 * 1024 * 1024;
 pub struct Scene {
     /// The OpenGL used for rendering, None if in headless mode.
     ctx: Option<GLContext>,
+    /// Whether we are running on Intel graphics, don't try anything remotely
+    /// fancy if so.
+    buggy_intel: bool,
     window: Option<Window>,
     event_pump: Option<EventPump>,
     camera_data: Vec<CameraData>,
@@ -809,11 +813,24 @@ impl Scene {
 
         gl::load_with(|name| video_sys.gl_get_proc_address(name) as *const _);
 
+        let buggy_intel = unsafe {
+            let vendor_cstr = CStr::from_ptr::<'static>(gl::GetString(gl::VENDOR) as *const i8);
+            let vendor_str = vendor_cstr.to_str().expect("Failed to convert vendor string to UTF-8.");
+            println!("[INFO] OpenGL vendor: {}", vendor_str);
+
+            if vendor_str.contains("Intel") {
+                true
+            } else {
+                false
+            }
+        };
+
         // V-Sync
         video_sys.gl_set_swap_interval(1);
 
         let mut scene = Scene {
             ctx: Some(ctx),
+            buggy_intel,
             window: Some(window),
             event_pump: Some(event_pump),
             camera_data: Vec::new(),
@@ -855,6 +872,7 @@ impl Scene {
     pub fn new_headless() -> Scene {
         Scene {
             ctx: None,
+            buggy_intel: false,
             window: None,
             event_pump: None,
             camera_data: Vec::new(),
@@ -1721,13 +1739,15 @@ impl Scene {
         gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
 
         if let Some(fence) = self.fences[self.cur_fence].take() {
-            let result = gl::ClientWaitSync(fence, gl::SYNC_FLUSH_COMMANDS_BIT,
-                                            365 * 24 * 3600 * 1000 * 1000 * 1000);
-            match result {
-                gl::ALREADY_SIGNALED | gl::CONDITION_SATISFIED => (),
-                _ => panic!("glClientWaitSync failed unexpectedly."),
-            };
-            gl::DeleteSync(fence);
+            if !self.buggy_intel {
+                let result = gl::ClientWaitSync(fence, gl::SYNC_FLUSH_COMMANDS_BIT,
+                                                365 * 24 * 3600 * 1000 * 1000 * 1000);
+                match result {
+                    gl::ALREADY_SIGNALED | gl::CONDITION_SATISFIED => (),
+                    _ => panic!("glClientWaitSync failed unexpectedly."),
+                };
+                gl::DeleteSync(fence);
+            }
 
             for (vb_idx, range) in self.vertex_free_lists[self.cur_fence].drain(..) {
                 self.vertex_bufs[vb_idx].alloc.free(range);
@@ -1815,7 +1835,12 @@ impl Scene {
                 let map_base = (range_start * 9 * 4) as GLsizeiptr;
                 let map_size = (vertex_buf_len * 9 * 4) as GLsizeiptr;
 
-                let map = gl::MapBufferRange(gl::ARRAY_BUFFER, map_base, map_size, gl::MAP_WRITE_BIT | gl::MAP_UNSYNCHRONIZED_BIT) as *mut f32;
+                let map_flags = if self.buggy_intel {
+                    gl::MAP_WRITE_BIT
+                } else {
+                    gl::MAP_WRITE_BIT | gl::MAP_UNSYNCHRONIZED_BIT
+                };
+                let map = gl::MapBufferRange(gl::ARRAY_BUFFER, map_base, map_size, map_flags) as *mut f32;
 
                 for i in 0..vertex_buf_len {
                     let vpos = mesh.vpos_vec.get(i).map(|x| *x).unwrap_or(Vector3::zero());
@@ -1858,8 +1883,12 @@ impl Scene {
                 let map_base = (range_start * 2) as GLsizeiptr;
                 let map_size = (indices_buf_len * 2) as GLsizeiptr;
 
-
-                let map = gl::MapBufferRange(gl::ELEMENT_ARRAY_BUFFER, map_base, map_size, gl::MAP_WRITE_BIT | gl::MAP_UNSYNCHRONIZED_BIT) as *mut u16;
+                let map_flags = if self.buggy_intel {
+                    gl::MAP_WRITE_BIT
+                } else {
+                    gl::MAP_WRITE_BIT | gl::MAP_UNSYNCHRONIZED_BIT
+                };
+                let map = gl::MapBufferRange(gl::ELEMENT_ARRAY_BUFFER, map_base, map_size, map_flags) as *mut u16;
 
                 ptr::copy_nonoverlapping(mesh.indices_vec.as_ptr(), map, indices_buf_len);
 
@@ -1870,10 +1899,15 @@ impl Scene {
             ib.update_tasks.clear();
         }
 
-        let fence = gl::FenceSync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0);
-        if fence == ptr::null() {
-            panic!("glFenceSync unexpectedly failed.");
-        }
+        let fence = if !self.buggy_intel {
+            let fence = gl::FenceSync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0);
+            if fence == ptr::null() {
+                panic!("glFenceSync unexpectedly failed.");
+            }
+            fence
+        } else {
+            ptr::null()
+        };
 
         self.fences[self.cur_fence] = Some(fence);
         self.cur_fence += 1;
