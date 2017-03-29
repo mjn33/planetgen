@@ -1130,8 +1130,9 @@ struct QuadSphere {
     max_coord: u32,
     collapse_ranges: Vec<f64>,
     subdivide_ranges: Vec<f64>,
-    min_radius: f64,
-    max_radius: f64,
+    radius: f64,
+    min_height: f64,
+    max_height: f64,
     centre_pos: Vector3<f64>,
     centre_dist: f64,
     cull_sin_theta: f64,
@@ -1142,7 +1143,7 @@ struct QuadSphere {
 }
 
 impl QuadSphere {
-    fn init(&mut self, scene: &mut Scene, quad_mesh_size: u16, max_subdivision: u32, min_radius: f64, max_radius: f64) {
+    fn init(&mut self, scene: &mut Scene, quad_mesh_size: u16, max_subdivision: u32, radius: f64, min_height: f64, max_height: f64) {
         assert!(quad_mesh_size > 1);
         let bits =  (quad_mesh_size as u32 - 1).leading_zeros();
         assert!(max_subdivision <= (bits - 1));
@@ -1150,8 +1151,9 @@ impl QuadSphere {
         self.quad_mesh_size = quad_mesh_size;
         self.max_subdivision = max_subdivision;
         self.max_coord = (1 << max_subdivision) * quad_mesh_size as u32;
-        self.min_radius = min_radius;
-        self.max_radius = max_radius;
+        self.radius = radius;
+        self.min_height = min_height;
+        self.max_height = max_height;
 
         self.calc_ranges();
 
@@ -1354,8 +1356,8 @@ impl QuadSphere {
 
     fn calc_cull_range(&mut self) {
         let d = self.centre_dist;
-        let r0 = self.min_radius;
-        let r1 = self.max_radius;
+        let r0 = self.radius + self.min_height;
+        let r1 = self.radius + self.max_height;
 
         let a = f64::sqrt(d * d - r0 * r0);
         let b = f64::sqrt(r1 * r1 - r0 * r0);
@@ -1411,7 +1413,7 @@ impl QuadSphere {
 
                 let vert_pos = self.vc_to_pos(vert_coord).normalize();
                 let height = 0.0;
-                let height = self.min_radius + height * (self.max_radius - self.min_radius);
+                let height = (self.radius + self.min_height) + height * (self.max_height - self.min_height);
                 let vert_pos = vert_pos * height;
 
                 vertices.push(vert_pos.cast());
@@ -1509,8 +1511,9 @@ impl BehaviourMessages for QuadSphere {
             max_coord: 0,
             collapse_ranges: Vec::new(),
             subdivide_ranges: Vec::new(),
-            min_radius: 1.0,
-            max_radius: 1.0,
+            radius: 1.0,
+            min_height: 0.0,
+            max_height: 0.0,
             centre_pos: Vector3::unit_z(),
             centre_dist: 1.0,
             cull_sin_theta: 0.0,
@@ -1539,7 +1542,7 @@ impl BehaviourMessages for QuadSphere {
 
         let centre_pos = (rot.invert() * (-Vector3::unit_z())).normalize();
         self.centre_pos = centre_pos.cast();
-        self.centre_dist = 1.1; // Camera distance from centre
+        self.centre_dist = self.radius + self.max_height; // Camera distance from centre
         self.calc_cull_range();
 
         for i in 0..6 {
@@ -1568,7 +1571,7 @@ impl BehaviourMessages for QuadSphere {
         let extra_rot = Quaternion::one().nlerp(self.ninety_deg, (60.0 / 45.0));
         let cam_dir = -centre_pos.cross(Vector3::unit_x());
         let cam_rot = Quaternion::look_at(cam_dir, centre_pos).invert() * extra_rot.invert();
-        let cam_pos = 1.1f32 * centre_pos;
+        let cam_pos = (self.centre_dist as f32) * centre_pos;
         //let cam_rot = Quaternion::look_at(self.centre_pos, Vector3::unit_x()).invert();
 
         let camera = self.camera.as_ref().unwrap();
@@ -2334,13 +2337,14 @@ fn main() {
     let mut scene = Scene::new(sdl);
     let camera_obj = scene.create_object();
     let camera = scene.add_component::<Camera>(&*camera_obj).unwrap();//scene.create_camera();
-    camera.set_near_clip(&mut scene, 0.01).unwrap();
-    camera.set_far_clip(&mut scene, 10.0).unwrap();
+    camera.set_near_clip(&mut scene,  10000.0).unwrap();
+    camera.set_far_clip(&mut scene, 10000000.0).unwrap();
 
     let quad_sphere_obj = scene.create_object();
     let quad_sphere = scene.add_component::<RefCell<QuadSphere>>(&quad_sphere_obj).unwrap();
     quad_sphere.borrow_mut().camera = Some(camera);
-    quad_sphere.borrow_mut().init(&mut scene, 8, 9, 1.0, 1.1);
+    quad_sphere.borrow_mut().init(&mut scene, 8, 9,
+                                  6_000_000.0, 0.0, 600_000.0);
     quad_sphere_obj.set_world_pos(&mut scene, Vector3::new(0.0, 0.0, 0.0)).unwrap();
     //quad_sphere.borrow().object().set_world_rot(&mut scene, Quaternion::from(Euler { x: Deg(45.0), y: Deg(0.0), z: Deg(0.0) })).unwrap();
 
