@@ -1919,6 +1919,40 @@ impl Scene {
             shader.draw_cmds.clear();
         }
 
+        for i in 0..self.transform_data.len() {
+            let trans_data = &self.transform_data[i];
+
+            // Check whether we need to recalculate the local-to-world matrix.
+            let mut opt_data = Some(trans_data);
+            let mut recalc = false;
+            while let Some(data) = opt_data {
+                if !trans_data.ltw_valid.get() {
+                    recalc = true;
+                    break
+                }
+                opt_data = data.parent_idx
+                    .map(|idx| unsafe { self.transform_data.get_unchecked(idx) });
+            }
+
+            if recalc {
+                let (world_pos, world_rot) = unsafe {
+                    let parent_data = trans_data.parent_idx
+                        .map(|idx| self.transform_data.get_unchecked(idx));
+                    self.local_to_world_pos_rot(parent_data, trans_data.pos, trans_data.rot)
+                };
+
+                let local_to_world = (Matrix4::from_translation(world_pos)
+                    * Matrix4::from(world_rot)).into();
+                trans_data.ltw_matrix.set(local_to_world);
+            }
+        }
+
+        // All local-to-world matrices have been recomputed where necessary,
+        // mark as valid going in to the next frame.
+        for trans_data in &self.transform_data {
+            trans_data.ltw_valid.set(true);
+        }
+
         // Generate draw commands
         for data in &self.mrenderer_data {
             if !data.enabled {
@@ -1976,33 +2010,6 @@ impl Scene {
             self.shader_data[shader_idx].draw_cmds.push(info);
 
             // TODO: culling would be done here
-
-            // FIXME: move this elsewhere since later code assumes all
-            // transforms are updated (when they aren't in fact)
-
-            // Check whether we need to recalculate the local-to-world matrix.
-            let mut opt_data = Some(trans_data);
-            let mut recalc = false;
-            while let Some(data) = opt_data {
-                if !trans_data.ltw_valid.get() {
-                    recalc = true;
-                    break
-                }
-                opt_data = data.parent_idx
-                    .map(|idx| unsafe { self.transform_data.get_unchecked(idx) });
-            }
-
-            if recalc {
-                let (world_pos, world_rot) = unsafe {
-                    let parent_data = trans_data.parent_idx
-                        .map(|idx| self.transform_data.get_unchecked(idx));
-                    self.local_to_world_pos_rot(parent_data, trans_data.pos, trans_data.rot)
-                };
-
-                let local_to_world = (Matrix4::from_translation(world_pos)
-                    * Matrix4::from(world_rot)).into();
-                trans_data.ltw_matrix.set(local_to_world);
-            }
         }
 
         // Sort draw commands for batching
@@ -2085,12 +2092,6 @@ impl Scene {
         }
 
         self.window.as_ref().unwrap().gl_swap_window();
-
-        // All local-to-world matrices have been recomputed where necessary,
-        // mark as valid going in to the next frame.
-        for trans_data in &self.transform_data {
-            trans_data.ltw_valid.set(true);
-        }
 
         // Event loop
         for event in self.event_pump.as_mut().unwrap().poll_iter() {
