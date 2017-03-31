@@ -1,6 +1,6 @@
 use alloc::{AllocRange, SimpleAllocator};
 use cgmath;
-use cgmath::{Deg, Euler, Matrix4, Quaternion, Rotation, Vector3};
+use cgmath::{Deg, Euler, Matrix4, Quaternion, Rotation, Matrix, Vector3};
 use error::{Error, Result};
 use gl;
 use gl::types::*;
@@ -24,6 +24,64 @@ fn post_add<T: Copy + std::ops::Add<Output=T>>(a: &mut T, b: T) -> T {
     let c = *a;
     *a = *a + b;
     c
+}
+
+fn calc_aabb(vertices: &[Vector3<f32>]) -> (Vector3<f32>, Vector3<f32>) {
+    if vertices.len() == 0 {
+        return (Vector3::zero(), Vector3::zero());
+    }
+
+    let (mut min_x, mut min_y, mut min_z) = (std::f32::MAX, std::f32::MAX, std::f32::MAX);
+    let (mut max_x, mut max_y, mut max_z) = (std::f32::MIN, std::f32::MIN, std::f32::MIN);
+    for v in vertices {
+        min_x = f32::min(min_x, v.x);
+        min_y = f32::min(min_y, v.y);
+        min_z = f32::min(min_z, v.z);
+        max_x = f32::max(max_x, v.x);
+        max_y = f32::max(max_y, v.y);
+        max_z = f32::max(max_z, v.z);
+    }
+
+    (Vector3::new(min_x, min_y, min_z), Vector3::new(max_x, max_y, max_z))
+
+}
+
+fn aabb_points(min: Vector3<f32>, max: Vector3<f32>) -> [Vector3<f32>; 8] {
+    [Vector3::new(min.x, min.y, min.z),
+     Vector3::new(min.x, min.y, max.z),
+     Vector3::new(min.x, max.y, min.z),
+     Vector3::new(min.x, max.y, max.z),
+     Vector3::new(max.x, min.y, min.z),
+     Vector3::new(max.x, min.y, max.z),
+     Vector3::new(max.x, max.y, min.z),
+     Vector3::new(max.x, max.y, max.z)]
+}
+
+fn points_in_frustum(mut mvp: Matrix4<f32>, points: &[Vector3<f32>]) -> bool {
+    let xn_plane = mvp.x + mvp.w;
+    let xp_plane = -mvp.x + mvp.w;
+    let yn_plane = mvp.y + mvp.w;
+    let yp_plane = -mvp.y + mvp.w;
+    let zn_plane = mvp.z + mvp.w;
+    let zp_plane = -mvp.z + mvp.w;
+
+    let planes = [xn_plane, xp_plane, yn_plane, yp_plane, zn_plane, zp_plane];
+
+    for plane in planes.iter() {
+        let mut out = true;
+        for p in points {
+            if plane.x * p.x + plane.y * p.y + plane.z * p.z + plane.w > 0.0 {
+                out = false;
+                break;
+            }
+        }
+
+        if out {
+            return false;
+        }
+    }
+
+    true
 }
 
 struct CameraData {
@@ -167,6 +225,7 @@ impl<T> Component for RefCell<T> where T: BehaviourMessages + 'static {
     }
 }
 
+// TODO: this structure is getting quite large, consider splitting it up?
 struct MeshData {
     /// Reference to the mesh object.
     object: Rc<Mesh>,
@@ -191,6 +250,9 @@ struct MeshData {
     /// allocated yet.
     index_buf_alloc: Option<(usize, AllocRange)>,
     index_buf_capacity: usize,
+    aabb_dirty: bool,
+    aabb_min: Vector3<f32>,
+    aabb_max: Vector3<f32>,
 }
 
 pub struct Mesh {
@@ -212,6 +274,7 @@ impl Mesh {
             .map(move |i| {
                 let data = &mut scene.mesh_data[i];
                 data.vertex_buf_dirty = true;
+                data.aabb_dirty = true;
                 &mut data.vpos_vec
             })
     }
@@ -965,6 +1028,9 @@ impl Scene {
             index_buf_dirty: false,
             index_buf_alloc: None,
             index_buf_capacity: indices_capacity,
+            aabb_dirty: false,
+            aabb_min: Vector3::zero(),
+            aabb_max: Vector3::zero(),
         };
         self.mesh_data.push(data);
         rv.idx.set(Some(self.mesh_data.len() - 1));
@@ -1816,6 +1882,18 @@ impl Scene {
             }
         }
 
+        // Recalculate bounding boxes
+        for data in &mut self.mesh_data {
+            if !data.aabb_dirty {
+                continue;
+            }
+
+            let (min, max) = calc_aabb(&data.vpos_vec);
+            data.aabb_dirty = false;
+            data.aabb_min = min;
+            data.aabb_max = max;
+        }
+
         // Update mesh buffers
         for vb in &mut self.vertex_bufs {
             if vb.update_tasks.is_empty() {
@@ -2007,9 +2085,17 @@ impl Scene {
                 mesh_idx
             };
 
-            self.shader_data[shader_idx].draw_cmds.push(info);
-
             // TODO: culling would be done here
+            let points = aabb_points(mesh.aabb_min, mesh.aabb_max);
+
+            let cam_matrix = Matrix4::from(self.camera_data[0].calc_matrix());
+            let obj_matrix = Matrix4::from(trans_data.ltw_matrix.get());
+            // Need to transpose since our matrix is actually PVM instead of MVP
+            let mvp = (cam_matrix * obj_matrix).transpose();
+
+            if points_in_frustum(mvp, &points) {
+                self.shader_data[shader_idx].draw_cmds.push(info);
+            }
         }
 
         // Sort draw commands for batching
