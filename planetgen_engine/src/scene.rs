@@ -94,6 +94,9 @@ struct CameraData {
     /// True when the camera has been marked for destruction at the end of the
     /// frame.
     marked: bool,
+    /// An integer describing the order in which this camera is to be
+    /// renderered, higher values mean later.
+    order: i32,
     /// The direction the camera is facing.
     rot: Quaternion<f32>,
     /// The position of the camera in world coordinates.
@@ -108,6 +111,8 @@ struct CameraData {
     far_clip: f32,
     /// Cache matrix transform for camera, recomputing this is expensive.
     cam_matrix: Cell<Option<[[f32; 4]; 4]>>,
+    /// A vector containing the draw commands to be executed using this camera.
+    draw_cmds: Vec<DrawInfo>,
 }
 
 /// A handle to a camera object for a scene.
@@ -179,6 +184,24 @@ impl Camera {
                 let data = &mut scene.camera_data[i];
                 data.far_clip = far_clip;
                 data.cam_matrix.set(None);
+            })
+    }
+
+    pub fn set_order(&self, scene: &mut Scene, order: i32) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                let data = &mut scene.camera_data[i];
+                data.order = order;
+            })
+    }
+
+    pub fn order(&self, scene: &Scene) -> Result<i32> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                let data = &scene.camera_data[i];
+                data.order
             })
     }
 
@@ -317,6 +340,7 @@ impl Mesh {
 }
 
 struct DrawInfo {
+    shader_idx: usize,
     material_idx: usize,
     vertex_buf_idx: usize,
     index_buf_idx: usize,
@@ -331,8 +355,6 @@ struct ShaderData {
     /// frame.
     marked: bool,
     program: Program,
-    /// A vector containing the draw commands to be executed using this shader.
-    draw_cmds: Vec<DrawInfo>,
     obj_matrix_uniform: GLint,
     cam_pos_uniform: GLint,
     cam_matrix_uniform: GLint,
@@ -784,6 +806,10 @@ pub struct Scene {
     /// Times spent on rendering a frame, first value is in behaviour updates,
     /// second value is in drawing, third value is in object destruction
     frame_times: VecDeque<(f32, f32, f32)>,
+
+    /// A vector of indices into `camera_data` describing the order in which to
+    /// render each camera.
+    camera_render_order: Vec<usize>,
 }
 
 struct VertexBuffer {
@@ -922,6 +948,8 @@ impl Scene {
 
             tmp_vec: UnsafeCell::new(Vec::new()),
             frame_times: VecDeque::with_capacity(FRAME_TIME_MAX_SAMPLES),
+
+            camera_render_order: Vec::new(),
         };
 
         Scene::create_new_vertex_buffer(&mut scene.vertex_bufs);
@@ -964,6 +992,8 @@ impl Scene {
 
             tmp_vec: UnsafeCell::new(Vec::new()),
             frame_times: VecDeque::with_capacity(FRAME_TIME_MAX_SAMPLES),
+
+            camera_render_order: Vec::new(),
         }
     }
 
@@ -992,6 +1022,7 @@ impl Scene {
             parent: obj_data.object.clone(),
             enabled: true,
             marked: false,
+            order: 0,
             rot: Quaternion::from(Euler {
                 x: Deg(0.0),
                 y: Deg(0.0),
@@ -1003,6 +1034,7 @@ impl Scene {
             near_clip: 1.0,
             far_clip: 1000.0,
             cam_matrix: Cell::new(None),
+            draw_cmds: Vec::new(),
         };
         self.camera_data.push(data);
         rv.idx.set(Some(self.camera_data.len() - 1));
@@ -1114,7 +1146,6 @@ impl Scene {
             object: rv.clone(),
             marked: false,
             program: program,
-            draw_cmds: Vec::new(),
             obj_matrix_uniform: obj_matrix_uniform,
             cam_pos_uniform: cam_pos_uniform,
             cam_matrix_uniform: cam_matrix_uniform,
@@ -1802,7 +1833,6 @@ impl Scene {
         gl::Enable(gl::DEPTH_TEST);
         gl::DepthFunc(gl::LESS);
         gl::ClearColor(0.8, 0.8, 0.8, 1.0);
-        gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
 
         if let Some(fence) = self.fences[self.cur_fence].take() {
             if !self.buggy_intel {
@@ -1993,10 +2023,6 @@ impl Scene {
             self.cur_fence = 0;
         }
 
-        for shader in &mut self.shader_data {
-            shader.draw_cmds.clear();
-        }
-
         for i in 0..self.transform_data.len() {
             let trans_data = &self.transform_data[i];
 
@@ -2029,6 +2055,10 @@ impl Scene {
         // mark as valid going in to the next frame.
         for trans_data in &self.transform_data {
             trans_data.ltw_valid.set(true);
+        }
+
+        for camera in &mut self.camera_data {
+            camera.draw_cmds.clear();
         }
 
         // Generate draw commands
@@ -2077,30 +2107,40 @@ impl Scene {
                 .map(|&(ref idx, _)| *idx)
                 .expect("Expected index buffer to be already allocated");
 
-            let info = DrawInfo {
-                material_idx,
-                vertex_buf_idx: vertex_buf_idx,
-                index_buf_idx: index_buf_idx,
-                trans_idx,
-                mesh_idx
-            };
+            for camera in &mut self.camera_data {
+                if !camera.enabled {
+                    continue;
+                }
 
-            // TODO: culling would be done here
-            let points = aabb_points(mesh.aabb_min, mesh.aabb_max);
+                let points = aabb_points(mesh.aabb_min, mesh.aabb_max);
 
-            let cam_matrix = Matrix4::from(self.camera_data[0].calc_matrix());
-            let obj_matrix = Matrix4::from(trans_data.ltw_matrix.get());
-            // Need to transpose since our matrix is actually PVM instead of MVP
-            let mvp = (cam_matrix * obj_matrix).transpose();
+                let cam_matrix = Matrix4::from(camera.calc_matrix());
+                let obj_matrix = Matrix4::from(trans_data.ltw_matrix.get());
+                // Need to transpose since our matrix is actually PVM instead of MVP
+                let mvp = (cam_matrix * obj_matrix).transpose();
 
-            if points_in_frustum(mvp, &points) {
-                self.shader_data[shader_idx].draw_cmds.push(info);
+                if points_in_frustum(mvp, &points) {
+                    let info = DrawInfo {
+                        shader_idx,
+                        material_idx,
+                        vertex_buf_idx,
+                        index_buf_idx,
+                        trans_idx,
+                        mesh_idx
+                    };
+                    camera.draw_cmds.push(info);
+                }
             }
         }
 
         // Sort draw commands for batching
-        for shader in &mut self.shader_data {
-            shader.draw_cmds.sort_by(|a, b| {
+        for camera in &mut self.camera_data {
+            camera.draw_cmds.sort_by(|a, b| {
+                match a.shader_idx.cmp(&b.shader_idx) {
+                    Ordering::Equal => (),
+                    order => return order,
+                }
+
                 match a.material_idx.cmp(&b.material_idx) {
                     Ordering::Equal => (),
                     order => return order,
@@ -2120,14 +2160,38 @@ impl Scene {
             });
         }
 
+        let mut camera_render_order = Vec::new();
+
+        std::mem::swap(&mut self.camera_render_order, &mut camera_render_order);
+
+        camera_render_order.clear();
+        camera_render_order.extend(0..self.camera_data.len());
+
+        // Sort cameras into the order we want to render them in
+        camera_render_order.sort_by(|&a, &b| {
+            let a_order = self.camera_data[a].order;
+            let b_order = self.camera_data[b].order;
+            a_order.cmp(&b_order)
+        });
+
+        std::mem::swap(&mut self.camera_render_order, &mut camera_render_order);
+
+        let mut prev_shader_idx = None;
         let mut prev_material_idx = None;
         let mut prev_vertex_buf_idx = None;
         let mut prev_index_buf_idx = None;
 
+        gl::Clear(gl::COLOR_BUFFER_BIT);
         // Execute draw commands
-        for shader in &self.shader_data {
-            gl::UseProgram(shader.program.program);
-            for info in &shader.draw_cmds {
+        for &camera_idx in &self.camera_render_order {
+            let camera = &self.camera_data[camera_idx];
+            gl::Clear(gl::DEPTH_BUFFER_BIT);
+            for info in &camera.draw_cmds {
+                if prev_shader_idx != Some(info.shader_idx) {
+                    let shader = &self.shader_data[info.shader_idx];
+                    gl::UseProgram(shader.program.program);
+                    prev_shader_idx = Some(info.shader_idx);
+                }
                 if prev_material_idx != Some(info.material_idx) {
                     // TODO: support custom uniform values again
                     prev_material_idx = Some(info.material_idx);
@@ -2143,6 +2207,7 @@ impl Scene {
                     prev_index_buf_idx = Some(info.index_buf_idx);
                 }
 
+                let shader = &self.shader_data[info.shader_idx];
                 let trans_data = &self.transform_data[info.trans_idx];
                 let mesh = &self.mesh_data[info.mesh_idx];
                 let material = &self.material_data[info.material_idx];
@@ -2156,9 +2221,8 @@ impl Scene {
                     .map(|&(_, ref range)| range.start())
                     .expect("Expected index buffer to be already allocated");
 
-                // TODO: multiple cameras
-                let cam_matrix = self.camera_data[0].calc_matrix();
-                let cam_pos: [f32; 3] = self.camera_data[0].pos.into();
+                let cam_matrix = camera.calc_matrix();
+                let cam_pos: [f32; 3] = camera.pos.into();
 
                 let colour = [material.colour.0, material.colour.1, material.colour.2];
 
