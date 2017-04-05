@@ -196,6 +196,15 @@ impl Camera {
             })
     }
 
+    pub fn pos(&self, scene: &Scene) -> Result<Vector3<f32>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                let data = &scene.camera_data[i];
+                data.pos
+            })
+    }
+
     pub fn order(&self, scene: &Scene) -> Result<i32> {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
