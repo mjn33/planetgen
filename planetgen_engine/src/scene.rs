@@ -8,6 +8,8 @@ use gl_util::Program;
 use num::{Zero, One};
 use sdl2::{EventPump, Sdl};
 use sdl2::event::Event;
+use sdl2::keyboard::KeyboardState;
+use sdl2::mouse::MouseState;
 use sdl2::video::{GLContext, GLProfile, Window};
 use std;
 use std::any::{Any, TypeId};
@@ -2401,6 +2403,14 @@ impl Scene {
         let inv_world_rot = world_rot.invert();
         let local_rot = inv_world_rot * input_rot;
         local_rot
+    }
+
+    pub fn keyboard_state(&self) -> KeyboardState {
+        KeyboardState::new(self.event_pump.as_ref().unwrap())
+    }
+
+    pub fn mouse_state(&self) -> MouseState {
+        MouseState::new(self.event_pump.as_ref().unwrap())
     }
 
     pub fn set_object_parent(&mut self, object: &Object, parent: Option<&Object>) {
