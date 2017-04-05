@@ -7,6 +7,8 @@ extern crate planetgen_engine;
 
 mod gen;
 
+use sdl2::keyboard::Scancode;
+
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
@@ -1121,10 +1123,6 @@ impl BehaviourMessages for Quad {
 
 struct QuadSphere {
     behaviour: Behaviour,
-    camera: Option<Rc<Camera>>,
-    old_rot: Quaternion<f32>,
-    prev_instant: std::time::Instant,
-    ninety_deg: Quaternion<f32>,
     quad_mesh_size: u16,
     max_subdivision: u32,
     max_coord: u32,
@@ -1140,6 +1138,8 @@ struct QuadSphere {
     faces: Option<[Rc<RefCell<Quad>>; 6]>,
     normal_update_queue: RefCell<Vec<Rc<RefCell<Quad>>>>,
     quad_pool: Option<QuadPool>,
+
+    camera_controller: CameraController,
 }
 
 impl QuadSphere {
@@ -1502,10 +1502,6 @@ impl BehaviourMessages for QuadSphere {
     fn create(behaviour: Behaviour) -> QuadSphere {
         QuadSphere {
             behaviour: behaviour,
-            camera: None,
-            prev_instant: std::time::Instant::now(),
-            old_rot: Quaternion::one(),
-            ninety_deg: Quaternion::from(Euler { x: Deg(45.0), y: Deg(0.0), z: Deg(0.0) }),
             quad_mesh_size: 0,
             max_subdivision: 0,
             max_coord: 0,
@@ -1521,28 +1517,20 @@ impl BehaviourMessages for QuadSphere {
             faces: None,
             normal_update_queue: RefCell::new(Vec::new()),
             quad_pool: None,
+            camera_controller: CameraController::new(),
         }
     }
 
-    fn start(&mut self, _scene: &mut Scene) {
-        self.prev_instant = std::time::Instant::now();
+    fn start(&mut self, scene: &mut Scene) {
+        self.camera_controller.start(scene);
     }
 
     fn update(&mut self, scene: &mut Scene) {
-        let diff = self.prev_instant.elapsed();
-        self.prev_instant = std::time::Instant::now();
-        let secs = diff.as_secs() as f32 + diff.subsec_nanos() as f32 / 1000000000.0;
+        self.camera_controller.update(scene);
+        let cam_pos = self.camera_controller.cam_pos();
+        self.centre_pos = cam_pos.normalize().cast();
+        self.centre_dist = cam_pos.magnitude() as f64;
 
-        let dps = 1.0;
-        let change_rot = Quaternion::one().nlerp(self.ninety_deg, (dps / 45.0) * secs);
-
-        // TODO: reduce cloning
-        let rot = self.old_rot * change_rot;
-        self.old_rot = rot;
-
-        let centre_pos = (rot.invert() * (-Vector3::unit_z())).normalize();
-        self.centre_pos = centre_pos.cast();
-        self.centre_dist = self.radius + self.max_height; // Camera distance from centre
         self.calc_cull_range();
 
         for i in 0..6 {
@@ -1567,16 +1555,6 @@ impl BehaviourMessages for QuadSphere {
         }
 
         self.normal_update_queue.borrow_mut().clear();
-
-        let extra_rot = Quaternion::one().nlerp(self.ninety_deg, (60.0 / 45.0));
-        let cam_dir = -centre_pos.cross(Vector3::unit_x());
-        let cam_rot = Quaternion::look_at(cam_dir, centre_pos).invert() * extra_rot.invert();
-        let cam_pos = (self.centre_dist as f32) * centre_pos;
-        //let cam_rot = Quaternion::look_at(self.centre_pos, Vector3::unit_x()).invert();
-
-        let camera = self.camera.as_ref().unwrap();
-        camera.set_pos(scene, cam_pos).unwrap();
-        camera.set_rot(scene, cam_rot).unwrap();
     }
 
     fn destroy(&mut self, scene: &mut Scene) {
@@ -1591,6 +1569,130 @@ impl BehaviourMessages for QuadSphere {
 
     fn behaviour(&self) -> &Behaviour {
         &self.behaviour
+    }
+}
+
+struct CameraController {
+    prev_time: std::time::Instant,
+    camera_near: Option<Rc<Camera>>,
+    camera_far: Option<Rc<Camera>>,
+    /// Speed the camera moves in m/s
+    speed: f32,
+    mouse_prev_x: i32,
+    mouse_prev_y: i32,
+    cam_pos: Vector3<f32>,
+    cam_rot: Quaternion<f32>,
+}
+
+impl CameraController {
+    fn new() -> CameraController {
+        CameraController {
+            prev_time: std::time::Instant::now(),
+            camera_near: None,
+            camera_far: None,
+            speed: 10000.0,
+            mouse_prev_x: 0,
+            mouse_prev_y: 0,
+            cam_pos: Vector3::zero(),
+            cam_rot: Quaternion::one(),
+        }
+    }
+
+    fn start(&mut self, scene: &mut Scene) {
+        self.prev_time = std::time::Instant::now();
+
+        let (mouse_x, mouse_y) = {
+            let state = scene.mouse_state();
+            (state.x(), state.y())
+        };
+        self.mouse_prev_x = mouse_x;
+        self.mouse_prev_y = mouse_y;
+    }
+
+    fn update(&mut self, scene: &mut Scene) {
+        let dt = self.prev_time.elapsed();
+        let dt = dt.as_secs() as f32 + dt.subsec_nanos() as f32 / 1000000000.0;
+        self.prev_time = std::time::Instant::now();
+
+        let (forward_amount, left_amount, roll, speed_factor) = {
+            let state = scene.keyboard_state();
+
+            let mut forward = 0.0;
+            let mut left = 0.0;
+            let mut roll = 0.0;
+
+            if state.is_scancode_pressed(Scancode::W) {
+                forward += 1.0;
+            }
+            if state.is_scancode_pressed(Scancode::S) {
+                forward -= 1.0;
+            }
+
+            if state.is_scancode_pressed(Scancode::A) {
+                left += 1.0;
+            }
+            if state.is_scancode_pressed(Scancode::D) {
+                left -= 1.0;
+            }
+
+            if state.is_scancode_pressed(Scancode::Q) {
+                roll += 1.0;
+            }
+            if state.is_scancode_pressed(Scancode::E) {
+                roll -= 1.0;
+            }
+
+            let speed_factor = if state.is_scancode_pressed(Scancode::LShift) {
+                10.0
+            } else {
+                1.0
+            };
+
+            (forward, left, roll, speed_factor)
+        };
+
+        let (dx, dy) = {
+            let state = scene.mouse_state();
+            let dx = state.x() - self.mouse_prev_x;
+            let dy = state.y() - self.mouse_prev_y;
+            self.mouse_prev_x = state.x();
+            self.mouse_prev_y = state.y();
+
+            if state.right() {
+                (dx, dy)
+            } else {
+                (0, 0)
+            }
+        };
+
+        self.cam_rot = self.cam_rot * Quaternion::from(Euler {
+            x: Deg(-dy as f32),
+            y: Deg(-dx as f32),
+            z: Deg(roll)
+        });
+
+        let camera_near = self.camera_near.as_ref().unwrap();
+        let camera_far = self.camera_far.as_ref().unwrap();
+
+        let old_pos = camera_near.pos(scene).unwrap();
+
+        let forward = Vector3::new(0.0, 0.0, -1.0) * forward_amount;
+        let left = Vector3::new(-1.0, 0.0, 0.0) * left_amount;
+
+        let direction = forward + left;
+
+        let direction_world = self.cam_rot * direction * self.speed * speed_factor;
+
+        self.cam_pos = old_pos + direction_world * dt;
+
+        camera_near.set_pos(scene, self.cam_pos).unwrap();
+        camera_near.set_rot(scene, self.cam_rot).unwrap();
+        camera_far.set_pos(scene, self.cam_pos).unwrap();
+        camera_far.set_rot(scene, self.cam_rot).unwrap();
+    }
+
+    fn cam_pos(&self) -> Vector3<f32> {
+        self.cam_pos
     }
 }
 
@@ -2335,14 +2437,24 @@ fn main() {
         .expect("Failed to initialize SDL2");
 
     let mut scene = Scene::new(sdl);
-    let camera_obj = scene.create_object();
-    let camera = scene.add_component::<Camera>(&*camera_obj).unwrap();//scene.create_camera();
-    camera.set_near_clip(&mut scene,  10000.0).unwrap();
-    camera.set_far_clip(&mut scene, 10000000.0).unwrap();
+    let camera_far_obj = scene.create_object();
+    let camera_near_obj = scene.create_object();
+    let camera_far = scene.add_component::<Camera>(&*camera_far_obj).unwrap();
+    let camera_near = scene.add_component::<Camera>(&*camera_near_obj).unwrap();
+    camera_far.set_near_clip(&mut scene, 100000.0).unwrap();
+    camera_far.set_far_clip(&mut scene, 10000000.0).unwrap();
+    camera_far.set_order(&mut scene, 0).unwrap();
+    camera_near.set_near_clip(&mut scene,  100.0).unwrap();
+    camera_near.set_far_clip(&mut scene, 110000.0).unwrap();
+    camera_near.set_order(&mut scene, 1).unwrap();
+
+    camera_far.set_pos(&mut scene, -Vector3::unit_z() * 6_600_000.0).unwrap();
+    camera_near.set_pos(&mut scene, -Vector3::unit_z() * 6_600_000.0).unwrap();
 
     let quad_sphere_obj = scene.create_object();
     let quad_sphere = scene.add_component::<RefCell<QuadSphere>>(&quad_sphere_obj).unwrap();
-    quad_sphere.borrow_mut().camera = Some(camera);
+    quad_sphere.borrow_mut().camera_controller.camera_far = Some(camera_far);
+    quad_sphere.borrow_mut().camera_controller.camera_near = Some(camera_near);
     quad_sphere.borrow_mut().init(&mut scene, 8, 9,
                                   6_000_000.0, 0.0, 600_000.0);
     quad_sphere_obj.set_world_pos(&mut scene, Vector3::new(0.0, 0.0, 0.0)).unwrap();
