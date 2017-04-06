@@ -2348,7 +2348,7 @@ impl Scene {
         let mut opt_data = parent_data;
         let mut world_rot = input_rot;
         while let Some(data) = opt_data {
-            world_rot = world_rot * data.rot;
+            world_rot = data.rot * world_rot;
             opt_data = data.parent_idx
                 .map(|idx| unsafe { self.transform_data.get_unchecked(idx) });
         }
@@ -2804,6 +2804,10 @@ mod test {
         assert_eq!(obj5.num_children(&scene).ok(), Some(0));
     }
 
+    fn angles(x: f32, y: f32, z: f32) -> Quaternion<f32> {
+        Quaternion::from(Euler { x: Deg(x), y: Deg(y), z: Deg(z) })
+    }
+
     /// Tests objects are transformed correctly
     #[test]
     fn test_obj_transforms() {
@@ -2819,9 +2823,6 @@ mod test {
         scene.set_object_parent(&obj4, Some(&obj3));
         scene.set_object_parent(&obj5, Some(&obj4));
 
-        fn angles(x: f32, y: f32, z: f32) -> Quaternion<f32> {
-            Quaternion::from(Euler { x: Deg(x), y: Deg(y), z: Deg(z) })
-        }
         obj1.set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
         obj1.set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
 
@@ -2864,6 +2865,26 @@ mod test {
         assert_relative_eq!(tmp.x, 10.0, max_relative = 1.05);
         assert_relative_eq!(tmp.y, 0.0, max_relative = 1.05);
         assert_relative_eq!(tmp.z, 0.0);
+    }
+
+    /// Tests objects world rotations are calculated correctly
+    #[test]
+    fn test_obj_rotation() {
+                let mut scene = Scene::new_headless();
+
+        let obj1 = scene.create_object();
+        let obj2 = scene.create_object();
+        scene.set_object_parent(&obj2, Some(&obj1));
+
+        obj1.set_local_rot(&mut scene, angles(-90.0, 0.0, 0.0)).unwrap();
+        obj2.set_local_rot(&mut scene, angles(0.0, 0.0, -90.0)).unwrap();
+
+        let tmp = obj2.world_rot(&scene).unwrap();
+        let up = Vector3::new(0.0, 1.0, 0.0);
+        let up_world = tmp * up;
+        assert_relative_eq!(up_world.x, 1.0);
+        assert_relative_eq!(up_world.y, 0.0);
+        assert_relative_eq!(up_world.z, 0.0);
     }
 
     #[test]
