@@ -1574,8 +1574,7 @@ impl BehaviourMessages for QuadSphere {
 
 struct CameraController {
     prev_time: std::time::Instant,
-    camera_near: Option<Rc<Camera>>,
-    camera_far: Option<Rc<Camera>>,
+    camera_obj: Option<Rc<Object>>,
     /// Speed the camera moves in m/s
     speed: f32,
     mouse_prev_x: i32,
@@ -1588,8 +1587,7 @@ impl CameraController {
     fn new() -> CameraController {
         CameraController {
             prev_time: std::time::Instant::now(),
-            camera_near: None,
-            camera_far: None,
+            camera_obj: None,
             speed: 10000.0,
             mouse_prev_x: 0,
             mouse_prev_y: 0,
@@ -1671,10 +1669,9 @@ impl CameraController {
             z: Deg(roll)
         });
 
-        let camera_near = self.camera_near.as_ref().unwrap();
-        let camera_far = self.camera_far.as_ref().unwrap();
+        let camera_obj = self.camera_obj.as_ref().unwrap();
 
-        let old_pos = camera_near.pos(scene).unwrap();
+        let old_pos = camera_obj.world_pos(scene).unwrap();
 
         let forward = Vector3::new(0.0, 0.0, -1.0) * forward_amount;
         let left = Vector3::new(-1.0, 0.0, 0.0) * left_amount;
@@ -1685,10 +1682,8 @@ impl CameraController {
 
         self.cam_pos = old_pos + direction_world * dt;
 
-        camera_near.set_pos(scene, self.cam_pos).unwrap();
-        camera_near.set_rot(scene, self.cam_rot).unwrap();
-        camera_far.set_pos(scene, self.cam_pos).unwrap();
-        camera_far.set_rot(scene, self.cam_rot).unwrap();
+        camera_obj.set_world_pos(scene, self.cam_pos).unwrap();
+        camera_obj.set_world_rot(scene, self.cam_rot).unwrap();
     }
 
     fn cam_pos(&self) -> Vector3<f32> {
@@ -2437,8 +2432,12 @@ fn main() {
         .expect("Failed to initialize SDL2");
 
     let mut scene = Scene::new(sdl);
+    let camera_obj = scene.create_object();
     let camera_far_obj = scene.create_object();
     let camera_near_obj = scene.create_object();
+    scene.set_object_parent(&camera_far_obj, Some(&camera_obj));
+    scene.set_object_parent(&camera_near_obj, Some(&camera_obj));
+
     let camera_far = scene.add_component::<Camera>(&*camera_far_obj).unwrap();
     let camera_near = scene.add_component::<Camera>(&*camera_near_obj).unwrap();
     camera_far.set_near_clip(&mut scene, 100000.0).unwrap();
@@ -2448,13 +2447,11 @@ fn main() {
     camera_near.set_far_clip(&mut scene, 110000.0).unwrap();
     camera_near.set_order(&mut scene, 1).unwrap();
 
-    camera_far.set_pos(&mut scene, -Vector3::unit_z() * 6_600_000.0).unwrap();
-    camera_near.set_pos(&mut scene, -Vector3::unit_z() * 6_600_000.0).unwrap();
+    camera_obj.set_world_pos(&mut scene, -Vector3::unit_z() * 6_600_000.0).unwrap();
 
     let quad_sphere_obj = scene.create_object();
     let quad_sphere = scene.add_component::<RefCell<QuadSphere>>(&quad_sphere_obj).unwrap();
-    quad_sphere.borrow_mut().camera_controller.camera_far = Some(camera_far);
-    quad_sphere.borrow_mut().camera_controller.camera_near = Some(camera_near);
+    quad_sphere.borrow_mut().camera_controller.camera_obj = Some(camera_obj);
     quad_sphere.borrow_mut().init(&mut scene, 8, 9,
                                   6_000_000.0, 0.0, 600_000.0);
     quad_sphere_obj.set_world_pos(&mut scene, Vector3::new(0.0, 0.0, 0.0)).unwrap();

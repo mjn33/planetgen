@@ -99,10 +99,6 @@ struct CameraData {
     /// An integer describing the order in which this camera is to be
     /// renderered, higher values mean later.
     order: i32,
-    /// The direction the camera is facing.
-    rot: Quaternion<f32>,
-    /// The position of the camera in world coordinates.
-    pos: Vector3<f32>,
     /// The vertical FOV for this camera.
     fovy: Deg<f32>,
     /// The aspect ratio for this camera.
@@ -111,8 +107,10 @@ struct CameraData {
     near_clip: f32,
     /// Far clip plane distance.
     far_clip: f32,
-    /// Cache matrix transform for camera, recomputing this is expensive.
-    cam_matrix: Cell<Option<[[f32; 4]; 4]>>,
+    /// The position of the camera in world coordinates.
+    pos: Vector3<f32>,
+    /// The Projection-View matrix for this camera.
+    pv_matrix: Matrix4<f32>,
     /// A vector containing the draw commands to be executed using this camera.
     draw_cmds: Vec<DrawInfo>,
 }
@@ -122,50 +120,13 @@ pub struct Camera {
     idx: Cell<Option<usize>>
 }
 
-impl CameraData {
-    fn calc_matrix(&self) -> [[f32; 4]; 4] {
-        if let Some(cam_matrix) = self.cam_matrix.get() {
-            return cam_matrix
-        }
-        let cam_perspective = cgmath::perspective(self.fovy, self.aspect, self.near_clip, self.far_clip);
-        let cam_matrix =
-            cam_perspective *
-            Matrix4::from(self.rot.invert()) *
-            Matrix4::from_translation(-self.pos);
-        let cam_matrix = cam_matrix.into();
-        self.cam_matrix.set(Some(cam_matrix));
-        cam_matrix
-    }
-}
-
 impl Camera {
-    pub fn set_pos(&self, scene: &mut Scene, pos: Vector3<f32>) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| {
-                let data = &mut scene.camera_data[i];
-                data.pos = pos;
-                data.cam_matrix.set(None);
-            })
-    }
-
-    pub fn set_rot(&self, scene: &mut Scene, rot: Quaternion<f32>) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| {
-                let data = &mut scene.camera_data[i];
-                data.rot = rot;
-                data.cam_matrix.set(None);
-            })
-    }
-
     pub fn set_fovy(&self, scene: &mut Scene, fovy: f32) -> Result<()> {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| {
                 let data = &mut scene.camera_data[i];
                 data.fovy = Deg(fovy);
-                data.cam_matrix.set(None);
             })
     }
 
@@ -175,7 +136,6 @@ impl Camera {
             .map(|i| {
                 let data = &mut scene.camera_data[i];
                 data.near_clip = near_clip;
-                data.cam_matrix.set(None);
             })
     }
 
@@ -185,7 +145,6 @@ impl Camera {
             .map(|i| {
                 let data = &mut scene.camera_data[i];
                 data.far_clip = far_clip;
-                data.cam_matrix.set(None);
             })
     }
 
@@ -195,15 +154,6 @@ impl Camera {
             .map(|i| {
                 let data = &mut scene.camera_data[i];
                 data.order = order;
-            })
-    }
-
-    pub fn pos(&self, scene: &Scene) -> Result<Vector3<f32>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| {
-                let data = &scene.camera_data[i];
-                data.pos
             })
     }
 
@@ -1034,17 +984,12 @@ impl Scene {
             enabled: true,
             marked: false,
             order: 0,
-            rot: Quaternion::from(Euler {
-                x: Deg(0.0),
-                y: Deg(0.0),
-                z: Deg(0.0)
-            }),
-            pos: Vector3::new(0.0, 0.0, 0.0),
             fovy: Deg(90.0),
             aspect: 1.0,
             near_clip: 1.0,
             far_clip: 1000.0,
-            cam_matrix: Cell::new(None),
+            pos: Vector3::zero(),
+            pv_matrix: Matrix4::one(),
             draw_cmds: Vec::new(),
         };
         self.camera_data.push(data);
@@ -2068,6 +2013,35 @@ impl Scene {
             trans_data.ltw_valid.set(true);
         }
 
+        // Calculate camera matrices and positions
+        let mut camera_data = Vec::new();
+
+        std::mem::swap(&mut camera_data, &mut self.camera_data);
+        for camera in &mut camera_data {
+            let trans_idx = camera.parent.idx.get()
+                .expect("Camera parent object destroyed, the camera should have been destroyed as well at this point");
+            let trans_data = &self.transform_data[trans_idx];
+            let (cam_pos, cam_rot) = {
+                let parent_data = trans_data.parent_idx
+                    .map(|idx| &self.transform_data[idx]);
+                self.local_to_world_pos_rot(parent_data, trans_data.pos, trans_data.rot)
+            };
+
+            let cam_perspective = cgmath::perspective(camera.fovy,
+                                                      camera.aspect,
+                                                      camera.near_clip,
+                                                      camera.far_clip);
+
+            let pv_matrix =
+                cam_perspective *
+                Matrix4::from(cam_rot.invert()) *
+                Matrix4::from_translation(-cam_pos);
+
+            camera.pos = cam_pos;
+            camera.pv_matrix = pv_matrix;
+        }
+        std::mem::swap(&mut camera_data, &mut self.camera_data);
+
         for camera in &mut self.camera_data {
             camera.draw_cmds.clear();
         }
@@ -2125,10 +2099,9 @@ impl Scene {
 
                 let points = aabb_points(mesh.aabb_min, mesh.aabb_max);
 
-                let cam_matrix = Matrix4::from(camera.calc_matrix());
                 let obj_matrix = Matrix4::from(trans_data.ltw_matrix.get());
                 // Need to transpose since our matrix is actually PVM instead of MVP
-                let mvp = (cam_matrix * obj_matrix).transpose();
+                let mvp = (camera.pv_matrix * obj_matrix).transpose();
 
                 if points_in_frustum(mvp, &points) {
                     let info = DrawInfo {
@@ -2196,6 +2169,9 @@ impl Scene {
         // Execute draw commands
         for &camera_idx in &self.camera_render_order {
             let camera = &self.camera_data[camera_idx];
+            let pv_matrix: [[f32; 4]; 4] = camera.pv_matrix.into();
+            let cam_pos: [f32; 3] = camera.pos.into();
+
             gl::Clear(gl::DEPTH_BUFFER_BIT);
             for info in &camera.draw_cmds {
                 if prev_shader_idx != Some(info.shader_idx) {
@@ -2232,14 +2208,11 @@ impl Scene {
                     .map(|&(_, ref range)| range.start())
                     .expect("Expected index buffer to be already allocated");
 
-                let cam_matrix = camera.calc_matrix();
-                let cam_pos: [f32; 3] = camera.pos.into();
-
                 let colour = [material.colour.0, material.colour.1, material.colour.2];
 
                 gl::UniformMatrix4fv(shader.obj_matrix_uniform, 1, gl::FALSE, trans_data.ltw_matrix.get().as_ptr() as *const _);
                 gl::Uniform3fv(shader.cam_pos_uniform, 1, cam_pos.as_ptr());
-                gl::UniformMatrix4fv(shader.cam_matrix_uniform, 1, gl::FALSE, cam_matrix.as_ptr() as *const _);
+                gl::UniformMatrix4fv(shader.cam_matrix_uniform, 1, gl::FALSE, pv_matrix.as_ptr() as *const _);
                 gl::Uniform3fv(shader.colour_uniform, 1, colour.as_ptr());
 
                 // TODO: exploit multi-draw where possible
