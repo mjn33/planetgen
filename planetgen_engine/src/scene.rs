@@ -59,7 +59,7 @@ fn aabb_points(min: Vector3<f32>, max: Vector3<f32>) -> [Vector3<f32>; 8] {
      Vector3::new(max.x, max.y, max.z)]
 }
 
-fn points_in_frustum(mut mvp: Matrix4<f32>, points: &[Vector3<f32>]) -> bool {
+fn points_in_frustum(mvp: Matrix4<f32>, points: &[Vector3<f32>]) -> bool {
     let xn_plane = mvp.x + mvp.w;
     let xp_plane = -mvp.x + mvp.w;
     let yn_plane = mvp.y + mvp.w;
@@ -1991,13 +1991,13 @@ impl Scene {
                     break
                 }
                 opt_data = data.parent_idx
-                    .map(|idx| unsafe { self.transform_data.get_unchecked(idx) });
+                    .map(|idx| &self.transform_data[idx]);
             }
 
             if recalc {
-                let (world_pos, world_rot) = unsafe {
+                let (world_pos, world_rot) = {
                     let parent_data = trans_data.parent_idx
-                        .map(|idx| self.transform_data.get_unchecked(idx));
+                        .map(|idx| &self.transform_data[idx]);
                     self.local_to_world_pos_rot(parent_data, trans_data.pos, trans_data.rot)
                 };
 
