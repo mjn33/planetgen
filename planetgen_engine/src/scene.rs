@@ -1453,22 +1453,7 @@ impl Scene {
             }
         }
 
-        let draw_start_time = Instant::now();
-
-        if self.window.is_some() {
-            unsafe {
-                if !self.draw() {
-                    return false
-                }
-            }
-        }
-
-        let draw_end_time = Instant::now();
-
-        //// Just block for until a new line is received
-        //println!("Enter newline to continue...");
-        //let mut _tmp = String::new();
-        //std::io::stdin().read_line(&mut _tmp).unwrap();
+        let destroy_start_time = Instant::now();
 
         unsafe {
             let mut behaviour_data = Vec::new();
@@ -1559,11 +1544,24 @@ impl Scene {
             std::mem::swap(&mut destroyed_mrenderers, &mut self.destroyed_mrenderers);
         }
 
-        let destroy_end_time = Instant::now();
+        let draw_start_time = Instant::now();
+        if self.window.is_some() {
+            unsafe {
+                if !self.draw() {
+                    return false
+                }
+            }
+        }
+        let draw_end_time = Instant::now();
 
-        let update_time = draw_start_time - start_time;
+        //// Just block for until a new line is received
+        //println!("Enter newline to continue...");
+        //let mut _tmp = String::new();
+        //std::io::stdin().read_line(&mut _tmp).unwrap();
+
+        let update_time = destroy_start_time - start_time;
         let draw_time = draw_end_time - draw_start_time;
-        let destroy_time = destroy_end_time - draw_end_time;
+        let destroy_time = draw_start_time - destroy_start_time;
 
         let update_time_millis = (update_time.as_secs() as f32) * 1000.0 + update_time.subsec_nanos() as f32 / 1000000.0;
         let draw_time_millis = (draw_time.as_secs() as f32) * 1000.0 + draw_time.subsec_nanos() as f32 / 1000000.0;
