@@ -1321,8 +1321,8 @@ impl QuadSphere {
 
             // sqrt(0.5^2 + 1.5^2) = ~1.6, this means any point within a quad
             // will cause all four neighbours to be subdivided as well.
-            let collapse_range = 2.0 * 1.6 * real_quad_length;
-            let subdivide_range = 1.6 * real_quad_length;
+            let collapse_range = 4.0 * 2.0 * 1.6 * real_quad_length;
+            let subdivide_range = 4.0 * 1.6 * real_quad_length;
 
             let r = 1.0;
             let collapse_cos_theta = f64::cos(f64::min(std::f64::consts::PI, collapse_range / r));
