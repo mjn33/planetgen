@@ -4,12 +4,14 @@ extern crate cgmath;
 extern crate sdl2;
 extern crate num;
 extern crate planetgen_engine;
+extern crate png;
 
 mod gen;
 
 use sdl2::keyboard::Scancode;
 
 use std::cell::{Cell, RefCell};
+use std::fs::File;
 use std::rc::{Rc, Weak};
 
 use cgmath::{Deg, Euler, InnerSpace, Rotation, Quaternion, Vector3};
@@ -18,8 +20,69 @@ use num::{Zero, One};
 
 use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, MeshRenderer, Object, Scene, Shader};
 
+use png::{ColorType, BitDepth};
+
 use gen::{gen_indices, vert_off, PatchFlags, PATCH_FLAGS_NONE, PATCH_FLAGS_NORTH, PATCH_FLAGS_SOUTH,
           PATCH_FLAGS_EAST, PATCH_FLAGS_WEST};
+
+fn load_heightmap(filename: &str) -> Result<(Box<[f32]>, u32), String> {
+    let file = try!(File::open(filename).map_err(|_| "Failed to open file"));
+    let decoder = png::Decoder::new(file);
+    let (info, mut reader) = try!(decoder.read_info().map_err(|e| format!("Failed to create decoder: {}", e)));
+
+    if info.width != info.height {
+        return Err(format!("Heightmap width and height not equal. W = {}, H = {}", info.width, info.height));
+    }
+
+    let mut img_data = vec![0; info.buffer_size()];
+    let mut heightmap = vec![0.0; (info.width * info.height) as usize];
+
+    try!(reader.next_frame(&mut img_data).map_err(|e| format!("Failed to read image data: {}", e)));
+
+    match (info.color_type, info.bit_depth) {
+        (ColorType::Grayscale, BitDepth::Eight) => {
+            let mut idx = 0;
+            let mut img_idx = 0;
+            while idx < img_data.len() {
+                let value = img_data[img_idx];
+                let value = (value as f32) / 255.0;
+                heightmap[idx] = value;
+                idx += 1;
+                img_idx += 1;
+            }
+        }
+        (ColorType::Grayscale, BitDepth::Sixteen) => {
+            let mut idx = 0;
+            let mut img_idx = 0;
+            while idx < img_data.len() {
+                let hi = (img_data[img_idx] as u16) << 8;
+                let lo = img_data[img_idx + 1] as u16;
+                let value = hi | lo;
+                let value = (value as f32) / 65535.0;
+                heightmap[idx] = value;
+                idx += 1;
+                img_idx += 2;
+            }
+        }
+        (ColorType::RGB, BitDepth::Eight) => {
+            let mut idx = 0;
+            let mut img_idx = 0;
+            while idx < img_data.len() {
+                let r = (img_data[img_idx] as u32) << 16;
+                let g = (img_data[img_idx + 1] as u32) << 8;
+                let b = img_data[img_idx + 2] as u32;
+                let value = r | g | b;
+                let value = (value as f32) / 16777215.0;
+                heightmap[idx] = value;
+                idx += 1;
+                img_idx += 3;
+            }
+        }
+        _ => return Err("Unsupported image format".to_owned()),
+    }
+
+    Ok((heightmap.into_boxed_slice(), info.width))
+}
 
 impl From<QuadSide> for PatchFlags {
     fn from(side: QuadSide) -> Self {
@@ -1140,6 +1203,14 @@ struct QuadSphere {
     quad_pool: Option<QuadPool>,
 
     camera_controller: CameraController,
+
+    heightmap_resolution: u32,
+    xp_heightmap: Box<[f32]>,
+    xn_heightmap: Box<[f32]>,
+    yp_heightmap: Box<[f32]>,
+    yn_heightmap: Box<[f32]>,
+    zp_heightmap: Box<[f32]>,
+    zn_heightmap: Box<[f32]>,
 }
 
 impl QuadSphere {
@@ -1310,6 +1381,20 @@ impl QuadSphere {
         self.faces = Some([xp_quad, xn_quad, yp_quad, yn_quad, zp_quad, zn_quad]);
     }
 
+    fn set_heightmaps(&mut self,
+                      resolution: u32,
+                      xp_heightmap: Box<[f32]>, xn_heightmap: Box<[f32]>,
+                      yp_heightmap: Box<[f32]>, yn_heightmap: Box<[f32]>,
+                      zp_heightmap: Box<[f32]>, zn_heightmap: Box<[f32]>) {
+        self.heightmap_resolution = resolution;
+        self.xp_heightmap = xp_heightmap;
+        self.xn_heightmap = xn_heightmap;
+        self.yp_heightmap = yp_heightmap;
+        self.yn_heightmap = yn_heightmap;
+        self.zp_heightmap = zp_heightmap;
+        self.zn_heightmap = zn_heightmap;
+    }
+
     fn calc_ranges(&mut self)  {
         self.collapse_ranges = Vec::with_capacity(self.max_subdivision as usize + 1);
         self.subdivide_ranges = Vec::with_capacity(self.max_subdivision as usize + 1);
@@ -1400,6 +1485,130 @@ impl QuadSphere {
                      -1.0 + z as f64 * 2.0 / self.max_coord as f64)
     }
 
+    /// Converts a `VertCoord` to a position on the quad sphere in integer
+    /// coordinates (not normalized).
+    fn vc_to_ipos(&self, coord: VertCoord) -> (u32, u32, u32) {
+        match coord {
+            VertCoord(Plane::XP, a, b) => (self.max_coord, b, self.max_coord - a),
+            VertCoord(Plane::XN, a, b) => (0, b, a),
+            VertCoord(Plane::YP, a, b) => (a, self.max_coord, self.max_coord - b),
+            VertCoord(Plane::YN, a, b) => (a, 0, b),
+            VertCoord(Plane::ZP, a, b) => (a, b, self.max_coord),
+            VertCoord(Plane::ZN, a, b) => (self.max_coord - a, b, 0),
+        }
+    }
+
+    /// Converts integer coordinates to a `VertCoord` on the given plane.
+    fn ipos_to_vc(&self, plane: Plane, x: u32, y: u32, z: u32) -> VertCoord {
+        match plane {
+            Plane::XP => VertCoord(Plane::XP, self.max_coord - z, y),
+            Plane::XN => VertCoord(Plane::XN, z, y),
+            Plane::YP => VertCoord(Plane::YP, x, self.max_coord - z),
+            Plane::YN => VertCoord(Plane::YN, x, z),
+            Plane::ZP => VertCoord(Plane::ZP, x, y),
+            Plane::ZN => VertCoord(Plane::ZN, self.max_coord - x, y),
+        }
+    }
+
+    fn get_height_data(&self, plane: Plane, a: i32, b: i32) -> f32 {
+        let a = a;
+        let b = self.heightmap_resolution as i32 - 1 - b;
+
+        let i = (a + b * self.heightmap_resolution as i32) as usize;
+
+        match plane {
+            Plane::XP => self.xp_heightmap[i],
+            Plane::XN => self.xn_heightmap[i],
+            Plane::YP => self.yp_heightmap[i],
+            Plane::YN => self.yn_heightmap[i],
+            Plane::ZP => self.zp_heightmap[i],
+            Plane::ZN => self.zn_heightmap[i],
+        }
+    }
+
+    fn sample_heightmap_avg(&self, coord: VertCoord) -> f32 {
+        let (x, y, z) = self.vc_to_ipos(coord);
+
+        let mut sum = 0.0;
+        let mut count = 0;
+
+        if x == self.max_coord {
+            let vc = self.ipos_to_vc(Plane::XP, x, y, z);
+            let height = self.sample_heightmap(vc);
+            sum += height;
+            count += 1;
+        } else if x == 0 {
+            let vc = self.ipos_to_vc(Plane::XN, x, y, z);
+            let height = self.sample_heightmap(vc);
+            sum += height;
+            count += 1;
+        }
+
+        if y == self.max_coord {
+            let vc = self.ipos_to_vc(Plane::YP, x, y, z);
+            let height = self.sample_heightmap(vc);
+            sum += height;
+            count += 1;
+        } else if y == 0 {
+            let vc = self.ipos_to_vc(Plane::YN, x, y, z);
+            let height = self.sample_heightmap(vc);
+            sum += height;
+            count += 1;
+        }
+
+        if z == self.max_coord {
+            let vc = self.ipos_to_vc(Plane::ZP, x, y, z);
+            let height = self.sample_heightmap(vc);
+            sum += height;
+            count += 1;
+        } else if z == 0 {
+            let vc = self.ipos_to_vc(Plane::ZN, x, y, z);
+            let height = self.sample_heightmap(vc);
+            sum += height;
+            count += 1;
+        }
+
+        sum / count as f32
+    }
+
+    fn sample_heightmap(&self, coord: VertCoord) -> f32 {
+        let VertCoord(plane, vc_a, vc_b) = coord;
+        let max = self.heightmap_resolution as i32 - 1;
+        let x = (vc_a as f32 / self.max_coord as f32) * max as f32;
+        let y = (vc_b as f32 / self.max_coord as f32) * max as f32;
+
+        let ix = x as i32;
+        let iy = y as i32;
+        let alpha_x = x - ix as f32;
+        let alpha_y = y - iy as f32;
+
+        let (cy1, cy2) = {
+            let ix = if ix == max {
+                ix - 1
+            } else {
+                ix
+            };
+            let iy = if iy == max {
+                iy - 1
+            } else {
+                iy
+            };
+
+            let cx1y1 = self.get_height_data(plane, ix, iy);
+            let cx2y1 = self.get_height_data(plane, ix + 1, iy);
+
+            let cx1y2 = self.get_height_data(plane, ix, iy + 1);
+            let cx2y2 = self.get_height_data(plane, ix + 1, iy + 1);
+
+            (cx1y1 * (1.0 - alpha_x) + alpha_x * cx2y1,
+             cx1y2 * (1.0 - alpha_x) + alpha_x * cx2y2)
+        };
+
+        let c = cy1 * (1.0 - alpha_y) + cy2 * alpha_y;
+
+        c
+    }
+
     fn calc_quad_verts(&self, plane: Plane, base_coord: (u32, u32), subdivision: u32) -> Vec<Vector3<f32>> {
         let vert_step = 1 << (self.max_subdivision - subdivision);
         let adj_size = self.quad_mesh_size as usize + 1;
@@ -1411,8 +1620,9 @@ impl QuadSphere {
                                            base_coord.0 + x as u32 * vert_step,
                                            base_coord.1 + y as u32 * vert_step);
 
+                let height = self.sample_heightmap_avg(vert_coord) as f64;
+
                 let vert_pos = self.vc_to_pos(vert_coord).normalize();
-                let height = 0.0;
                 let height = (self.radius + self.min_height) + height * (self.max_height - self.min_height);
                 let vert_pos = vert_pos * height;
 
@@ -1518,6 +1728,13 @@ impl BehaviourMessages for QuadSphere {
             normal_update_queue: RefCell::new(Vec::new()),
             quad_pool: None,
             camera_controller: CameraController::new(),
+            heightmap_resolution: 0,
+            xp_heightmap: Box::new([]),
+            xn_heightmap: Box::new([]),
+            yp_heightmap: Box::new([]),
+            yn_heightmap: Box::new([]),
+            zp_heightmap: Box::new([]),
+            zn_heightmap: Box::new([]),
         }
     }
 
@@ -2452,6 +2669,27 @@ fn main() {
     let quad_sphere_obj = scene.create_object();
     let quad_sphere = scene.add_component::<RefCell<QuadSphere>>(&quad_sphere_obj).unwrap();
     quad_sphere.borrow_mut().camera_controller.camera_obj = Some(camera_obj);
+
+    let xp_heightmap = load_heightmap("xp.png").expect("Failed to load XP heightmap");
+    let xn_heightmap = load_heightmap("xn.png").expect("Failed to load XN heightmap");
+    let yp_heightmap = load_heightmap("yp.png").expect("Failed to load YP heightmap");
+    let yn_heightmap = load_heightmap("yn.png").expect("Failed to load YN heightmap");
+    let zp_heightmap = load_heightmap("zp.png").expect("Failed to load ZP heightmap");
+    let zn_heightmap = load_heightmap("zn.png").expect("Failed to load ZN heightmap");
+
+    if xp_heightmap.1 != xn_heightmap.1 ||
+        xn_heightmap.1 != yp_heightmap.1 ||
+        yp_heightmap.1 != yn_heightmap.1 ||
+        yn_heightmap.1 != zp_heightmap.1 ||
+        zp_heightmap.1 != zn_heightmap.1 {
+        panic!("Not all heightmap faces have the same resolution")
+    }
+
+    quad_sphere.borrow_mut().set_heightmaps(xp_heightmap.1,
+                                            xp_heightmap.0, xn_heightmap.0,
+                                            yp_heightmap.0, yn_heightmap.0,
+                                            zp_heightmap.0, zn_heightmap.0);
+
     quad_sphere.borrow_mut().init(&mut scene, 8, 9,
                                   6_000_000.0, 0.0, 600_000.0);
     quad_sphere_obj.set_world_pos(&mut scene, Vector3::new(0.0, 0.0, 0.0)).unwrap();
