@@ -852,16 +852,21 @@ impl Quad {
         let lower_left_base_coord = (self.base_coord.0, self.base_coord.1);
         let lower_right_base_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1);
 
-        let (upper_left_vertices,
-             upper_right_vertices,
-             lower_left_vertices,
-             lower_right_vertices) =
+        let result =
             sphere.calc_subdivided_verts(self.plane,
                                          upper_left_base_coord,
                                          upper_right_base_coord,
                                          lower_left_base_coord,
                                          lower_right_base_coord,
                                          self.cur_subdivision + 1);
+        let upper_left_vpos = result.q1_vpos;
+        let upper_left_vcolour = result.q1_vcolour;
+        let upper_right_vpos = result.q2_vpos;
+        let upper_right_vcolour = result.q2_vcolour;
+        let lower_left_vpos = result.q3_vpos;
+        let lower_left_vcolour = result.q3_vcolour;
+        let lower_right_vpos = result.q4_vpos;
+        let lower_right_vcolour = result.q4_vcolour;
 
         let sphere_obj = sphere.behaviour().object(scene).unwrap().clone();
         let (upper_left_obj, upper_left) = sphere.quad_pool().get_quad(scene);
@@ -894,7 +899,8 @@ impl Quad {
 
             scene.set_object_parent(&upper_left_obj, Some(&sphere_obj));
             let mesh = upper_left.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = upper_left_vertices;
+            *mesh.vpos_mut(scene).unwrap() = upper_left_vpos;
+            *mesh.vcolour_mut(scene).unwrap() = upper_left_vcolour;
         }
         sphere.queue_normal_update(upper_left.clone());
 
@@ -918,7 +924,8 @@ impl Quad {
 
             scene.set_object_parent(&upper_right_obj, Some(&sphere_obj));
             let mesh = upper_right.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = upper_right_vertices;
+            *mesh.vpos_mut(scene).unwrap() = upper_right_vpos;
+            *mesh.vcolour_mut(scene).unwrap() = upper_right_vcolour;
         }
         sphere.queue_normal_update(upper_right.clone());
 
@@ -942,7 +949,8 @@ impl Quad {
 
             scene.set_object_parent(&lower_left_obj, Some(&sphere_obj));
             let mesh = lower_left.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = lower_left_vertices;
+            *mesh.vpos_mut(scene).unwrap() = lower_left_vpos;
+            *mesh.vcolour_mut(scene).unwrap() = lower_left_vcolour;
         }
         sphere.queue_normal_update(lower_left.clone());
 
@@ -966,7 +974,8 @@ impl Quad {
 
             scene.set_object_parent(&lower_right_obj, Some(&sphere_obj));
             let mesh = lower_right.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = lower_right_vertices;
+            *mesh.vpos_mut(scene).unwrap() = lower_right_vpos;
+            *mesh.vcolour_mut(scene).unwrap() = lower_right_vcolour;
         }
         sphere.queue_normal_update(lower_right.clone());
 
@@ -1405,6 +1414,17 @@ impl BehaviourMessages for Quad {
     }
 }
 
+struct SubdivideResult {
+    q1_vpos: Vec<Vector3<f32>>,
+    q1_vcolour: Vec<Vector3<f32>>,
+    q2_vpos: Vec<Vector3<f32>>,
+    q2_vcolour: Vec<Vector3<f32>>,
+    q3_vpos: Vec<Vector3<f32>>,
+    q3_vcolour: Vec<Vector3<f32>>,
+    q4_vpos: Vec<Vector3<f32>>,
+    q4_vcolour: Vec<Vector3<f32>>,
+}
+
 struct QuadSphere {
     behaviour: Behaviour,
     quad_mesh_size: u16,
@@ -1445,12 +1465,12 @@ impl QuadSphere {
 
         self.quad_pool = Some(QuadPool::new(scene, quad_mesh_size, 1000));
 
-        let xp_quad_vertices = self.calc_quad_verts(Plane::XP, (0, 0), 0);
-        let xn_quad_vertices = self.calc_quad_verts(Plane::XN, (0, 0), 0);
-        let yp_quad_vertices = self.calc_quad_verts(Plane::YP, (0, 0), 0);
-        let yn_quad_vertices = self.calc_quad_verts(Plane::YN, (0, 0), 0);
-        let zp_quad_vertices = self.calc_quad_verts(Plane::ZP, (0, 0), 0);
-        let zn_quad_vertices = self.calc_quad_verts(Plane::ZN, (0, 0), 0);
+        let (xp_quad_vpos, xp_quad_vcolour) = self.calc_quad_verts(Plane::XP, (0, 0), 0);
+        let (xn_quad_vpos, xn_quad_vcolour) = self.calc_quad_verts(Plane::XN, (0, 0), 0);
+        let (yp_quad_vpos, yp_quad_vcolour) = self.calc_quad_verts(Plane::YP, (0, 0), 0);
+        let (yn_quad_vpos, yn_quad_vcolour) = self.calc_quad_verts(Plane::YN, (0, 0), 0);
+        let (zp_quad_vpos, zp_quad_vcolour) = self.calc_quad_verts(Plane::ZP, (0, 0), 0);
+        let (zn_quad_vpos, zn_quad_vcolour) = self.calc_quad_verts(Plane::ZN, (0, 0), 0);
 
         let (xp_quad_obj, xp_quad) = self.quad_pool.as_mut().unwrap().get_quad(scene);
         let (xn_quad_obj, xn_quad) = self.quad_pool.as_mut().unwrap().get_quad(scene);
@@ -1476,7 +1496,8 @@ impl QuadSphere {
             xp_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             xp_quad.mid_coord_pos = xp_quad.mid_coord_pos(self);
             let mesh = xp_quad.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = xp_quad_vertices;
+            *mesh.vpos_mut(scene).unwrap() = xp_quad_vpos;
+            *mesh.vcolour_mut(scene).unwrap() = xp_quad_vcolour;
         }
         self.queue_normal_update(xp_quad.clone());
 
@@ -1497,7 +1518,8 @@ impl QuadSphere {
             xn_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             xn_quad.mid_coord_pos = xn_quad.mid_coord_pos(self);
             let mesh = xn_quad.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = xn_quad_vertices;
+            *mesh.vpos_mut(scene).unwrap() = xn_quad_vpos;
+            *mesh.vcolour_mut(scene).unwrap() = xn_quad_vcolour;
         }
         self.queue_normal_update(xn_quad.clone());
 
@@ -1518,7 +1540,8 @@ impl QuadSphere {
             yp_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             yp_quad.mid_coord_pos = yp_quad.mid_coord_pos(self);
             let mesh = yp_quad.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = yp_quad_vertices;
+            *mesh.vpos_mut(scene).unwrap() = yp_quad_vpos;
+            *mesh.vcolour_mut(scene).unwrap() = yp_quad_vcolour;
         }
         self.queue_normal_update(yp_quad.clone());
 
@@ -1539,7 +1562,8 @@ impl QuadSphere {
             yn_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             yn_quad.mid_coord_pos = yn_quad.mid_coord_pos(self);
             let mesh = yn_quad.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = yn_quad_vertices;
+            *mesh.vpos_mut(scene).unwrap() = yn_quad_vpos;
+            *mesh.vcolour_mut(scene).unwrap() = yn_quad_vcolour;
         }
         self.queue_normal_update(yn_quad.clone());
 
@@ -1560,7 +1584,8 @@ impl QuadSphere {
             zp_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             zp_quad.mid_coord_pos = zp_quad.mid_coord_pos(self);
             let mesh = zp_quad.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = zp_quad_vertices;
+            *mesh.vpos_mut(scene).unwrap() = zp_quad_vpos;
+            *mesh.vcolour_mut(scene).unwrap() = zp_quad_vcolour;
         }
         self.queue_normal_update(zp_quad.clone());
 
@@ -1581,7 +1606,8 @@ impl QuadSphere {
             zn_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             zn_quad.mid_coord_pos = zn_quad.mid_coord_pos(self);
             let mesh = zn_quad.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = zn_quad_vertices;
+            *mesh.vpos_mut(scene).unwrap() = zn_quad_vpos;
+            *mesh.vcolour_mut(scene).unwrap() = zn_quad_vcolour;
         }
         self.queue_normal_update(zn_quad.clone());
 
@@ -1831,11 +1857,16 @@ impl QuadSphere {
                        alpha_x as f64, alpha_y as f64) as f32
     }
 
-    fn calc_quad_verts(&self, plane: Plane, base_coord: (u32, u32), subdivision: u32) -> Vec<Vector3<f32>> {
+    fn calc_quad_verts(&self,
+                       plane: Plane,
+                       base_coord: (u32, u32),
+                       subdivision: u32)
+                       -> (Vec<Vector3<f32>>, Vec<Vector3<f32>>) {
         let vert_step = 1 << (self.max_subdivision - subdivision);
         let adj_size = self.quad_mesh_size as usize + 1;
 
-        let mut vertices = Vec::with_capacity(adj_size * adj_size);
+        let mut vpos = Vec::with_capacity(adj_size * adj_size);
+        let mut vcolour = Vec::with_capacity(adj_size * adj_size);
         for x in 0..adj_size {
             for y in 0..adj_size {
                 let vert_coord = VertCoord(plane,
@@ -1848,11 +1879,12 @@ impl QuadSphere {
                 let height = (self.radius + self.min_height) + height * (self.max_height - self.min_height);
                 let vert_pos = vert_pos * height;
 
-                vertices.push(vert_pos.cast());
+                vpos.push(vert_pos.cast());
+                vcolour.push(Vector3::new(0.8, 0.2, 0.2));
             }
         }
 
-        vertices
+        (vpos, vcolour)
     }
 
     fn calc_subdivided_verts(&self,
@@ -1862,12 +1894,21 @@ impl QuadSphere {
                              base_coord3: (u32, u32),
                              base_coord4: (u32, u32),
                              subdivision: u32)
-                             -> (Vec<Vector3<f32>>, Vec<Vector3<f32>>, Vec<Vector3<f32>>, Vec<Vector3<f32>>) {
-        let v1 = self.calc_quad_verts(plane, base_coord1, subdivision);
-        let v2 = self.calc_quad_verts(plane, base_coord2, subdivision);
-        let v3 = self.calc_quad_verts(plane, base_coord3, subdivision);
-        let v4 = self.calc_quad_verts(plane, base_coord4, subdivision);
-        (v1, v2, v3, v4)
+                             -> SubdivideResult {
+        let (q1_vpos, q1_vcolour) = self.calc_quad_verts(plane, base_coord1, subdivision);
+        let (q2_vpos, q2_vcolour) = self.calc_quad_verts(plane, base_coord2, subdivision);
+        let (q3_vpos, q3_vcolour) = self.calc_quad_verts(plane, base_coord3, subdivision);
+        let (q4_vpos, q4_vcolour) = self.calc_quad_verts(plane, base_coord4, subdivision);
+        SubdivideResult {
+            q1_vpos,
+            q1_vcolour,
+            q2_vpos,
+            q2_vcolour,
+            q3_vpos,
+            q3_vcolour,
+            q4_vpos,
+            q4_vcolour,
+        }
     }
 
     fn quad_pool(&self) -> &QuadPool {

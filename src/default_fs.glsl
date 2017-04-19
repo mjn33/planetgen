@@ -4,6 +4,7 @@ uniform vec3 _colour;
 
 in vec3 world_vpos;
 in vec3 world_vnorm;
+in vec3 colour;
 in vec3 world_view_dir;
 
 out vec4 color;
@@ -11,7 +12,7 @@ out vec4 color;
 void main() {
     vec3 light_dir = vec3(0.0, 0.0, -1.0); // TODO
     vec3 ambient_colour = vec3(0.0, 0.0, 0.0);
-    vec3 diffuse_colour = vec3(0.8, 0.2, 0.2);
+    vec3 diffuse_colour = colour;
     vec3 specular_colour = vec3(0.2, 0.2, 0.2);
     float n_specular = 5.0;
 

@@ -218,6 +218,7 @@ struct MeshData {
     marked: bool,
     vpos_vec: Vec<Vector3<f32>>,
     vnorm_vec: Vec<Vector3<f32>>,
+    vcolour_vec: Vec<Vector3<f32>>,
     indices_vec: Vec<u16>,
     /// True if vertex buffer data needs to be updated.
     vertex_buf_dirty: bool,
@@ -237,6 +238,12 @@ struct MeshData {
     aabb_dirty: bool,
     aabb_min: Vector3<f32>,
     aabb_max: Vector3<f32>,
+}
+
+impl MeshData {
+    fn vertex_buf_len(&self) -> usize {
+        *[self.vpos_vec.len(), self.vnorm_vec.len(), self.vcolour_vec.len()].iter().max().unwrap()
+    }
 }
 
 pub struct Mesh {
@@ -278,6 +285,24 @@ impl Mesh {
                 let data = &mut scene.mesh_data[i];
                 data.vertex_buf_dirty = true;
                 &mut data.vnorm_vec
+            })
+    }
+
+    pub fn vcolour<'a>(&self, scene: &'a Scene) -> Result<&'a Vec<Vector3<f32>>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                &scene.mesh_data[i].vcolour_vec
+            })
+    }
+
+    pub fn vcolour_mut<'a>(&self, scene: &'a mut Scene) -> Result<&'a mut Vec<Vector3<f32>>> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(move |i| {
+                let data = &mut scene.mesh_data[i];
+                data.vertex_buf_dirty = true;
+                &mut data.vcolour_vec
             })
     }
 
@@ -1009,6 +1034,7 @@ impl Scene {
             marked: false,
             vpos_vec: Vec::new(),
             vnorm_vec: Vec::new(),
+            vcolour_vec: Vec::new(),
             indices_vec: Vec::new(),
             vertex_buf_dirty: false,
             vertex_buf_alloc: None,
@@ -1625,7 +1651,7 @@ impl Scene {
 
     fn get_alloc_buffers(&mut self, idx: usize) -> (Option<(usize, usize)>, Option<(usize, usize)>) {
         let data = &self.mesh_data[idx];
-        let vertex_buf_len = std::cmp::max(data.vpos_vec.len(), data.vnorm_vec.len());
+        let vertex_buf_len = data.vertex_buf_len();
         let indices_buf_len = data.indices_vec.len();
 
         let vb_needs_alloc = data.vertex_buf_dirty;
@@ -1887,7 +1913,7 @@ impl Scene {
 
             for &mesh_idx in &vb.update_tasks {
                 let mesh = &mut self.mesh_data[mesh_idx];
-                let vertex_buf_len = std::cmp::max(mesh.vpos_vec.len(), mesh.vnorm_vec.len());;
+                let vertex_buf_len = mesh.vertex_buf_len();
 
                 let range_start = mesh.vertex_buf_alloc
                     .as_ref()
@@ -1907,7 +1933,7 @@ impl Scene {
                 for i in 0..vertex_buf_len {
                     let vpos = mesh.vpos_vec.get(i).map(|x| *x).unwrap_or(Vector3::zero());
                     let vnorm = mesh.vnorm_vec.get(i).map(|x| *x).unwrap_or(Vector3::zero());
-                    let vcolour = Vector3::zero();
+                    let vcolour = mesh.vcolour_vec.get(i).map(|x| *x).unwrap_or(Vector3::zero());
                     let base = map.offset(i as isize * 9);
                     *base.offset(0) = vpos.x;
                     *base.offset(1) = vpos.y;
