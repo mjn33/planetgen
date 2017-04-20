@@ -519,7 +519,7 @@ fn map_vec_pos<T: num::Signed + Copy>(vec: (T, T), pos: (T, T), max_coord: T, sr
 struct VertCoord(Plane, u32, u32);
 
 struct Quad {
-    behaviour: Behaviour,
+    object: Rc<Object>,
     plane: Plane,
     pos: QuadPos,
     mrenderer: Option<Rc<MeshRenderer>>,
@@ -550,6 +550,33 @@ struct Quad {
 }
 
 impl Quad {
+    fn new(object: Rc<Object>) -> Quad {
+        Quad {
+            object: object,
+            plane: Plane::XP,
+            pos: QuadPos::None,
+            mrenderer: None,
+            mesh: None,
+            base_coord: (0, 0),
+            cur_subdivision: 0,
+            mid_coord_pos: Vector3::new(0.0, 0.0, 0.0),
+            angle_size: (1.0, 1.0),
+            patch_flags: PATCH_FLAGS_NONE,
+
+            non_normalized: Vec::new(),
+
+            needs_normal_update: false,
+            needs_normal_merge: false,
+
+            self_ptr: None,
+            children: None,
+            north: None,
+            south: None,
+            east: None,
+            west: None,
+        }
+    }
+
     fn calc_normals(&mut self, scene: &mut Scene) {
         {
             let verts = self.mesh.as_ref().unwrap().vpos(scene).unwrap();
@@ -869,10 +896,10 @@ impl Quad {
         let lower_right_vcolour = result.q4_vcolour;
 
         let sphere_obj = sphere.behaviour().object(scene).unwrap().clone();
-        let (upper_left_obj, upper_left) = sphere.quad_pool().get_quad(scene);
-        let (upper_right_obj, upper_right) = sphere.quad_pool().get_quad(scene);
-        let (lower_left_obj, lower_left) = sphere.quad_pool().get_quad(scene);
-        let (lower_right_obj, lower_right) = sphere.quad_pool().get_quad(scene);
+        let upper_left = sphere.quad_pool().get_quad(scene);
+        let upper_right = sphere.quad_pool().get_quad(scene);
+        let lower_left = sphere.quad_pool().get_quad(scene);
+        let lower_right = sphere.quad_pool().get_quad(scene);
 
         let direct_north = self.direct_north();
         let direct_south = self.direct_south();
@@ -897,7 +924,7 @@ impl Quad {
             upper_left.mid_coord_pos = upper_left.mid_coord_pos(sphere);
             upper_left.angle_size = upper_left.angle_size(sphere);
 
-            scene.set_object_parent(&upper_left_obj, Some(&sphere_obj));
+            scene.set_object_parent(&upper_left.object, Some(&sphere_obj));
             let mesh = upper_left.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = upper_left_vpos;
             *mesh.vcolour_mut(scene).unwrap() = upper_left_vcolour;
@@ -922,7 +949,7 @@ impl Quad {
             upper_right.mid_coord_pos = upper_right.mid_coord_pos(sphere);
             upper_right.angle_size = upper_right.angle_size(sphere);
 
-            scene.set_object_parent(&upper_right_obj, Some(&sphere_obj));
+            scene.set_object_parent(&upper_right.object, Some(&sphere_obj));
             let mesh = upper_right.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = upper_right_vpos;
             *mesh.vcolour_mut(scene).unwrap() = upper_right_vcolour;
@@ -947,7 +974,7 @@ impl Quad {
             lower_left.mid_coord_pos = lower_left.mid_coord_pos(sphere);
             lower_left.angle_size = lower_left.angle_size(sphere);
 
-            scene.set_object_parent(&lower_left_obj, Some(&sphere_obj));
+            scene.set_object_parent(&lower_left.object, Some(&sphere_obj));
             let mesh = lower_left.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = lower_left_vpos;
             *mesh.vcolour_mut(scene).unwrap() = lower_left_vcolour;
@@ -972,7 +999,7 @@ impl Quad {
             lower_right.mid_coord_pos = lower_right.mid_coord_pos(sphere);
             lower_right.angle_size = lower_right.angle_size(sphere);
 
-            scene.set_object_parent(&lower_right_obj, Some(&sphere_obj));
+            scene.set_object_parent(&lower_right.object, Some(&sphere_obj));
             let mesh = lower_right.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = lower_right_vpos;
             *mesh.vcolour_mut(scene).unwrap() = lower_right_vcolour;
@@ -1298,7 +1325,7 @@ impl Quad {
                 q.borrow_mut().cleanup(scene);
             }
         }
-        let self_obj = self.behaviour().object(scene).unwrap().clone();
+        let self_obj = self.object.clone();
         scene.destroy_object(&self_obj);
     }
 
@@ -1371,49 +1398,6 @@ impl Quad {
     }
 }
 
-impl BehaviourMessages for Quad {
-    fn create(behaviour: Behaviour) -> Quad {
-        Quad {
-            behaviour: behaviour,
-            plane: Plane::XP,
-            pos: QuadPos::None,
-            mrenderer: None,
-            mesh: None,
-            base_coord: (0, 0),
-            cur_subdivision: 0,
-            mid_coord_pos: Vector3::new(0.0, 0.0, 0.0),
-            angle_size: (1.0, 1.0),
-            patch_flags: PATCH_FLAGS_NONE,
-
-            non_normalized: Vec::new(),
-
-            needs_normal_update: false,
-            needs_normal_merge: false,
-
-            self_ptr: None,
-            children: None,
-            north: None,
-            south: None,
-            east: None,
-            west: None,
-        }
-    }
-
-    fn start(&mut self, _scene: &mut Scene) {
-    }
-
-    fn update(&mut self, _scene: &mut Scene) {
-    }
-
-    fn destroy(&mut self, scene: &mut Scene) {
-        self.mesh.take().map(|mesh| scene.destroy_mesh(&*mesh));
-    }
-
-    fn behaviour(&self) -> &Behaviour {
-        &self.behaviour
-    }
-}
-
 struct SubdivideResult {
     q1_vpos: Vec<Vector3<f32>>,
     q1_vcolour: Vec<Vector3<f32>>,
@@ -1472,12 +1456,13 @@ impl QuadSphere {
         let (zp_quad_vpos, zp_quad_vcolour) = self.calc_quad_verts(Plane::ZP, (0, 0), 0);
         let (zn_quad_vpos, zn_quad_vcolour) = self.calc_quad_verts(Plane::ZN, (0, 0), 0);
 
-        let (xp_quad_obj, xp_quad) = self.quad_pool.as_mut().unwrap().get_quad(scene);
-        let (xn_quad_obj, xn_quad) = self.quad_pool.as_mut().unwrap().get_quad(scene);
-        let (yp_quad_obj, yp_quad) = self.quad_pool.as_mut().unwrap().get_quad(scene);
-        let (yn_quad_obj, yn_quad) = self.quad_pool.as_mut().unwrap().get_quad(scene);
-        let (zp_quad_obj, zp_quad) = self.quad_pool.as_mut().unwrap().get_quad(scene);
-        let (zn_quad_obj, zn_quad) = self.quad_pool.as_mut().unwrap().get_quad(scene);
+        let self_object = self.behaviour().object(scene).unwrap().clone();
+        let xp_quad = self.quad_pool.as_mut().unwrap().get_quad(scene);
+        let xn_quad = self.quad_pool.as_mut().unwrap().get_quad(scene);
+        let yp_quad = self.quad_pool.as_mut().unwrap().get_quad(scene);
+        let yn_quad = self.quad_pool.as_mut().unwrap().get_quad(scene);
+        let zp_quad = self.quad_pool.as_mut().unwrap().get_quad(scene);
+        let zn_quad = self.quad_pool.as_mut().unwrap().get_quad(scene);
 
         {
             let self_ptr = Rc::downgrade(&xp_quad);
@@ -1495,6 +1480,8 @@ impl QuadSphere {
             xp_quad.base_coord = (0, 0);
             xp_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             xp_quad.mid_coord_pos = xp_quad.mid_coord_pos(self);
+
+            scene.set_object_parent(&xp_quad.object, Some(&self_object));
             let mesh = xp_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = xp_quad_vpos;
             *mesh.vcolour_mut(scene).unwrap() = xp_quad_vcolour;
@@ -1517,6 +1504,8 @@ impl QuadSphere {
             xn_quad.base_coord = (0, 0);
             xn_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             xn_quad.mid_coord_pos = xn_quad.mid_coord_pos(self);
+
+            scene.set_object_parent(&xn_quad.object, Some(&self_object));
             let mesh = xn_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = xn_quad_vpos;
             *mesh.vcolour_mut(scene).unwrap() = xn_quad_vcolour;
@@ -1539,6 +1528,8 @@ impl QuadSphere {
             yp_quad.base_coord = (0, 0);
             yp_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             yp_quad.mid_coord_pos = yp_quad.mid_coord_pos(self);
+
+            scene.set_object_parent(&yp_quad.object, Some(&self_object));
             let mesh = yp_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = yp_quad_vpos;
             *mesh.vcolour_mut(scene).unwrap() = yp_quad_vcolour;
@@ -1561,6 +1552,8 @@ impl QuadSphere {
             yn_quad.base_coord = (0, 0);
             yn_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             yn_quad.mid_coord_pos = yn_quad.mid_coord_pos(self);
+
+            scene.set_object_parent(&yn_quad.object, Some(&self_object));
             let mesh = yn_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = yn_quad_vpos;
             *mesh.vcolour_mut(scene).unwrap() = yn_quad_vcolour;
@@ -1583,6 +1576,8 @@ impl QuadSphere {
             zp_quad.base_coord = (0, 0);
             zp_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             zp_quad.mid_coord_pos = zp_quad.mid_coord_pos(self);
+
+            scene.set_object_parent(&zp_quad.object, Some(&self_object));
             let mesh = zp_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = zp_quad_vpos;
             *mesh.vcolour_mut(scene).unwrap() = zp_quad_vcolour;
@@ -1605,19 +1600,13 @@ impl QuadSphere {
             zn_quad.base_coord = (0, 0);
             zn_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             zn_quad.mid_coord_pos = zn_quad.mid_coord_pos(self);
+
+            scene.set_object_parent(&zn_quad.object, Some(&self_object));
             let mesh = zn_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = zn_quad_vpos;
             *mesh.vcolour_mut(scene).unwrap() = zn_quad_vcolour;
         }
         self.queue_normal_update(zn_quad.clone());
-
-        let self_object = self.behaviour().object(scene).unwrap().clone();
-        scene.set_object_parent(&xp_quad_obj, Some(&self_object));
-        scene.set_object_parent(&xn_quad_obj, Some(&self_object));
-        scene.set_object_parent(&yp_quad_obj, Some(&self_object));
-        scene.set_object_parent(&yn_quad_obj, Some(&self_object));
-        scene.set_object_parent(&zp_quad_obj, Some(&self_object));
-        scene.set_object_parent(&zn_quad_obj, Some(&self_object));
 
         self.faces = Some([xp_quad, xn_quad, yp_quad, yn_quad, zp_quad, zn_quad]);
     }
@@ -2034,9 +2023,8 @@ impl BehaviourMessages for QuadSphere {
     fn destroy(&mut self, scene: &mut Scene) {
         for i in 0..6 {
             let q = self.faces.as_ref().unwrap()[i].clone();
-            let q_obj = q.borrow().behaviour().object(scene).unwrap().clone();
             q.borrow_mut().cleanup(scene);
-            scene.destroy_object(&q_obj);
+            scene.destroy_object(&q.borrow().object);
         }
         self.quad_pool.as_ref().map(|p| p.cleanup(scene));
     }
@@ -2751,7 +2739,7 @@ impl QuadPool {
 
         let mut pool_vec = Vec::new();
         for _ in 0..initial_size {
-            let (_, q) = pool.create_quad(scene);
+            let q = pool.create_quad(scene);
             pool_vec.push(q);
         }
 
@@ -2760,9 +2748,9 @@ impl QuadPool {
         pool
     }
 
-    fn create_quad(&self, scene: &mut Scene) -> (Rc<Object>, Rc<RefCell<Quad>>) {
+    fn create_quad(&self, scene: &mut Scene) -> Rc<RefCell<Quad>> {
         let q_obj = scene.create_object();
-        let q = scene.add_component::<RefCell<Quad>>(&q_obj).unwrap();
+        let q = Rc::new(RefCell::new(Quad::new(q_obj.clone())));
 
         {
             let mut q_borrow = q.borrow_mut();
@@ -2781,7 +2769,7 @@ impl QuadPool {
             q_borrow.mesh = Some(mesh);
         }
 
-        (q_obj, q)
+        q
     }
 
     /// Performs a partial default initialization of the given `Quad`
@@ -2806,17 +2794,16 @@ impl QuadPool {
 
     /// Get a quad from the pool, allocating a new one only if there are no more
     /// quads remaining in the pool.
-    fn get_quad(&self, scene: &mut Scene) -> (Rc<Object>, Rc<RefCell<Quad>>) {
+    fn get_quad(&self, scene: &mut Scene) -> Rc<RefCell<Quad>> {
         if let Some(q) = self.pool.borrow_mut().pop() {
             QuadPool::default_init_quad(&mut *q.borrow_mut());
-            let q_obj = q.borrow().behaviour().object(scene).unwrap().clone();
             self.in_use.set(self.in_use.get() + 1);
-            (q_obj, q)
+            q
         } else {
-            let (q_obj, q) = self.create_quad(scene);
+            let q = self.create_quad(scene);
             QuadPool::default_init_quad(&mut *q.borrow_mut());
             self.in_use.set(self.in_use.get() + 1);
-            (q_obj, q)
+            q
         }
     }
 
@@ -2843,8 +2830,7 @@ impl QuadPool {
         scene.destroy_material(&*self.quad_material);
         scene.destroy_shader(&*self.shader);
         for q in &*self.pool.borrow() {
-            let q_obj = q.borrow().behaviour().object(scene).unwrap().clone();
-            scene.destroy_object(&q_obj);
+            scene.destroy_object(&q.borrow().object);
         }
         self.pool.borrow_mut().clear();
     }
