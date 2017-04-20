@@ -27,22 +27,41 @@ fn gen_indices_range(indices: &mut Vec<u16>, x1: u16, y1: u16, x2: u16, y2: u16,
     let vert_off = |x, y| vert_off(x, y, adj_size);
     for x in x1..x2 {
         for y in y1..y2 {
-            // *--------*
-            // | 2    - |
-            // |    -   |
-            // |  -     |
-            // |-    1  |
-            // *--------*
-            let t1a = vert_off(x, y);
-            let t1b = vert_off(x + 1, y);
-            let t1c = vert_off(x, y + 1);
+            if ((x + y) % 2) == 1 {
+                // *--------*
+                // |-     2 |
+                // |  -     |
+                // |    -   |
+                // | 1    - |
+                // *--------*
+                let t1a = vert_off(x, y);
+                let t1b = vert_off(x + 1, y);
+                let t1c = vert_off(x, y + 1);
 
-            let t2a = vert_off(x + 1, y);
-            let t2b = vert_off(x + 1, y + 1);
-            let t2c = vert_off(x, y + 1);
+                let t2a = vert_off(x + 1, y);
+                let t2b = vert_off(x + 1, y + 1);
+                let t2c = vert_off(x, y + 1);
 
-            push_tri(indices, t1a, t1b, t1c);
-            push_tri(indices, t2a, t2b, t2c);
+                push_tri(indices, t1a, t1b, t1c);
+                push_tri(indices, t2a, t2b, t2c);
+            } else {
+                // *--------*
+                // | 2    - |
+                // |    -   |
+                // |  -     |
+                // |-    1  |
+                // *--------*
+                let t1a = vert_off(x, y);
+                let t1b = vert_off(x + 1, y);
+                let t1c = vert_off(x + 1, y + 1);
+
+                let t2a = vert_off(x + 1, y + 1);
+                let t2b = vert_off(x, y + 1);
+                let t2c = vert_off(x, y);
+
+                push_tri(indices, t1a, t1b, t1c);
+                push_tri(indices, t2a, t2b, t2c);
+            }
         }
     }
 }
@@ -54,7 +73,6 @@ pub fn gen_indices(size: u16, sides: PatchFlags) -> Vec<u16> {
     let vert_off = |x, y| vert_off(x, y, adj_size);
     let mut indices = Vec::new();
     gen_indices_range(&mut indices, 1, 1, size - 1, size - 1, size);
-
     if sides.contains(PATCH_FLAGS_WEST) {
         for y in 1..adj_size-1 {
             if (y % 2) == 1 {
@@ -99,63 +117,52 @@ pub fn gen_indices(size: u16, sides: PatchFlags) -> Vec<u16> {
             }
         }
     } else {
-        if sides.contains(PATCH_FLAGS_SOUTH) {
-            let ta = vert_off(1, 1);
-            let tb = vert_off(0, 1);
-            let tc = vert_off(0, 0);
+        for y in 1..adj_size-1 {
+            if (y % 2) == 1 {
+                // *
+                // |-
+                // |  -
+                // | 2  -
+                // |      -
+                // *--------*
+                // |      -
+                // | 1  -
+                // |  -
+                // |-
+                // *
+                let t1a = vert_off(1, y);
+                let t1b = vert_off(0, y);
+                let t1c = vert_off(0, y - 1);
 
-            push_tri(&mut indices, ta, tb, tc);
-        } else {
-            gen_indices_range(&mut indices, 0, 0, 1, 1, size);
-        }
-        gen_indices_range(&mut indices, 0, 1, 1, size - 1, size);
-        if sides.contains(PATCH_FLAGS_NORTH) {
-            let ta = vert_off(0, size);
-            let tb = vert_off(0, size - 1);
-            let tc = vert_off(1, size - 1);
+                let t2a = vert_off(0, y + 1);
+                let t2b = vert_off(0, y);
+                let t2c = vert_off(1, y);
 
-            push_tri(&mut indices, ta, tb, tc);
-        } else {
-            gen_indices_range(&mut indices, 0, size - 1, 1, size, size);
-        }
-    }
-
-    if sides.contains(PATCH_FLAGS_NORTH) {
-        for x in 1..adj_size-1 {
-            if (x % 2) == 1 {
-                let ta = vert_off(x - 1, size);
-                let tb = vert_off(x, size - 1);
-                let tc = vert_off(x + 1, size);
-
-                push_tri(&mut indices, ta, tb, tc);
+                push_tri(&mut indices, t1a, t1b, t1c);
+                push_tri(&mut indices, t2a, t2b, t2c);
             } else {
-                let t1a = vert_off(x - 1, size - 1);
-                let t1b = vert_off(x, size - 1);
-                let t1c = vert_off(x, size);
+                //          *
+                //         -|
+                //       -  |
+                //     -  2 |
+                //   -      |
+                // *--------*
+                //   -      |
+                //     -  1 |
+                //       -  |
+                //         -|
+                //          *
+                let t1a = vert_off(1, y - 1);
+                let t1b = vert_off(1, y);
+                let t1c = vert_off(0, y);
 
-                let t2a = vert_off(x, size);
-                let t2b = vert_off(x, size - 1);
-                let t2c = vert_off(x + 1, size - 1);
+                let t2a = vert_off(0, y);
+                let t2b = vert_off(1, y);
+                let t2c = vert_off(1, y + 1);
 
                 push_tri(&mut indices, t1a, t1b, t1c);
                 push_tri(&mut indices, t2a, t2b, t2c);
             }
-        }
-    } else {
-        if sides.contains(PATCH_FLAGS_WEST) {
-            let ta = vert_off(1, size - 1);
-            let tb = vert_off(1, size);
-            let tc = vert_off(0, size);
-
-            push_tri(&mut indices, ta, tb, tc);
-        }
-        gen_indices_range(&mut indices, 1, size - 1, size - 1, size, size);
-        if sides.contains(PATCH_FLAGS_EAST) {
-            let ta = vert_off(size, size);
-            let tb = vert_off(size - 1, size);
-            let tc = vert_off(size - 1, size - 1);
-
-            push_tri(&mut indices, ta, tb, tc);
         }
     }
 
@@ -194,20 +201,42 @@ pub fn gen_indices(size: u16, sides: PatchFlags) -> Vec<u16> {
             }
         }
     } else {
-        if sides.contains(PATCH_FLAGS_WEST) {
-            let ta = vert_off(0, 0);
-            let tb = vert_off(1, 0);
-            let tc = vert_off(1, 1);
+        for x in 1..adj_size-1 {
+            if (x % 2) == 1 {
+                //          *
+                //        - | -
+                //      -   |   -
+                //    -  1  |  2  -
+                //  -       |       -
+                // *--------*--------*
+                let t1a = vert_off(x - 1, 0);
+                let t1b = vert_off(x, 0);
+                let t1c = vert_off(x, 1);
 
-            push_tri(&mut indices, ta, tb, tc);
-        }
-        gen_indices_range(&mut indices, 1, 0, size - 1, 1, size);
-        if sides.contains(PATCH_FLAGS_EAST) {
-            let ta = vert_off(size - 1, 1);
-            let tb = vert_off(size - 1, 0);
-            let tc = vert_off(size, 0);
+                let t2a = vert_off(x, 1);
+                let t2b = vert_off(x, 0);
+                let t2c = vert_off(x + 1, 0);
 
-            push_tri(&mut indices, ta, tb, tc);
+                push_tri(&mut indices, t1a, t1b, t1c);
+                push_tri(&mut indices, t2a, t2b, t2c);
+            } else {
+                // *--------*--------*
+                //  -       |       -
+                //    - 1   |  2  -
+                //      -   |   -
+                //        - | -
+                //          *
+                let t1a = vert_off(x, 0);
+                let t1b = vert_off(x, 1);
+                let t1c = vert_off(x - 1, 1);
+
+                let t2a = vert_off(x + 1, 1);
+                let t2b = vert_off(x, 1);
+                let t2c = vert_off(x, 0);
+
+                push_tri(&mut indices, t1a, t1b, t1c);
+                push_tri(&mut indices, t2a, t2b, t2c);
+            }
         }
     }
 
@@ -242,9 +271,9 @@ pub fn gen_indices(size: u16, sides: PatchFlags) -> Vec<u16> {
                 // |  -
                 // |-
                 // *
-                let t1a = vert_off(adj_size - 2, y);
-                let t1b = vert_off(adj_size - 2, y - 1);
-                let t1c = vert_off(adj_size - 1, y);
+                let t1a = vert_off(adj_size - 1, y);
+                let t1b = vert_off(adj_size - 2, y);
+                let t1c = vert_off(adj_size - 2, y - 1);
 
                 let t2a = vert_off(adj_size - 2, y + 1);
                 let t2b = vert_off(adj_size - 2, y);
@@ -255,25 +284,131 @@ pub fn gen_indices(size: u16, sides: PatchFlags) -> Vec<u16> {
             }
         }
     } else {
-        if sides.contains(PATCH_FLAGS_SOUTH) {
-            let ta = vert_off(size, 0);
-            let tb = vert_off(size, 1);
-            let tc = vert_off(size - 1, 1);
+        for y in 1..adj_size-1 {
+            if (y % 2) == 1 {
+                //          *
+                //         -|
+                //       -  |
+                //     - 2  |
+                //   -      |
+                // *--------*
+                //   -      |
+                //     - 1  |
+                //       -  |
+                //         -|
+                //          *
+                let t1a = vert_off(adj_size - 1, y - 1);
+                let t1b = vert_off(adj_size - 1, y);
+                let t1c = vert_off(adj_size - 2, y);
 
-            push_tri(&mut indices, ta, tb, tc);
-        } else {
-            gen_indices_range(&mut indices, size - 1, 0, size, 1, size);
-        }
-        gen_indices_range(&mut indices, size - 1, 1, size, size - 1, size);
-        if sides.contains(PATCH_FLAGS_NORTH) {
-            let ta = vert_off(size - 1, size - 1);
-            let tb = vert_off(size, size - 1);
-            let tc = vert_off(size, size);
+                let t2a = vert_off(adj_size - 2, y);
+                let t2b = vert_off(adj_size - 1, y);
+                let t2c = vert_off(adj_size - 1, y + 1);
 
-            push_tri(&mut indices, ta, tb, tc);
-        } else {
-            gen_indices_range(&mut indices, size - 1, size - 1, size, size, size);
+                push_tri(&mut indices, t1a, t1b, t1c);
+                push_tri(&mut indices, t2a, t2b, t2c);
+            } else {
+                // *
+                // |-
+                // |  -
+                // |  2 -
+                // |      -
+                // *--------*
+                // |      -
+                // |  1 -
+                // |  -
+                // |-
+                // *
+                let t1a = vert_off(adj_size - 1, y);
+                let t1b = vert_off(adj_size - 2, y);
+                let t1c = vert_off(adj_size - 2, y - 1);
+
+                let t2a = vert_off(adj_size - 2, y + 1);
+                let t2b = vert_off(adj_size - 2, y);
+                let t2c = vert_off(adj_size - 1, y);
+
+                push_tri(&mut indices, t1a, t1b, t1c);
+                push_tri(&mut indices, t2a, t2b, t2c);
+            }
         }
     }
+
+    if sides.contains(PATCH_FLAGS_NORTH) {
+        for x in 1..adj_size-1 {
+            if (x % 2) == 1 {
+                // *-----------------*
+                //  -               -
+                //    -           -
+                //      -       -
+                //        -   -
+                //          *
+
+                let ta = vert_off(x - 1, size);
+                let tb = vert_off(x, size - 1);
+                let tc = vert_off(x + 1, size);
+
+                push_tri(&mut indices, ta, tb, tc);
+            } else {
+                //          *
+                //        - | -
+                //      -   |   -
+                //    - 1   |   2 -
+                //  -       |       -
+                // *--------*--------*
+
+                let t1a = vert_off(x - 1, size - 1);
+                let t1b = vert_off(x, size - 1);
+                let t1c = vert_off(x, size);
+
+                let t2a = vert_off(x, size);
+                let t2b = vert_off(x, size - 1);
+                let t2c = vert_off(x + 1, size - 1);
+
+                push_tri(&mut indices, t1a, t1b, t1c);
+                push_tri(&mut indices, t2a, t2b, t2c);
+            }
+        }
+    } else {
+        for x in 1..adj_size-1 {
+            if (x % 2) == 1 {
+                // *--------*--------*
+                //  -       |       -
+                //    - 1   |   2 -
+                //      -   |   -
+                //        - | -
+                //          *
+
+                let t1a = vert_off(x, size - 1);
+                let t1b = vert_off(x, size);
+                let t1c = vert_off(x - 1, size);
+
+                let t2a = vert_off(x + 1, size);
+                let t2b = vert_off(x, size);
+                let t2c = vert_off(x, size - 1);
+
+                push_tri(&mut indices, t1a, t1b, t1c);
+                push_tri(&mut indices, t2a, t2b, t2c);
+            } else {
+                //          *
+                //        - | -
+                //      -   |   -
+                //    - 1   |   2 -
+                //  -       |       -
+                // *--------*--------*
+
+                let t1a = vert_off(x - 1, size - 1);
+                let t1b = vert_off(x, size - 1);
+                let t1c = vert_off(x, size);
+
+                let t2a = vert_off(x, size);
+                let t2b = vert_off(x, size - 1);
+                let t2c = vert_off(x + 1, size - 1);
+
+                push_tri(&mut indices, t1a, t1b, t1c);
+                push_tri(&mut indices, t2a, t2b, t2c);
+            }
+        }
+    }
+
     indices
 }
