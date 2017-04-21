@@ -1929,6 +1929,7 @@ impl Scene {
                     gl::MAP_WRITE_BIT | gl::MAP_UNSYNCHRONIZED_BIT
                 };
                 let map = gl::MapBufferRange(gl::ARRAY_BUFFER, map_base, map_size, map_flags) as *mut f32;
+                assert_ne!(map, ptr::null_mut());
 
                 for i in 0..vertex_buf_len {
                     let vpos = mesh.vpos_vec.get(i).map(|x| *x).unwrap_or(Vector3::zero());
@@ -1977,6 +1978,7 @@ impl Scene {
                     gl::MAP_WRITE_BIT | gl::MAP_UNSYNCHRONIZED_BIT
                 };
                 let map = gl::MapBufferRange(gl::ELEMENT_ARRAY_BUFFER, map_base, map_size, map_flags) as *mut u16;
+                assert_ne!(map, ptr::null_mut());
 
                 ptr::copy_nonoverlapping(mesh.indices_vec.as_ptr(), map, indices_buf_len);
 
