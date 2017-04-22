@@ -28,9 +28,9 @@ fn post_add<T: Copy + std::ops::Add<Output=T>>(a: &mut T, b: T) -> T {
     c
 }
 
-fn calc_aabb(vertices: &[Vector3<f32>]) -> (Vector3<f32>, Vector3<f32>) {
+fn calc_aabb(vertices: &[Vector3<f32>]) -> ([f32; 2], [f32; 2], [f32; 2]) {
     if vertices.len() == 0 {
-        return (Vector3::zero(), Vector3::zero());
+        return ([0.0, 0.0], [0.0, 0.0], [0.0, 0.0]);
     }
 
     let (mut min_x, mut min_y, mut min_z) = (std::f32::MAX, std::f32::MAX, std::f32::MAX);
@@ -44,43 +44,63 @@ fn calc_aabb(vertices: &[Vector3<f32>]) -> (Vector3<f32>, Vector3<f32>) {
         max_z = f32::max(max_z, v.z);
     }
 
-    (Vector3::new(min_x, min_y, min_z), Vector3::new(max_x, max_y, max_z))
+    ([min_x, max_x], [min_y, max_y], [min_z, max_z])
 
 }
 
-fn aabb_points(min: Vector3<f32>, max: Vector3<f32>) -> [Vector3<f32>; 8] {
-    [Vector3::new(min.x, min.y, min.z),
-     Vector3::new(min.x, min.y, max.z),
-     Vector3::new(min.x, max.y, min.z),
-     Vector3::new(min.x, max.y, max.z),
-     Vector3::new(max.x, min.y, min.z),
-     Vector3::new(max.x, min.y, max.z),
-     Vector3::new(max.x, max.y, min.z),
-     Vector3::new(max.x, max.y, max.z)]
-}
-
-fn points_in_frustum(mvp: Matrix4<f32>, points: &[Vector3<f32>]) -> bool {
-    let xn_plane = mvp.x + mvp.w;
-    let xp_plane = -mvp.x + mvp.w;
-    let yn_plane = mvp.y + mvp.w;
-    let yp_plane = -mvp.y + mvp.w;
-    let zn_plane = mvp.z + mvp.w;
+pub fn intersects_frustum(mvp: Matrix4<f32>, aabb_x: [f32; 2], aabb_y: [f32; 2], aabb_z: [f32; 2]) -> bool {
+    // ZP
     let zp_plane = -mvp.z + mvp.w;
+    let x = aabb_x[(zp_plane.x > 0.0) as usize];
+    let y = aabb_y[(zp_plane.y > 0.0) as usize];
+    let z = aabb_z[(zp_plane.z > 0.0) as usize];
+    if zp_plane.x * x + zp_plane.y * y + zp_plane.z * z + zp_plane.w < 0.0 {
+        return false;
+    }
 
-    let planes = [xn_plane, xp_plane, yn_plane, yp_plane, zn_plane, zp_plane];
+    // XP
+    let xp_plane = -mvp.x + mvp.w;
+    let x = aabb_x[(xp_plane.x > 0.0) as usize];
+    let y = aabb_y[(xp_plane.y > 0.0) as usize];
+    let z = aabb_z[(xp_plane.z > 0.0) as usize];
+    if xp_plane.x * x + xp_plane.y * y + xp_plane.z * z + xp_plane.w < 0.0 {
+        return false;
+    }
 
-    for plane in planes.iter() {
-        let mut out = true;
-        for p in points {
-            if plane.x * p.x + plane.y * p.y + plane.z * p.z + plane.w > 0.0 {
-                out = false;
-                break;
-            }
-        }
+    // XN
+    let xn_plane = mvp.x + mvp.w;
+    let x = aabb_x[(xn_plane.x > 0.0) as usize];
+    let y = aabb_y[(xn_plane.y > 0.0) as usize];
+    let z = aabb_z[(xn_plane.z > 0.0) as usize];
+    if xn_plane.x * x + xn_plane.y * y + xn_plane.z * z + xn_plane.w < 0.0 {
+        return false;
+    }
 
-        if out {
-            return false;
-        }
+    // YP
+    let yp_plane = -mvp.y + mvp.w;
+    let x = aabb_x[(yp_plane.x > 0.0) as usize];
+    let y = aabb_y[(yp_plane.y > 0.0) as usize];
+    let z = aabb_z[(yp_plane.z > 0.0) as usize];
+    if yp_plane.x * x + yp_plane.y * y + yp_plane.z * z + yp_plane.w < 0.0 {
+        return false;
+    }
+
+    // YN
+    let yn_plane = mvp.y + mvp.w;
+    let x = aabb_x[(yn_plane.x > 0.0) as usize];
+    let y = aabb_y[(yn_plane.y > 0.0) as usize];
+    let z = aabb_z[(yn_plane.z > 0.0) as usize];
+    if yn_plane.x * x + yn_plane.y * y + yn_plane.z * z + yn_plane.w < 0.0 {
+        return false;
+    }
+
+    // ZN
+    let zn_plane = mvp.z + mvp.w;
+    let x = aabb_x[(zn_plane.x > 0.0) as usize];
+    let y = aabb_y[(zn_plane.y > 0.0) as usize];
+    let z = aabb_z[(zn_plane.z > 0.0) as usize];
+    if zn_plane.x * x + zn_plane.y * y + zn_plane.z * z + zn_plane.w < 0.0 {
+        return false;
     }
 
     true
@@ -236,8 +256,9 @@ struct MeshData {
     index_buf_alloc: Option<(usize, AllocRange)>,
     index_buf_capacity: usize,
     aabb_dirty: bool,
-    aabb_min: Vector3<f32>,
-    aabb_max: Vector3<f32>,
+    aabb_x: [f32; 2],
+    aabb_y: [f32; 2],
+    aabb_z: [f32; 2],
 }
 
 impl MeshData {
@@ -1043,8 +1064,9 @@ impl Scene {
             index_buf_alloc: None,
             index_buf_capacity: indices_capacity,
             aabb_dirty: false,
-            aabb_min: Vector3::zero(),
-            aabb_max: Vector3::zero(),
+            aabb_x: [0.0, 0.0],
+            aabb_y: [0.0, 0.0],
+            aabb_z: [0.0, 0.0],
         };
         self.mesh_data.push(data);
         rv.idx.set(Some(self.mesh_data.len() - 1));
@@ -1898,10 +1920,11 @@ impl Scene {
                 continue;
             }
 
-            let (min, max) = calc_aabb(&data.vpos_vec);
+            let (x, y, z) = calc_aabb(&data.vpos_vec);
             data.aabb_dirty = false;
-            data.aabb_min = min;
-            data.aabb_max = max;
+            data.aabb_x = x;
+            data.aabb_y = y;
+            data.aabb_z = z;
         }
 
         // Update mesh buffers
@@ -2123,13 +2146,11 @@ impl Scene {
                     continue;
                 }
 
-                let points = aabb_points(mesh.aabb_min, mesh.aabb_max);
-
                 let obj_matrix = Matrix4::from(trans_data.ltw_matrix.get());
                 // Need to transpose since our matrix is actually PVM instead of MVP
                 let mvp = (camera.pv_matrix * obj_matrix).transpose();
 
-                if points_in_frustum(mvp, &points) {
+                if intersects_frustum(mvp, mesh.aabb_x, mesh.aabb_y, mesh.aabb_z) {
                     let info = DrawInfo {
                         shader_idx,
                         material_idx,
