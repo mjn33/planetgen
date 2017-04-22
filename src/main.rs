@@ -539,6 +539,8 @@ struct Quad {
     /// True if this quad needs to have quad normals to be merge with
     /// neighbouring quads.
     needs_normal_merge: bool,
+    /// True if this quad is currently being rendered.
+    render: bool,
 
     /// Pointer to this quad
     self_ptr: Option<Weak<RefCell<Quad>>>,
@@ -567,6 +569,7 @@ impl Quad {
 
             needs_normal_update: false,
             needs_normal_merge: false,
+            render: false,
 
             self_ptr: None,
             children: None,
@@ -920,7 +923,6 @@ impl Quad {
             upper_left.west = direct_west.as_ref().map(Rc::downgrade);
             upper_left.cur_subdivision = self.cur_subdivision + 1;
             upper_left.base_coord = upper_left_base_coord;
-            upper_left.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             upper_left.mid_coord_pos = upper_left.mid_coord_pos(sphere);
             upper_left.angle_size = upper_left.angle_size(sphere);
 
@@ -945,7 +947,6 @@ impl Quad {
             upper_right.west = Some(Rc::downgrade(&upper_left));
             upper_right.cur_subdivision = self.cur_subdivision + 1;
             upper_right.base_coord = upper_right_base_coord;
-            upper_right.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             upper_right.mid_coord_pos = upper_right.mid_coord_pos(sphere);
             upper_right.angle_size = upper_right.angle_size(sphere);
 
@@ -970,7 +971,6 @@ impl Quad {
             lower_left.west = direct_west.as_ref().map(Rc::downgrade);
             lower_left.cur_subdivision = self.cur_subdivision + 1;
             lower_left.base_coord = lower_left_base_coord;
-            lower_left.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             lower_left.mid_coord_pos = lower_left.mid_coord_pos(sphere);
             lower_left.angle_size = lower_left.angle_size(sphere);
 
@@ -995,7 +995,6 @@ impl Quad {
             lower_right.west = Some(Rc::downgrade(&lower_left));
             lower_right.cur_subdivision = self.cur_subdivision + 1;
             lower_right.base_coord = lower_right_base_coord;
-            lower_right.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             lower_right.mid_coord_pos = lower_right.mid_coord_pos(sphere);
             lower_right.angle_size = lower_right.angle_size(sphere);
 
@@ -1143,7 +1142,11 @@ impl Quad {
             }
         }
 
-        self.mrenderer.as_ref().unwrap().set_enabled(scene, false).unwrap();
+        // `self` visibility updated in `check_subdivision`
+        upper_left.borrow_mut().update_visibility(sphere, scene);
+        upper_right.borrow_mut().update_visibility(sphere, scene);
+        lower_left.borrow_mut().update_visibility(sphere, scene);
+        lower_right.borrow_mut().update_visibility(sphere, scene);
 
         self.needs_normal_update = false;
         self.needs_normal_merge = false;
@@ -1153,9 +1156,14 @@ impl Quad {
 
     fn collapse(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
         for q in self.children.as_ref().unwrap() {
-            q.borrow().mrenderer.as_ref().unwrap().set_enabled(scene, false).unwrap();
-            sphere.quad_pool().recycle_quad(q.clone());
+            sphere.quad_pool().recycle_quad(scene, q.clone());
+            let mut q_borrow = q.borrow_mut();
+            q_borrow.needs_normal_update = false;
+            q_borrow.needs_normal_merge = false;
         }
+
+        self.children = None;
+        // `self` visibility updated in `check_subdivision`
 
         let direct_north = self.direct_north().unwrap();
         let direct_south = self.direct_south().unwrap();
@@ -1271,16 +1279,6 @@ impl Quad {
         self.needs_normal_update = true;
         self.needs_normal_merge = true;
         sphere.queue_normal_update(self.self_ptr.as_ref().unwrap().upgrade().unwrap());
-
-        for c in self.children.as_ref().unwrap() {
-            let mut c_borrow = c.borrow_mut();
-            c_borrow.needs_normal_update = false;
-            c_borrow.needs_normal_merge = false;
-        }
-
-        self.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
-
-        self.children = None;
     }
 
     fn in_horizon_cull_range(&self, sphere: &QuadSphere) -> bool {
@@ -1294,11 +1292,12 @@ impl Quad {
         cur_range <= range
     }
 
-    fn update_visibility(&self, sphere: &QuadSphere, scene: &mut Scene) {
+    fn update_visibility(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
         let enabled = !self.is_subdivided() && !self.in_horizon_cull_range(sphere);
-        // TODO: investigate: this line showed up in profiling for some reason,
-        // maybe use dirty-state tracking for this?
-        self.mrenderer.as_ref().unwrap().set_enabled(scene, enabled).unwrap();
+        if enabled != self.render {
+            self.mrenderer.as_ref().unwrap().set_enabled(scene, enabled).unwrap();
+            self.render = enabled;
+        }
     }
 
     fn check_subdivision(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
@@ -1447,7 +1446,7 @@ impl QuadSphere {
 
         self.calc_ranges();
 
-        self.quad_pool = Some(QuadPool::new(scene, quad_mesh_size, 1000));
+        self.quad_pool = Some(QuadPool::new(scene, quad_mesh_size, 10000));
 
         let (xp_quad_vpos, xp_quad_vcolour) = self.calc_quad_verts(Plane::XP, (0, 0), 0);
         let (xn_quad_vpos, xn_quad_vcolour) = self.calc_quad_verts(Plane::XN, (0, 0), 0);
@@ -1478,7 +1477,6 @@ impl QuadSphere {
             xp_quad.west = Some(Rc::downgrade(&zp_quad));
             xp_quad.cur_subdivision = 0;
             xp_quad.base_coord = (0, 0);
-            xp_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             xp_quad.mid_coord_pos = xp_quad.mid_coord_pos(self);
 
             scene.set_object_parent(&xp_quad.object, Some(&self_object));
@@ -1502,7 +1500,6 @@ impl QuadSphere {
             xn_quad.west = Some(Rc::downgrade(&zn_quad));
             xn_quad.cur_subdivision = 0;
             xn_quad.base_coord = (0, 0);
-            xn_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             xn_quad.mid_coord_pos = xn_quad.mid_coord_pos(self);
 
             scene.set_object_parent(&xn_quad.object, Some(&self_object));
@@ -1526,7 +1523,6 @@ impl QuadSphere {
             yp_quad.west = Some(Rc::downgrade(&xn_quad));
             yp_quad.cur_subdivision = 0;
             yp_quad.base_coord = (0, 0);
-            yp_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             yp_quad.mid_coord_pos = yp_quad.mid_coord_pos(self);
 
             scene.set_object_parent(&yp_quad.object, Some(&self_object));
@@ -1550,7 +1546,6 @@ impl QuadSphere {
             yn_quad.west = Some(Rc::downgrade(&xn_quad));
             yn_quad.cur_subdivision = 0;
             yn_quad.base_coord = (0, 0);
-            yn_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             yn_quad.mid_coord_pos = yn_quad.mid_coord_pos(self);
 
             scene.set_object_parent(&yn_quad.object, Some(&self_object));
@@ -1574,7 +1569,6 @@ impl QuadSphere {
             zp_quad.west = Some(Rc::downgrade(&xn_quad));
             zp_quad.cur_subdivision = 0;
             zp_quad.base_coord = (0, 0);
-            zp_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             zp_quad.mid_coord_pos = zp_quad.mid_coord_pos(self);
 
             scene.set_object_parent(&zp_quad.object, Some(&self_object));
@@ -1598,7 +1592,6 @@ impl QuadSphere {
             zn_quad.west = Some(Rc::downgrade(&xp_quad));
             zn_quad.cur_subdivision = 0;
             zn_quad.base_coord = (0, 0);
-            zn_quad.mrenderer.as_ref().unwrap().set_enabled(scene, true).unwrap();
             zn_quad.mid_coord_pos = zn_quad.mid_coord_pos(self);
 
             scene.set_object_parent(&zn_quad.object, Some(&self_object));
@@ -2783,6 +2776,7 @@ impl QuadPool {
 
         quad.needs_normal_update = false;
         quad.needs_normal_merge = false;
+        quad.render = false;
 
         quad.self_ptr = None;
         quad.children = None;
@@ -2813,7 +2807,9 @@ impl QuadPool {
     }
 
     /// Release ownership of the given quad and add it to the pool.
-    fn recycle_quad(&self, quad: Rc<RefCell<Quad>>) {
+    fn recycle_quad(&self, scene: &mut Scene, quad: Rc<RefCell<Quad>>) {
+        quad.borrow().mrenderer.as_ref().unwrap().set_enabled(scene, false).unwrap();
+        quad.borrow_mut().render = false;
         self.pool.borrow_mut().push(quad);
         self.in_use.set(self.in_use.get() - 1);
     }
