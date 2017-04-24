@@ -379,40 +379,40 @@ impl Shader {
 }
 
 pub enum UniformValue {
-    Int(i32),
-    UnsignedInt(u32),
-    Float(f32),
     Mat2([[f32; 2]; 2]),
     Mat3([[f32; 3]; 3]),
     Mat4([[f32; 4]; 4]),
+    Float(f32),
     Vec2([f32; 2]),
     Vec3([f32; 3]),
     Vec4([f32; 4]),
+    Int(i32),
     IntVec2([i32; 2]),
     IntVec3([i32; 3]),
     IntVec4([i32; 4]),
+    UInt(u32),
     UIntVec2([u32; 2]),
     UIntVec3([u32; 3]),
     UIntVec4([u32; 4]),
-    Bool(bool),
-    BoolVec2([bool; 2]),
-    BoolVec3([bool; 3]),
-    BoolVec4([bool; 4]),
-    Double(f64),
-    DoubleVec2([f64; 2]),
-    DoubleVec3([f64; 3]),
-    DoubleVec4([f64; 4]),
-    DoubleMat2([[f64; 2]; 2]),
-    DoubleMat3([[f64; 3]; 3]),
-    DoubleMat4([[f64; 4]; 4]),
-    Int64(i64),
-    Int64Vec2([i64; 2]),
-    Int64Vec3([i64; 3]),
-    Int64Vec4([i64; 4]),
-    UInt64(u64),
-    UInt64Vec2([u64; 2]),
-    UInt64Vec3([u64; 3]),
-    UInt64Vec4([u64; 4])
+    //Bool(bool),
+    //BoolVec2([bool; 2]),
+    //BoolVec3([bool; 3]),
+    //BoolVec4([bool; 4]),
+    //Double(f64),
+    //DoubleVec2([f64; 2]),
+    //DoubleVec3([f64; 3]),
+    //DoubleVec4([f64; 4]),
+    //DoubleMat2([[f64; 2]; 2]),
+    //DoubleMat3([[f64; 3]; 3]),
+    //DoubleMat4([[f64; 4]; 4]),
+    //Int64(i64),
+    //Int64Vec2([i64; 2]),
+    //Int64Vec3([i64; 3]),
+    //Int64Vec4([i64; 4]),
+    //UInt64(u64),
+    //UInt64Vec2([u64; 2]),
+    //UInt64Vec3([u64; 3]),
+    //UInt64Vec4([u64; 4])
 }
 
 struct MaterialData {
@@ -421,7 +421,8 @@ struct MaterialData {
     /// True when the material has been marked for destruction at the end of the
     /// frame.
     marked: bool,
-    uniforms: HashMap<String, UnsafeCell<Option<UniformValue>>>,
+    uniforms: HashMap<String, usize>,
+    uniform_values: Vec<(GLint, Option<UniformValue>)>,
     shader: Rc<Shader>,
     colour: (f32, f32, f32)
 }
@@ -444,16 +445,13 @@ impl Material {
     }
 
     pub fn set_uniform(&self, scene: &mut Scene, name: &str, v: UniformValue) -> Result<()> {
-        let uniforms = try!(self.idx.get()
+        let material_data = try!(self.idx.get()
             .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe { &mut scene.material_data.get_unchecked_mut(i).uniforms }));
+            .map(|i| &mut scene.material_data[i]));
 
-        match uniforms.get(name) {
-            Some(entry) => {
-                unsafe {
-                    *entry.get() = Some(v);
-                }
-                //entry.set_value(v);
+        match material_data.uniforms.get(name) {
+            Some(&idx) => {
+                material_data.uniform_values[idx].1 = Some(v);
                 Ok(())
             },
             None => Err(Error::BadUniformName)
@@ -1075,25 +1073,32 @@ impl Scene {
 
     pub fn create_material(&mut self, shader: Rc<Shader>) -> Result<Rc<Material>> {
         let rv = Rc::new(Material { idx: Cell::new(None) });
-        let map = {
+        let (map, uniform_values) = {
             let shader_data = try!(shader.idx.get()
                 .ok_or(Error::ObjectDestroyed)
                 .map(|i| unsafe { self.shader_data.get_unchecked(i) }));
 
             let mut map = HashMap::new();
-            //for (name, _) in shader_data.program.uniforms() {
-            //    // Names starting with "_" are reserved for our own use
-            //    if name.starts_with("_") {
-            //        map.insert(name.clone(), UnsafeCell::new(None));
-            //    }
-            //}
-            map
+            let mut uniform_values = Vec::new();
+
+            let mut i = 0;
+            for (name, location) in shader_data.program.uniforms() {
+                // Names starting with "_" are reserved for our own use
+                if !name.starts_with("_") {
+                    map.insert(name, i);
+                    uniform_values.push((location, None));
+                    i += 1;
+                }
+            }
+
+            (map, uniform_values)
         };
 
         let data = MaterialData {
             object: rv.clone(),
             marked: false,
             uniforms: map,
+            uniform_values,
             shader: shader.clone(),
             colour: (1.0, 1.0, 1.0)
         };
@@ -2261,6 +2266,60 @@ impl Scene {
                 gl::Uniform3fv(shader.cam_pos_uniform, 1, cam_pos.as_ptr());
                 gl::UniformMatrix4fv(shader.cam_matrix_uniform, 1, gl::FALSE, pv_matrix.as_ptr() as *const _);
                 gl::Uniform3fv(shader.colour_uniform, 1, colour.as_ptr());
+
+                for &(location, ref value) in &material.uniform_values {
+                    let value = match *value {
+                        Some(ref value) => value,
+                        None => continue,
+                    };
+                    match *value {
+                        UniformValue::Mat2(x) => {
+                            gl::UniformMatrix2fv(location, 1, gl::FALSE, x.as_ptr() as *const _);
+                        }
+                        UniformValue::Mat3(x) => {
+                            gl::UniformMatrix3fv(location, 1, gl::FALSE, x.as_ptr() as *const _);
+                        }
+                        UniformValue::Mat4(x) => {
+                            gl::UniformMatrix4fv(location, 1, gl::FALSE, x.as_ptr() as *const _);
+                        }
+                        UniformValue::Float(x) => {
+                            gl::Uniform1fv(location, 1, &x);
+                        }
+                        UniformValue::Vec2(x) => {
+                            gl::Uniform2fv(location, 1, x.as_ptr());
+                        }
+                        UniformValue::Vec3(x) => {
+                            gl::Uniform3fv(location, 1, x.as_ptr());
+                        }
+                        UniformValue::Vec4(x) => {
+                            gl::Uniform4fv(location, 1, x.as_ptr());
+                        }
+                        UniformValue::Int(x) => {
+                            gl::Uniform1iv(location, 1, &x);
+                        }
+                        UniformValue::IntVec2(x) => {
+                            gl::Uniform2iv(location, 1, x.as_ptr());
+                        }
+                        UniformValue::IntVec3(x) => {
+                            gl::Uniform3iv(location, 1, x.as_ptr());
+                        }
+                        UniformValue::IntVec4(x) => {
+                            gl::Uniform4iv(location, 1, x.as_ptr());
+                        }
+                        UniformValue::UInt(x) => {
+                            gl::Uniform1uiv(location, 1, &x);
+                        }
+                        UniformValue::UIntVec2(x) => {
+                            gl::Uniform2uiv(location, 1, x.as_ptr());
+                        }
+                        UniformValue::UIntVec3(x) => {
+                            gl::Uniform3uiv(location, 1, x.as_ptr());
+                        }
+                        UniformValue::UIntVec4(x) => {
+                            gl::Uniform4uiv(location, 1, x.as_ptr());
+                        }
+                    }
+                }
 
                 // TODO: exploit multi-draw where possible
 

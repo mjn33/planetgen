@@ -107,4 +107,39 @@ impl Program {
             })
         }
     }
+
+    /// Returns a vector of tuples containing the name of the uniform and its
+    /// location.
+    pub fn uniforms(&self) -> Vec<(String, GLint)> {
+        unsafe {
+            let program = self.program;
+            let properties = [gl::BLOCK_INDEX, gl::NAME_LENGTH, gl::LOCATION];
+            let mut num_resources = 0;
+            let mut uniforms = Vec::new();
+            gl::GetProgramInterfaceiv(program, gl::UNIFORM, gl::ACTIVE_RESOURCES, &mut num_resources);
+            for i in 0..num_resources {
+                let mut values = [0, 0, 0];
+                gl::GetProgramResourceiv(program, gl::UNIFORM, i as GLuint, 3, properties.as_ptr(), 3, ptr::null_mut(), values.as_mut_ptr());
+
+                if values[0] != -1 {
+                    continue;
+                }
+
+                let name_len = values[1];
+                let mut name_arr: Vec<u8> = Vec::with_capacity(name_len as usize);
+                name_arr.resize(name_len as usize, 0);
+
+                gl::GetProgramResourceName(
+                    program, gl::UNIFORM, i as GLuint, name_len, ptr::null_mut(),
+                    name_arr.as_mut_ptr() as *mut GLchar);
+                name_arr.pop();
+
+                let name = String::from_utf8(name_arr).expect("Uniform name isn't value UTF-8!");
+
+                uniforms.push((name, values[2]));
+            }
+
+            uniforms
+        }
+    }
 }
