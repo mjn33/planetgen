@@ -18,7 +18,7 @@ use cgmath::{Deg, Euler, InnerSpace, Rotation, Quaternion, Vector3};
 
 use num::{Zero, One};
 
-use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, MeshRenderer, Object, Scene, Shader};
+use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, MeshRenderer, Object, Scene, Shader, UniformValue};
 
 use png::{ColorType, BitDepth};
 
@@ -1427,6 +1427,7 @@ struct QuadSphere {
     quad_pool: Option<QuadPool>,
 
     camera_controller: CameraController,
+    sun_controller: SunController,
 
     heightmap: Heightmap,
 }
@@ -1446,7 +1447,9 @@ impl QuadSphere {
 
         self.calc_ranges();
 
-        self.quad_pool = Some(QuadPool::new(scene, quad_mesh_size, 10000));
+        let quad_pool = QuadPool::new(scene, quad_mesh_size, 10000);
+        self.sun_controller.init(quad_pool.quad_material.clone());
+        self.quad_pool = Some(quad_pool);
 
         let (xp_quad_vpos, xp_quad_vcolour) = self.calc_quad_verts(Plane::XP, (0, 0), 0);
         let (xn_quad_vpos, xn_quad_vcolour) = self.calc_quad_verts(Plane::XN, (0, 0), 0);
@@ -1973,12 +1976,14 @@ impl BehaviourMessages for QuadSphere {
             normal_update_queue: RefCell::new(Vec::new()),
             quad_pool: None,
             camera_controller: CameraController::new(),
+            sun_controller: SunController::new(),
             heightmap: Heightmap::default(),
         }
     }
 
     fn start(&mut self, scene: &mut Scene) {
         self.camera_controller.start(scene);
+        self.sun_controller.start(scene);
     }
 
     fn update(&mut self, scene: &mut Scene) {
@@ -1986,6 +1991,8 @@ impl BehaviourMessages for QuadSphere {
         let cam_pos = self.camera_controller.cam_pos();
         self.centre_pos = cam_pos.normalize().cast();
         self.centre_dist = cam_pos.magnitude() as f64;
+
+        self.sun_controller.update(scene);
 
         self.calc_cull_range();
 
@@ -2143,6 +2150,78 @@ impl CameraController {
 
     fn cam_pos(&self) -> Vector3<f32> {
         self.cam_pos
+    }
+}
+
+struct SunController {
+    prev_time: std::time::Instant,
+    quad_material: Option<Rc<Material>>,
+    /// Speed multiplier for the sun, 1.0 is a 24-hour day.
+    speed: f32,
+    sun_pos: Vector3<f32>,
+    /// Whether the increase speed key was pressed last frame
+    was_inc_key_down: bool,
+    /// Whether the decrease speed key was pressed last frame
+    was_dec_key_down: bool,
+}
+
+impl SunController {
+    fn new() -> SunController {
+        SunController {
+            prev_time: std::time::Instant::now(),
+            quad_material: None,
+            speed: 1.0,
+            sun_pos: Vector3::new(0.0, 1.0, 0.0),
+            was_inc_key_down: false,
+            was_dec_key_down: false,
+        }
+    }
+
+    fn init(&mut self, quad_material: Rc<Material>) {
+        self.quad_material = Some(quad_material);
+    }
+
+    fn start(&mut self, scene: &mut Scene) {
+        self.prev_time = std::time::Instant::now();
+        let light_dir = -self.sun_pos;
+        let quad_material = self.quad_material.as_ref().unwrap();
+        quad_material.set_uniform(scene, "light_dir", UniformValue::Vec3(light_dir.into())).unwrap();
+    }
+
+    fn update(&mut self, scene: &mut Scene) {
+        let dt = self.prev_time.elapsed();
+        let dt = dt.as_secs() as f32 + dt.subsec_nanos() as f32 / 1000000000.0;
+        self.prev_time = std::time::Instant::now();
+
+        let angle = (360.0 / (24.0 * 3600.0)) * dt * self.speed;
+        let rot = Quaternion::from(Euler {
+            x: Deg(angle),
+            y: Deg(0.0),
+            z: Deg(0.0),
+        });
+        self.sun_pos = rot * self.sun_pos;
+        let light_dir = -self.sun_pos;
+        let quad_material = self.quad_material.as_ref().unwrap();
+        quad_material.set_uniform(scene, "light_dir", UniformValue::Vec3(light_dir.into())).unwrap();
+
+        let (inc_key_down, dec_key_down) = {
+            let state = scene.keyboard_state();
+            let inc_key_down = state.is_scancode_pressed(Scancode::Period);
+            let dec_key_down = state.is_scancode_pressed(Scancode::Comma);
+
+            (inc_key_down, dec_key_down)
+        };
+
+        if inc_key_down && !self.was_inc_key_down {
+            self.speed *= 2.0;
+            println!("Increasing speed to {}", self.speed);
+        }
+        if dec_key_down && !self.was_dec_key_down {
+            self.speed *= 0.5;
+            println!("Decreasing speed to {}", self.speed);
+        }
+        self.was_inc_key_down = inc_key_down;
+        self.was_dec_key_down = dec_key_down;
     }
 }
 
