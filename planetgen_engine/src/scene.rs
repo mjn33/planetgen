@@ -119,6 +119,8 @@ struct CameraData {
     /// An integer describing the order in which this camera is to be
     /// renderered, higher values mean later.
     order: i32,
+    /// Bitmask containing the layers this camera renders
+    layers: i32,
     /// The vertical FOV for this camera.
     fovy: Deg<f32>,
     /// The aspect ratio for this camera.
@@ -177,12 +179,30 @@ impl Camera {
             })
     }
 
+    pub fn set_layers(&self, scene: &mut Scene, layers: i32) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                let data = &mut scene.camera_data[i];
+                data.layers = layers;
+            })
+    }
+
     pub fn order(&self, scene: &Scene) -> Result<i32> {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(|i| {
                 let data = &scene.camera_data[i];
                 data.order
+            })
+    }
+
+    pub fn layers(&self, scene: &Scene) -> Result<i32> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                let data = &scene.camera_data[i];
+                data.layers
             })
     }
 
@@ -472,6 +492,8 @@ struct MeshRendererData {
     /// of the frame.
     marked: bool,
     enabled: bool,
+    /// Bitmask containing the layers this mesh is rendered on.
+    layers: i32,
     mesh: Option<Rc<Mesh>>,
     material: Option<Rc<Material>>,
 }
@@ -499,6 +521,15 @@ impl MeshRenderer {
             .map(|i| scene.mrenderer_data[i].material = material)
     }
 
+    pub fn set_layers(&self, scene: &mut Scene, layers: i32) -> Result<()> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                let data = &mut scene.mrenderer_data[i];
+                data.layers = layers;
+            })
+    }
+
     pub fn enabled(&self, scene: &mut Scene) -> Result<bool> {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
@@ -515,6 +546,15 @@ impl MeshRenderer {
         self.idx.get()
             .ok_or(Error::ObjectDestroyed)
             .map(move |i| scene.mrenderer_data[i].material.as_ref())
+    }
+
+    pub fn layers(&self, scene: &Scene) -> Result<i32> {
+        self.idx.get()
+            .ok_or(Error::ObjectDestroyed)
+            .map(|i| {
+                let data = &scene.mrenderer_data[i];
+                data.layers
+            })
     }
 
     pub fn is_valid(&self) -> bool {
@@ -1028,6 +1068,8 @@ impl Scene {
             enabled: true,
             marked: false,
             order: 0,
+            // By default, render the first layer only
+            layers: 1,
             fovy: Deg(90.0),
             aspect: 1.0,
             near_clip: 1.0,
@@ -1122,6 +1164,8 @@ impl Scene {
             parent: obj_data.object.clone(),
             marked: false,
             enabled: true,
+            // By default, render on the first layer only
+            layers: 1,
             mesh: None,
             material: None,
         };
@@ -2148,6 +2192,12 @@ impl Scene {
 
             for camera in &mut self.camera_data {
                 if !camera.enabled {
+                    continue;
+                }
+
+                if (camera.layers & data.layers) == 0 {
+                    // This camera doesn't render any of the mesh renderer's
+                    // layers
                     continue;
                 }
 
