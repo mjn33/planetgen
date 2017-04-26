@@ -13,7 +13,7 @@ out vec4 color;
 void main() {
     vec3 ambient_colour = vec3(0.0, 0.0, 0.0);
     vec3 diffuse_colour = colour;
-    vec3 specular_colour = vec3(0.2, 0.2, 0.2);
+    vec3 specular_colour = vec3(0.05, 0.05, 0.05);
     float n_specular = 5.0;
 
     float cos_theta = clamp(dot(world_vnorm, light_dir), 0, 1);

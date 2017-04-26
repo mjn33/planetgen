@@ -2,10 +2,12 @@
 extern crate bitflags;
 extern crate cgmath;
 extern crate sdl2;
+extern crate noise;
 extern crate num;
 extern crate planetgen_engine;
 extern crate png;
 
+mod colour_curve;
 mod gen;
 
 use sdl2::keyboard::Scancode;
@@ -14,7 +16,10 @@ use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::rc::{Rc, Weak};
 
-use cgmath::{Deg, Euler, InnerSpace, Rotation, Quaternion, Vector3};
+use cgmath::{Deg, Euler, InnerSpace, Quaternion, Vector3};
+
+use noise::module::{Module, Perlin, ScaleBias};
+use noise::noisegen::NoiseQuality;
 
 use num::{Zero, One};
 
@@ -22,8 +27,29 @@ use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, Mes
 
 use png::{ColorType, BitDepth};
 
+use colour_curve::ColourCurve;
 use gen::{gen_indices, vert_off, PatchFlags, PATCH_FLAGS_NONE, PATCH_FLAGS_NORTH, PATCH_FLAGS_SOUTH,
           PATCH_FLAGS_EAST, PATCH_FLAGS_WEST};
+
+fn create_generator() -> Box<Module> {
+    const SEED: i32 = 600;
+    const FREQUENCY: f64 = 20.0;
+    const LACUNARITY: f64 = 2.208984375;
+
+    let mut perlin = Perlin::default();
+    perlin.set_seed(SEED);
+    perlin.set_frequency(FREQUENCY);
+    perlin.set_persistence(0.5);
+    perlin.set_lacunarity(LACUNARITY);
+    perlin.set_octave_count(14);
+    perlin.set_quality(NoiseQuality::Standard);
+
+    let mut sb = ScaleBias::new(perlin);
+    sb.set_scale(0.5);
+    sb.set_bias(0.5);
+
+    Box::new(sb)
+}
 
 fn cubic_interp(p0: f64, p1: f64, p2: f64, p3: f64, alpha: f64) -> f64 {
     let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
@@ -1429,7 +1455,9 @@ struct QuadSphere {
     camera_controller: CameraController,
     sun_controller: SunController,
 
+    generator: Box<Module>,
     heightmap: Heightmap,
+    colour_curve: ColourCurve,
 }
 
 impl QuadSphere {
@@ -1450,6 +1478,14 @@ impl QuadSphere {
         let quad_pool = QuadPool::new(scene, quad_mesh_size, 10000);
         self.sun_controller.init(quad_pool.quad_material.clone());
         self.quad_pool = Some(quad_pool);
+
+        self.colour_curve.add_control_point(0.0, (0x42, 0x29, 0x13, 0xff));
+        self.colour_curve.add_control_point(0.5, (0x58, 0x35, 0x17, 0xff));
+        self.colour_curve.add_control_point(0.51, (0x5e, 0x36, 0x15, 0xff));
+        self.colour_curve.add_control_point(0.6, (0x7c, 0x4e, 0x28, 0xff));
+        self.colour_curve.add_control_point(0.8, (0x74, 0x44, 0x1d, 0xff));
+        self.colour_curve.add_control_point(0.81, (0x8b, 0x59, 0x31, 0xff));
+        self.colour_curve.add_control_point(1.0, (0x9a, 0x66, 0x3b, 0xff));
 
         let (xp_quad_vpos, xp_quad_vcolour) = self.calc_quad_verts(Plane::XP, (0, 0), 0);
         let (xn_quad_vpos, xn_quad_vcolour) = self.calc_quad_verts(Plane::XN, (0, 0), 0);
@@ -1860,12 +1896,21 @@ impl QuadSphere {
                 let vert_pos = self.vc_to_pos(vert_coord).normalize();
 
                 let height = self.sample_heightmap_avg(vert_coord) as f64;
+                // Add some noise to make things look a bit more interesting
+                let noise = self.generator.get_value(vert_pos.x as f64, vert_pos.y as f64, vert_pos.z as f64);
+                let height = noise * 0.25 + height * 0.75;
+                let height = f64::min(1.0, f64::max(0.0, height));
+
+                let (r, g, b, _) = self.colour_curve.get_colour(height);
+                let r = (r as f32) / 255.0;
+                let g = (g as f32) / 255.0;
+                let b = (b as f32) / 255.0;
 
                 let height = (self.radius + self.min_height) + height * (self.max_height - self.min_height);
                 let vert_pos = vert_pos * height;
 
                 vpos.push(vert_pos.cast());
-                vcolour.push(Vector3::new(0.8, 0.2, 0.2));
+                vcolour.push(Vector3::new(r, g, b));
             }
         }
 
@@ -1977,7 +2022,9 @@ impl BehaviourMessages for QuadSphere {
             quad_pool: None,
             camera_controller: CameraController::new(),
             sun_controller: SunController::new(),
+            generator: create_generator(),
             heightmap: Heightmap::default(),
+            colour_curve: ColourCurve::new(),
         }
     }
 
