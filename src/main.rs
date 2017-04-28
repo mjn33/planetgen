@@ -16,7 +16,7 @@ use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::rc::{Rc, Weak};
 
-use cgmath::{Deg, Euler, InnerSpace, Quaternion, Vector3};
+use cgmath::{Deg, Euler, InnerSpace, Quaternion, Rotation, Vector3};
 
 use noise::module::{Module, Perlin, ScaleBias};
 use noise::noisegen::NoiseQuality;
@@ -1476,7 +1476,7 @@ impl QuadSphere {
         self.calc_ranges();
 
         let quad_pool = QuadPool::new(scene, quad_mesh_size, 10000);
-        self.sun_controller.init(quad_pool.quad_material.clone());
+        self.sun_controller.init(scene, quad_pool.quad_material.clone());
         self.quad_pool = Some(quad_pool);
 
         self.colour_curve.add_control_point(0.0, (0x42, 0x29, 0x13, 0xff));
@@ -2030,7 +2030,7 @@ impl BehaviourMessages for QuadSphere {
 
     fn start(&mut self, scene: &mut Scene) {
         self.camera_controller.start(scene);
-        self.sun_controller.start(scene);
+        self.sun_controller.start(scene, &self.camera_controller);
     }
 
     fn update(&mut self, scene: &mut Scene) {
@@ -2039,7 +2039,7 @@ impl BehaviourMessages for QuadSphere {
         self.centre_pos = cam_pos.normalize().cast();
         self.centre_dist = cam_pos.magnitude() as f64;
 
-        self.sun_controller.update(scene);
+        self.sun_controller.update(scene, &self.camera_controller);
 
         self.calc_cull_range();
 
@@ -2210,6 +2210,9 @@ struct SunController {
     was_inc_key_down: bool,
     /// Whether the decrease speed key was pressed last frame
     was_dec_key_down: bool,
+    sun_obj: Option<Rc<Object>>,
+    sun_material: Option<Rc<Material>>,
+    sun_cam_obj: Option<Rc<Object>>,
 }
 
 impl SunController {
@@ -2221,21 +2224,89 @@ impl SunController {
             sun_pos: Vector3::new(0.0, 1.0, 0.0),
             was_inc_key_down: false,
             was_dec_key_down: false,
+            sun_obj: None,
+            sun_material: None,
+            sun_cam_obj: None,
         }
     }
 
-    fn init(&mut self, quad_material: Rc<Material>) {
+    fn init(&mut self, scene: &mut Scene, quad_material: Rc<Material>) {
+        use cgmath::Rotation;
         self.quad_material = Some(quad_material);
+        let sun_obj = scene.create_object();
+        let mrenderer = scene.add_component::<MeshRenderer>(&sun_obj).unwrap();
+        let mesh = scene.create_mesh(6, 6);
+        *mesh.vpos_mut(scene).unwrap() = vec![
+            Vector3::new(-1.0, 1.0, 0.0),
+            Vector3::new(-1.0, -1.0, 0.0),
+            Vector3::new(1.0, -1.0, 0.0),
+            Vector3::new(1.0, -1.0, 0.0),
+            Vector3::new(1.0, 1.0, 0.0),
+            Vector3::new(-1.0, 1.0, 0.0),
+        ];
+        *mesh.indices_mut(scene).unwrap() = vec![
+            0, 1, 2, 3, 4, 5
+        ];
+        mrenderer.set_mesh(scene, Some(mesh)).unwrap();
+        // Render separately from the planet
+        mrenderer.set_layers(scene, 2).unwrap();
+
+        let shader = scene.create_shader(
+            include_str!("sun_vs.glsl"),
+            include_str!("sun_fs.glsl"),
+            None);
+        let material = scene.create_material(shader.clone()).unwrap();
+
+        mrenderer.set_material(scene, Some(material.clone())).unwrap();
+
+        let sun_cam_obj = scene.create_object();
+        let sun_cam = scene.add_component::<Camera>(&sun_cam_obj).unwrap();
+        // Render behind the planet
+        sun_cam.set_order(scene, -1).unwrap();
+        sun_cam.set_near_clip(scene, 0.5).unwrap();
+        sun_cam.set_far_clip(scene, 5.0).unwrap();
+        sun_cam.set_layers(scene, 2);
+
+        self.sun_obj = Some(sun_obj);
+        self.sun_material = Some(material);
+        self.sun_cam_obj = Some(sun_cam_obj);
+
+        self.set_sun_size(scene, 3600.0 * 10.0);
     }
 
-    fn start(&mut self, scene: &mut Scene) {
+    fn set_sun_size(&mut self, scene: &mut Scene, arcsecs: f64) {
+        let rad = (arcsecs / 3600.0).to_radians();
+        let radius = f64::tan(0.5 * rad) as f32;
+        self.sun_material.as_ref().unwrap().set_uniform(scene, "sun_radius", UniformValue::Float(radius)).unwrap();
+    }
+
+    fn update_sun(&mut self, scene: &mut Scene, camera_controller: &CameraController) {
+        let up = Vector3::new(0.0, 1.0, 0.0);
+        let cam_pos = camera_controller.cam_pos;
+        let cam_rot = camera_controller.cam_rot;
+        let cam_up = cam_rot * up;
+
+        let sun_cam_obj = self.sun_cam_obj.as_ref().unwrap();
+        sun_cam_obj.set_world_rot(scene, cam_rot).unwrap();
+
+        let rot = Quaternion::look_at(-self.sun_pos, cam_up).invert();
+        let sun_obj = self.sun_obj.as_ref().unwrap();
+        sun_obj.set_world_pos(scene, self.sun_pos.normalize()).unwrap();
+        sun_obj.set_world_rot(scene, rot).unwrap();
+    }
+
+    fn start(&mut self, scene: &mut Scene, camera_controller: &CameraController) {
         self.prev_time = std::time::Instant::now();
         let light_dir = -self.sun_pos;
-        let quad_material = self.quad_material.as_ref().unwrap();
-        quad_material.set_uniform(scene, "light_dir", UniformValue::Vec3(light_dir.into())).unwrap();
+        {
+            let quad_material = self.quad_material.as_ref().unwrap();
+            quad_material.set_uniform(scene, "light_dir", UniformValue::Vec3(light_dir.into())).unwrap();
+        }
+
+        self.update_sun(scene, camera_controller);
     }
 
-    fn update(&mut self, scene: &mut Scene) {
+    fn update(&mut self, scene: &mut Scene, camera_controller: &CameraController) {
         let dt = self.prev_time.elapsed();
         let dt = dt.as_secs() as f32 + dt.subsec_nanos() as f32 / 1000000000.0;
         self.prev_time = std::time::Instant::now();
@@ -2247,9 +2318,12 @@ impl SunController {
             z: Deg(0.0),
         });
         self.sun_pos = rot * self.sun_pos;
-        let light_dir = -self.sun_pos;
-        let quad_material = self.quad_material.as_ref().unwrap();
-        quad_material.set_uniform(scene, "light_dir", UniformValue::Vec3(light_dir.into())).unwrap();
+        {
+            let quad_material = self.quad_material.as_ref().unwrap();
+            quad_material.set_uniform(scene, "light_dir", UniformValue::Vec3(self.sun_pos.into())).unwrap();
+        }
+
+        self.update_sun(scene, camera_controller);
 
         let (inc_key_down, dec_key_down) = {
             let state = scene.keyboard_state();

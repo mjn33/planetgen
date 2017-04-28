@@ -1884,6 +1884,8 @@ impl Scene {
         gl::Enable(gl::DEPTH_TEST);
         gl::DepthFunc(gl::LESS);
         gl::ClearColor(0.8, 0.8, 0.8, 1.0);
+        gl::Enable(gl::BLEND);
+        gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
 
         if let Some(fence) = self.fences[self.cur_fence].take() {
             if !self.buggy_intel {
