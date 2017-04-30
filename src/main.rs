@@ -3237,8 +3237,8 @@ fn main() {
                                             yp_heightmap.0, yn_heightmap.0,
                                             zp_heightmap.0, zn_heightmap.0);
 
-    quad_sphere.borrow_mut().init(&mut scene, 8, 9,
-                                  6_000_000.0, 0.0, 600_000.0);
+    quad_sphere.borrow_mut().init(&mut scene, 8, 12,
+                                  6_000_000.0, 0.0, 160_000.0);
     quad_sphere_obj.set_world_pos(&mut scene, Vector3::new(0.0, 0.0, 0.0)).unwrap();
     //quad_sphere.borrow().object().set_world_rot(&mut scene, Quaternion::from(Euler { x: Deg(45.0), y: Deg(0.0), z: Deg(0.0) })).unwrap();
 
