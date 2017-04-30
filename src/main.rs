@@ -2339,7 +2339,6 @@ impl SunController {
     }
 
     fn init(&mut self, scene: &mut Scene, quad_material: Rc<Material>) {
-        use cgmath::Rotation;
         self.quad_material = Some(quad_material);
         let sun_obj = scene.create_object();
         let mrenderer = scene.add_component::<MeshRenderer>(&sun_obj).unwrap();
@@ -2373,7 +2372,7 @@ impl SunController {
         sun_cam.set_order(scene, -1).unwrap();
         sun_cam.set_near_clip(scene, 0.5).unwrap();
         sun_cam.set_far_clip(scene, 5.0).unwrap();
-        sun_cam.set_layers(scene, 2);
+        sun_cam.set_layers(scene, 2).unwrap();
 
         self.sun_obj = Some(sun_obj);
         self.sun_material = Some(material);
@@ -2390,7 +2389,6 @@ impl SunController {
 
     fn update_sun(&mut self, scene: &mut Scene, camera_controller: &CameraController) {
         let up = Vector3::new(0.0, 1.0, 0.0);
-        let cam_pos = camera_controller.cam_pos;
         let cam_rot = camera_controller.cam_rot;
         let cam_up = cam_rot * up;
 

@@ -1,5 +1,3 @@
-#![feature(rc_raw)]
-
 //! # Core engine
 
 #[cfg(test)]
