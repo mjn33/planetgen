@@ -17,21 +17,3 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
-
-//! # Core engine
-
-#[cfg(test)]
-#[macro_use]
-extern crate approx;
-extern crate cgmath;
-extern crate gl;
-extern crate num;
-extern crate sdl2;
-
-mod alloc;
-pub mod error;
-mod gl_util;
-mod scene;
-mod traits;
-
-pub use self::scene::*;
