@@ -822,8 +822,8 @@ impl Object {
 }
 
 const FRAME_TIME_MAX_SAMPLES: usize = 60;
-const INITIAL_VERTEX_BUF_CAPACITY: usize = 1 * 1024 * 1024;
-const INITIAL_INDEX_BUF_CAPACITY: usize = 1 * 1024 * 1024;
+const INITIAL_VERTEX_BUF_CAPACITY: usize = 4 * 1024 * 1024;
+const INITIAL_INDEX_BUF_CAPACITY: usize = 4 * 1024 * 1024;
 
 pub struct Scene {
     /// The OpenGL used for rendering, None if in headless mode.
