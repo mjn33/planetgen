@@ -75,6 +75,17 @@ fn bicubic_interp(p00: f64, p10: f64, p20: f64, p30: f64,
     cubic_interp(x0, x1, x2, x3, x)
 }
 
+fn load_image(filename: &str) -> Result<(Box<[u8]>, u32, u32), String> {
+    let file = try!(File::open(filename).map_err(|_| "Failed to open file"));
+    let decoder = png::Decoder::new(file);
+    let (info, mut reader) = try!(decoder.read_info().map_err(|e| format!("Failed to create decoder: {}", e)));
+
+    let mut img_data = vec![0; info.buffer_size()];
+    try!(reader.next_frame(&mut img_data).map_err(|e| format!("Failed to read image data: {}", e)));
+
+    Ok((img_data.into_boxed_slice(), info.width, info.height))
+}
+
 fn load_heightmap(filename: &str) -> Result<(Box<[f32]>, u32), String> {
     let file = try!(File::open(filename).map_err(|_| "Failed to open file"));
     let decoder = png::Decoder::new(file);
@@ -1454,6 +1465,8 @@ struct QuadSphere {
 
     camera_controller: CameraController,
     sun_controller: SunController,
+    skybox_obj: Option<Rc<Object>>,
+    skybox_cam_obj: Option<Rc<Object>>,
 
     generator: Box<Module>,
     heightmap: Heightmap,
@@ -1478,6 +1491,97 @@ impl QuadSphere {
         let quad_pool = QuadPool::new(scene, quad_mesh_size, 10000);
         self.sun_controller.init(scene, quad_pool.quad_material.clone());
         self.quad_pool = Some(quad_pool);
+
+        let skybox_obj = scene.create_object();
+        let skybox_renderer = scene.add_component::<MeshRenderer>(&skybox_obj).unwrap();
+        let skybox_mesh = scene.create_mesh(36, 36);
+        *skybox_mesh.vpos_mut(scene).unwrap() = vec![
+            // ZP
+            Vector3::new(1.0, -1.0, 1.0),
+            Vector3::new(-1.0, -1.0, 1.0),
+            Vector3::new(-1.0, 1.0, 1.0),
+            Vector3::new(-1.0, 1.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(1.0, -1.0, 1.0),
+            // XP
+            Vector3::new(1.0, -1.0, -1.0),
+            Vector3::new(1.0, -1.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(1.0, 1.0, -1.0),
+            Vector3::new(1.0, -1.0, -1.0),
+            // ZN
+            Vector3::new(-1.0, -1.0, -1.0),
+            Vector3::new(1.0, -1.0, -1.0),
+            Vector3::new(1.0, 1.0, -1.0),
+            Vector3::new(1.0, 1.0, -1.0),
+            Vector3::new(-1.0, 1.0, -1.0),
+            Vector3::new(-1.0, -1.0, -1.0),
+            // XN
+            Vector3::new(-1.0, -1.0, 1.0),
+            Vector3::new(-1.0, -1.0, -1.0),
+            Vector3::new(-1.0, 1.0, -1.0),
+            Vector3::new(-1.0, 1.0, -1.0),
+            Vector3::new(-1.0, 1.0, 1.0),
+            Vector3::new(-1.0, -1.0, 1.0),
+            // YN
+            Vector3::new(1.0, -1.0, -1.0),
+            Vector3::new(-1.0, -1.0, -1.0),
+            Vector3::new(-1.0, -1.0, 1.0),
+            Vector3::new(-1.0, -1.0, 1.0),
+            Vector3::new(1.0, -1.0, 1.0),
+            Vector3::new(1.0, -1.0, -1.0),
+            // YP
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(-1.0, 1.0, 1.0),
+            Vector3::new(-1.0, 1.0, -1.0),
+            Vector3::new(-1.0, 1.0, -1.0),
+            Vector3::new(1.0, 1.0, -1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+        ];
+        *skybox_mesh.indices_mut(scene).unwrap() = vec![
+            0, 1, 2, 3, 4, 5,
+            6, 7, 8, 9, 10, 11,
+            12, 13, 14, 15, 16, 17,
+            18, 19, 20, 21, 22, 23,
+            24, 25, 26, 27, 28, 29,
+            30, 31, 32, 33, 34, 35,
+        ];
+        let skybox_shader = scene.create_shader(
+            include_str!("skybox_vs.glsl"),
+            include_str!("skybox_fs.glsl"),
+            None);
+        let skybox_material = scene.create_material(skybox_shader.clone()).unwrap();
+        skybox_renderer.set_material(scene, Some(skybox_material.clone())).unwrap();
+        skybox_renderer.set_mesh(scene, Some(skybox_mesh)).unwrap();
+        skybox_renderer.set_layers(scene, 4).unwrap();
+
+        let skybox_cam_obj = scene.create_object();
+        let skybox_cam = scene.add_component::<Camera>(&skybox_cam_obj).unwrap();
+        skybox_cam.set_near_clip(scene, 0.5).unwrap();
+        skybox_cam.set_far_clip(scene, 5.0).unwrap();
+        skybox_cam.set_layers(scene, 4).unwrap();
+        skybox_cam.set_order(scene, -2).unwrap();
+
+        let skybox_xp = load_image("skybox_xp.png").expect("Failed to load XP skybox");
+        let skybox_xn = load_image("skybox_xn.png").expect("Failed to load XN skybox");
+        let skybox_yp = load_image("skybox_yp.png").expect("Failed to load YP skybox");
+        let skybox_yn = load_image("skybox_yn.png").expect("Failed to load YN skybox");
+        let skybox_zp = load_image("skybox_zp.png").expect("Failed to load ZP skybox");
+        let skybox_zn = load_image("skybox_zn.png").expect("Failed to load ZN skybox");
+
+        let cubemap = scene.create_cubemap(skybox_zn.1 as usize, skybox_zn.2 as usize,
+                                           [&skybox_xp.0,
+                                            &skybox_xn.0,
+                                            &skybox_yp.0,
+                                            &skybox_yn.0,
+                                            &skybox_zp.0,
+                                            &skybox_zn.0]);
+
+        skybox_material.set_uniform(scene, "cubemap", UniformValue::Cubemap(cubemap)).unwrap();
+
+        self.skybox_obj = Some(skybox_obj);
+        self.skybox_cam_obj = Some(skybox_cam_obj);
 
         self.colour_curve.add_control_point(0.0, (0x42, 0x29, 0x13, 0xff));
         self.colour_curve.add_control_point(0.5, (0x58, 0x35, 0x17, 0xff));
@@ -2022,6 +2126,8 @@ impl BehaviourMessages for QuadSphere {
             quad_pool: None,
             camera_controller: CameraController::new(),
             sun_controller: SunController::new(),
+            skybox_obj: None,
+            skybox_cam_obj: None,
             generator: create_generator(),
             heightmap: Heightmap::default(),
             colour_curve: ColourCurve::new(),
@@ -2040,6 +2146,8 @@ impl BehaviourMessages for QuadSphere {
         self.centre_dist = cam_pos.magnitude() as f64;
 
         self.sun_controller.update(scene, &self.camera_controller);
+
+        self.skybox_cam_obj.as_ref().unwrap().set_world_rot(scene, self.camera_controller.cam_rot).unwrap();
 
         self.calc_cull_range();
 
