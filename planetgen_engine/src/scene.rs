@@ -366,6 +366,19 @@ impl Mesh {
     }
 }
 
+struct CubemapData {
+    /// Reference to the cubemap object.
+    object: Rc<Cubemap>,
+    /// True when the cubemap has been marked for destruction at the end of the
+    /// frame.
+    marked: bool,
+    texture_id: GLuint,
+}
+
+pub struct Cubemap {
+    idx: Cell<Option<usize>>
+}
+
 struct DrawInfo {
     shader_idx: usize,
     material_idx: usize,
@@ -414,6 +427,7 @@ pub enum UniformValue {
     UIntVec2([u32; 2]),
     UIntVec3([u32; 3]),
     UIntVec4([u32; 4]),
+    Cubemap(Rc<Cubemap>),
     //Bool(bool),
     //BoolVec2([bool; 2]),
     //BoolVec3([bool; 3]),
@@ -821,6 +835,7 @@ pub struct Scene {
     event_pump: Option<EventPump>,
     camera_data: Vec<CameraData>,
     mesh_data: Vec<MeshData>,
+    cubemap_data: Vec<CubemapData>,
     material_data: Vec<MaterialData>,
     mrenderer_data: Vec<MeshRendererData>,
     shader_data: Vec<ShaderData>,
@@ -829,6 +844,7 @@ pub struct Scene {
     transform_data: Vec<TransformData>,
     destroyed_cameras: Vec<usize>,
     destroyed_meshes: Vec<usize>,
+    destroyed_cubemaps: Vec<usize>,
     destroyed_materials: Vec<usize>,
     destroyed_mrenderers: Vec<usize>,
     destroyed_shaders: Vec<usize>,
@@ -969,6 +985,7 @@ impl Scene {
             event_pump: Some(event_pump),
             camera_data: Vec::new(),
             mesh_data: Vec::new(),
+            cubemap_data: Vec::new(),
             material_data: Vec::new(),
             mrenderer_data: Vec::new(),
             shader_data: Vec::new(),
@@ -977,6 +994,7 @@ impl Scene {
             transform_data: Vec::new(),
             destroyed_cameras: Vec::new(),
             destroyed_meshes: Vec::new(),
+            destroyed_cubemaps: Vec::new(),
             destroyed_materials: Vec::new(),
             destroyed_mrenderers: Vec::new(),
             destroyed_shaders: Vec::new(),
@@ -1013,6 +1031,7 @@ impl Scene {
             event_pump: None,
             camera_data: Vec::new(),
             mesh_data: Vec::new(),
+            cubemap_data: Vec::new(),
             material_data: Vec::new(),
             mrenderer_data: Vec::new(),
             shader_data: Vec::new(),
@@ -1021,6 +1040,7 @@ impl Scene {
             transform_data: Vec::new(),
             destroyed_cameras: Vec::new(),
             destroyed_meshes: Vec::new(),
+            destroyed_cubemaps: Vec::new(),
             destroyed_materials: Vec::new(),
             destroyed_mrenderers: Vec::new(),
             destroyed_shaders: Vec::new(),
@@ -1110,6 +1130,42 @@ impl Scene {
         };
         self.mesh_data.push(data);
         rv.idx.set(Some(self.mesh_data.len() - 1));
+        rv
+    }
+
+    pub fn create_cubemap(&mut self, width: usize, height: usize, faces: [&[u8]; 6]) -> Rc<Cubemap> {
+        for f in &faces {
+            let size = width.checked_mul(height).and_then(|x| x.checked_mul(3)).unwrap();
+            assert_eq!(size, f.len());
+            assert!(f.len() <= std::isize::MAX as usize);
+        }
+
+        let mut texture_id = 0;
+        unsafe {
+            gl::GenTextures(1, &mut texture_id);
+            gl::BindTexture(gl::TEXTURE_CUBE_MAP, texture_id);
+
+            for (i, f) in faces.iter().enumerate() {
+                gl::TexImage2D(
+                    gl::TEXTURE_CUBE_MAP_POSITIVE_X + i as u32,
+                    0, gl::RGB as GLint, width as GLsizei, height as GLsizei, 0, gl::RGB, gl::UNSIGNED_BYTE, f.as_ptr() as *const _);
+            }
+
+            gl::TexParameteri(gl::TEXTURE_CUBE_MAP, gl::TEXTURE_MAG_FILTER, gl::LINEAR as GLint);
+            gl::TexParameteri(gl::TEXTURE_CUBE_MAP, gl::TEXTURE_MIN_FILTER, gl::LINEAR as GLint);
+            gl::TexParameteri(gl::TEXTURE_CUBE_MAP, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as GLint);
+            gl::TexParameteri(gl::TEXTURE_CUBE_MAP, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as GLint);
+            gl::TexParameteri(gl::TEXTURE_CUBE_MAP, gl::TEXTURE_WRAP_R, gl::CLAMP_TO_EDGE as GLint);
+        }
+
+        let rv = Rc::new(Cubemap { idx: Cell::new(None) });
+        let data = CubemapData {
+            object: rv.clone(),
+            marked: false,
+            texture_id,
+        };
+        self.cubemap_data.push(data);
+        rv.idx.set(Some(self.cubemap_data.len() - 1));
         rv
     }
 
@@ -1352,6 +1408,24 @@ impl Scene {
         if !mesh_data.marked {
             self.destroyed_meshes.push(mesh_idx);
             mesh_data.marked = true;
+        }
+    }
+
+    pub fn destroy_cubemap(&mut self, cubemap: &Cubemap) {
+        let cubemap_idx = match cubemap.idx.get() {
+            Some(cubemap_idx) => cubemap_idx,
+            None => {
+                println!("[WARNING] destroy_cubemap called on a cubemap without a valid handle!");
+                return
+            }
+        };
+        let cubemap_data = unsafe {
+            self.cubemap_data.get_unchecked_mut(cubemap_idx)
+        };
+
+        if !cubemap_data.marked {
+            self.destroyed_cubemaps.push(cubemap_idx);
+            cubemap_data.marked = true;
         }
     }
 
@@ -1620,10 +1694,20 @@ impl Scene {
                 });
 
             self.cleanup_destroyed_objects();
+            // FIXME: resource leak
             Scene::cleanup_destroyed(
                 &mut self.mesh_data, &mut self.destroyed_meshes,
                 |x| x.marked,
                 |x, idx| x.object.idx.set(idx));
+            Scene::cleanup_destroyed(
+                &mut self.cubemap_data, &mut self.destroyed_cubemaps,
+                |x| x.marked,
+                |x, idx| {
+                    x.object.idx.set(idx);
+                    if idx.is_none() {
+                        gl::DeleteTextures(1, &x.texture_id);
+                    }
+                });
             Scene::cleanup_destroyed(
                 &mut self.material_data, &mut self.destroyed_materials,
                 |x| x.marked,
@@ -2369,6 +2453,14 @@ impl Scene {
                         }
                         UniformValue::UIntVec4(x) => {
                             gl::Uniform4uiv(location, 1, x.as_ptr());
+                        }
+                        UniformValue::Cubemap(ref x) => {
+                            let idx = x.idx.get().unwrap();
+                            let texture_id = self.cubemap_data[idx].texture_id;
+                            // FIXME: massive hack
+                            gl::ActiveTexture(gl::TEXTURE0 + 0);
+                            gl::BindTexture(gl::TEXTURE_CUBE_MAP, texture_id);
+                            gl::Uniform1i(location, 0);
                         }
                     }
                 }
