@@ -35,7 +35,9 @@ pub fn vert_off(x: u16, y: u16, stride: u16) -> u16 {
 
 /// Utility function for pushing a triangle to an indices buffer.
 fn push_tri(indices: &mut Vec<u16>, a: u16, b: u16, c: u16) {
-    indices.push(a); indices.push(b); indices.push(c);
+    indices.push(a);
+    indices.push(b);
+    indices.push(c);
 }
 
 /// Generate indices to fill the specified range on a grid of size `size`.

@@ -18,8 +18,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use gen::{PatchFlags, PATCH_FLAGS_NORTH, PATCH_FLAGS_SOUTH, PATCH_FLAGS_EAST,
-          PATCH_FLAGS_WEST};
+use gen::{PatchFlags, PATCH_FLAGS_NORTH, PATCH_FLAGS_SOUTH, PATCH_FLAGS_EAST, PATCH_FLAGS_WEST};
 use num;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,7 +70,9 @@ pub enum QuadSide {
 /// # Panics
 ///
 /// Panics if the given `src_plane` and `dst_plane` don't neighbour each other.
-pub fn calc_plane_mapping<T: num::Signed>(src_plane: Plane, dst_plane: Plane) -> ((T, T), (T, T), (T, T)) {
+pub fn calc_plane_mapping<T: num::Signed>(src_plane: Plane,
+                                          dst_plane: Plane)
+                                          -> ((T, T), (T, T), (T, T)) {
     use Plane::*;
     let one = || T::one();
     let zero = || T::zero();
@@ -82,22 +83,20 @@ pub fn calc_plane_mapping<T: num::Signed>(src_plane: Plane, dst_plane: Plane) ->
             panic!("`src_plane` and `dst_plane` do not neighbour each other");
         }
         // YP
-        (YP, XP) => ((zero(), one()),  (zero(), -one()), (one(),  zero())),
-        (YP, XN) => ((one(),  zero()), (zero(), one()),  (-one(), zero())),
-        (YP, ZN) => ((one(),  one()),  (-one(), zero()), (zero(), -one())),
-        (XP, YP) => ((one(),  zero()), (zero(), one()),  (-one(), zero())),
-        (XN, YP) => ((zero(), one()),  (zero(), -one()), (one(),  zero())),
-        (ZN, YP) => ((one(),  one()),  (-one(), zero()), (zero(), -one())),
+        (YP, XP) => ((zero(), one()), (zero(), -one()), (one(), zero())),
+        (YP, XN) => ((one(), zero()), (zero(), one()), (-one(), zero())),
+        (YP, ZN) => ((one(), one()), (-one(), zero()), (zero(), -one())),
+        (XP, YP) => ((one(), zero()), (zero(), one()), (-one(), zero())),
+        (XN, YP) => ((zero(), one()), (zero(), -one()), (one(), zero())),
+        (ZN, YP) => ((one(), one()), (-one(), zero()), (zero(), -one())),
         // YN
-        (YN, XP) => ((one(),  zero()), (zero(), one()),  (-one(), zero())),
-        (YN, XN) => ((zero(), one()),  (zero(), -one()), (one(),  zero())),
-        (YN, ZN) => ((one(),  one()),  (-one(), zero()), (zero(), -one())),
-        (XP, YN) => ((zero(), one()),  (zero(), -one()), (one(),  zero())),
-        (XN, YN) => ((one(),  zero()), (zero(), one()),  (-one(), zero())),
-        (ZN, YN) => ((one(),  one()),  (-one(), zero()), (zero(), -one())),
-        _ => {
-            ((zero(), zero()), (one(), zero()), (zero(), one()))
-        }
+        (YN, XP) => ((one(), zero()), (zero(), one()), (-one(), zero())),
+        (YN, XN) => ((zero(), one()), (zero(), -one()), (one(), zero())),
+        (YN, ZN) => ((one(), one()), (-one(), zero()), (zero(), -one())),
+        (XP, YN) => ((zero(), one()), (zero(), -one()), (one(), zero())),
+        (XN, YN) => ((one(), zero()), (zero(), one()), (-one(), zero())),
+        (ZN, YN) => ((one(), one()), (-one(), zero()), (zero(), -one())),
+        _ => ((zero(), zero()), (one(), zero()), (zero(), one())),
     }
 }
 
@@ -176,7 +175,12 @@ pub fn map_quad_side(side: QuadSide, src_plane: Plane, dst_plane: Plane) -> Quad
 /// # Returns
 ///
 /// A tuple containing the mapped vector first and the mapped position second.
-pub fn map_vec_pos<T: num::Signed + Copy>(vec: (T, T), pos: (T, T), max_coord: T, src_plane: Plane, dst_plane: Plane) -> ((T, T), (T, T)) {
+pub fn map_vec_pos<T: num::Signed + Copy>(vec: (T, T),
+                                          pos: (T, T),
+                                          max_coord: T,
+                                          src_plane: Plane,
+                                          dst_plane: Plane)
+                                          -> ((T, T), (T, T)) {
     let (origin, dir_x, dir_y) = calc_plane_mapping::<T>(src_plane, dst_plane);
     let mapped_vec = (vec.0 * dir_x.0 + vec.1 * dir_y.0, vec.0 * dir_x.1 + vec.1 * dir_y.1);
     let origin = (origin.0 * max_coord, origin.1 * max_coord);
@@ -204,7 +208,7 @@ impl QuadPos {
             QuadPos::NorthEast => (QuadSide::North, QuadSide::East),
             QuadPos::SouthWest => (QuadSide::South, QuadSide::West),
             QuadPos::SouthEast => (QuadSide::South, QuadSide::East),
-            QuadPos::None => panic!("Cannot call `split` on QuadPos::None.")
+            QuadPos::None => panic!("Cannot call `split` on QuadPos::None."),
         }
     }
 
@@ -215,7 +219,7 @@ impl QuadPos {
             QuadPos::NorthEast => QuadPos::SouthWest,
             QuadPos::SouthWest => QuadPos::NorthEast,
             QuadPos::SouthEast => QuadPos::NorthWest,
-            QuadPos::None => panic!("Cannot call `opposite` on QuadPos::None.")
+            QuadPos::None => panic!("Cannot call `opposite` on QuadPos::None."),
         }
     }
 }

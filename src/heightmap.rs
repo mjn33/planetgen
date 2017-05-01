@@ -38,16 +38,22 @@ pub struct Heightmap {
 fn load_heightmap(filename: &str) -> Result<(Box<[f32]>, u32), String> {
     let file = try!(File::open(filename).map_err(|_| "Failed to open file"));
     let decoder = png::Decoder::new(file);
-    let (info, mut reader) = try!(decoder.read_info().map_err(|e| format!("Failed to create decoder: {}", e)));
+    let (info, mut reader) = try!(decoder
+                                      .read_info()
+                                      .map_err(|e| format!("Failed to create decoder: {}", e)));
 
     if info.width != info.height {
-        return Err(format!("Heightmap width and height not equal. W = {}, H = {}", info.width, info.height));
+        return Err(format!("Heightmap width and height not equal. W = {}, H = {}",
+                           info.width,
+                           info.height));
     }
 
     let mut img_data = vec![0; info.buffer_size()];
     let mut heightmap = vec![0.0; (info.width * info.height) as usize];
 
-    try!(reader.next_frame(&mut img_data).map_err(|e| format!("Failed to read image data: {}", e)));
+    try!(reader
+             .next_frame(&mut img_data)
+             .map_err(|e| format!("Failed to read image data: {}", e)));
 
     match (info.color_type, info.bit_depth) {
         (ColorType::Grayscale, BitDepth::Eight) => {
@@ -102,31 +108,26 @@ impl Heightmap {
         let yn_filename = [prefix, "yn.png"].concat();
         let zp_filename = [prefix, "zp.png"].concat();
         let zn_filename = [prefix, "zn.png"].concat();
-        let xp_heightmap = load_heightmap(&xp_filename)
-            .expect("Failed to load XP heightmap");
-        let xn_heightmap = load_heightmap(&xn_filename)
-            .expect("Failed to load XN heightmap");
-        let yp_heightmap = load_heightmap(&yp_filename)
-            .expect("Failed to load YP heightmap");
-        let yn_heightmap = load_heightmap(&yn_filename)
-            .expect("Failed to load YN heightmap");
-        let zp_heightmap = load_heightmap(&zp_filename)
-            .expect("Failed to load ZP heightmap");
-        let zn_heightmap = load_heightmap(&zn_filename)
-            .expect("Failed to load ZN heightmap");
+        let xp_heightmap = load_heightmap(&xp_filename).expect("Failed to load XP heightmap");
+        let xn_heightmap = load_heightmap(&xn_filename).expect("Failed to load XN heightmap");
+        let yp_heightmap = load_heightmap(&yp_filename).expect("Failed to load YP heightmap");
+        let yn_heightmap = load_heightmap(&yn_filename).expect("Failed to load YN heightmap");
+        let zp_heightmap = load_heightmap(&zp_filename).expect("Failed to load ZP heightmap");
+        let zn_heightmap = load_heightmap(&zn_filename).expect("Failed to load ZN heightmap");
 
-        if xp_heightmap.1 != xn_heightmap.1 ||
-            xn_heightmap.1 != yp_heightmap.1 ||
-            yp_heightmap.1 != yn_heightmap.1 ||
-            yn_heightmap.1 != zp_heightmap.1 ||
-            zp_heightmap.1 != zn_heightmap.1 {
-                panic!("Not all heightmap faces have the same resolution")
+        if xp_heightmap.1 != xn_heightmap.1 || xn_heightmap.1 != yp_heightmap.1 ||
+           yp_heightmap.1 != yn_heightmap.1 || yn_heightmap.1 != zp_heightmap.1 ||
+           zp_heightmap.1 != zn_heightmap.1 {
+            panic!("Not all heightmap faces have the same resolution")
         }
 
         let resolution = xp_heightmap.1 as i32;
-        Heightmap::new(&xp_heightmap.0, &xn_heightmap.0,
-                       &yp_heightmap.0, &yn_heightmap.0,
-                       &zp_heightmap.0, &zn_heightmap.0,
+        Heightmap::new(&xp_heightmap.0,
+                       &xn_heightmap.0,
+                       &yp_heightmap.0,
+                       &yn_heightmap.0,
+                       &zp_heightmap.0,
+                       &zn_heightmap.0,
                        resolution)
     }
 
@@ -134,39 +135,61 @@ impl Heightmap {
     /// This type creates a border around each face's heightmap based from
     /// height data taken from adjacent faces, for use with bicubic
     /// interpolation.
-    pub fn new(xp_heightmap: &[f32], xn_heightmap: &[f32],
-           yp_heightmap: &[f32], yn_heightmap: &[f32],
-           zp_heightmap: &[f32], zn_heightmap: &[f32],
-           resolution: i32) -> Heightmap {
+    pub fn new(xp_heightmap: &[f32],
+               xn_heightmap: &[f32],
+               yp_heightmap: &[f32],
+               yn_heightmap: &[f32],
+               zp_heightmap: &[f32],
+               zn_heightmap: &[f32],
+               resolution: i32)
+               -> Heightmap {
         let xp_bordered = Self::create_bordered_heightmap(Plane::XP,
-                                                          xp_heightmap, xn_heightmap,
-                                                          yp_heightmap, yn_heightmap,
-                                                          zp_heightmap, zn_heightmap,
+                                                          xp_heightmap,
+                                                          xn_heightmap,
+                                                          yp_heightmap,
+                                                          yn_heightmap,
+                                                          zp_heightmap,
+                                                          zn_heightmap,
                                                           resolution);
         let xn_bordered = Self::create_bordered_heightmap(Plane::XN,
-                                                          xp_heightmap, xn_heightmap,
-                                                          yp_heightmap, yn_heightmap,
-                                                          zp_heightmap, zn_heightmap,
+                                                          xp_heightmap,
+                                                          xn_heightmap,
+                                                          yp_heightmap,
+                                                          yn_heightmap,
+                                                          zp_heightmap,
+                                                          zn_heightmap,
                                                           resolution);
         let yp_bordered = Self::create_bordered_heightmap(Plane::YP,
-                                                          xp_heightmap, xn_heightmap,
-                                                          yp_heightmap, yn_heightmap,
-                                                          zp_heightmap, zn_heightmap,
+                                                          xp_heightmap,
+                                                          xn_heightmap,
+                                                          yp_heightmap,
+                                                          yn_heightmap,
+                                                          zp_heightmap,
+                                                          zn_heightmap,
                                                           resolution);
         let yn_bordered = Self::create_bordered_heightmap(Plane::YN,
-                                                          xp_heightmap, xn_heightmap,
-                                                          yp_heightmap, yn_heightmap,
-                                                          zp_heightmap, zn_heightmap,
+                                                          xp_heightmap,
+                                                          xn_heightmap,
+                                                          yp_heightmap,
+                                                          yn_heightmap,
+                                                          zp_heightmap,
+                                                          zn_heightmap,
                                                           resolution);
         let zp_bordered = Self::create_bordered_heightmap(Plane::ZP,
-                                                          xp_heightmap, xn_heightmap,
-                                                          yp_heightmap, yn_heightmap,
-                                                          zp_heightmap, zn_heightmap,
+                                                          xp_heightmap,
+                                                          xn_heightmap,
+                                                          yp_heightmap,
+                                                          yn_heightmap,
+                                                          zp_heightmap,
+                                                          zn_heightmap,
                                                           resolution);
         let zn_bordered = Self::create_bordered_heightmap(Plane::ZN,
-                                                          xp_heightmap, xn_heightmap,
-                                                          yp_heightmap, yn_heightmap,
-                                                          zp_heightmap, zn_heightmap,
+                                                          xp_heightmap,
+                                                          xn_heightmap,
+                                                          yp_heightmap,
+                                                          yn_heightmap,
+                                                          zp_heightmap,
+                                                          zn_heightmap,
                                                           resolution);
 
         Heightmap {
@@ -182,11 +205,14 @@ impl Heightmap {
     }
 
     fn create_bordered_heightmap(plane: Plane,
-                                 xp_heightmap: &[f32], xn_heightmap: &[f32],
-                                 yp_heightmap: &[f32], yn_heightmap: &[f32],
-                                 zp_heightmap: &[f32], zn_heightmap: &[f32],
-                                 resolution: i32) -> Box<[f32]> {
-
+                                 xp_heightmap: &[f32],
+                                 xn_heightmap: &[f32],
+                                 yp_heightmap: &[f32],
+                                 yn_heightmap: &[f32],
+                                 zp_heightmap: &[f32],
+                                 zn_heightmap: &[f32],
+                                 resolution: i32)
+                                 -> Box<[f32]> {
         let (heightmap,
              north_plane, north_heightmap,
              south_plane, south_heightmap,
@@ -229,7 +255,11 @@ impl Heightmap {
         bordered.resize((bordered_resolution * bordered_resolution) as usize, 0.0);
 
         // North
-        let (dir, base) = map_vec_pos((1, 0), (0, 1), resolution - 1, plane, north_plane);
+        let (dir, base) = map_vec_pos((1, 0),
+                                      (0, 1),
+                                      resolution - 1,
+                                      plane,
+                                      north_plane);
         let mut idx = Self::calc_pos(1, bordered_resolution - 1, bordered_resolution);
         for i in 0..resolution {
             let (x, y) = (base.0 + dir.0 * i, base.1 + dir.1 * i);
@@ -238,7 +268,11 @@ impl Heightmap {
             idx += Self::calc_step(1, 0, bordered_resolution);
         }
         // South
-        let (dir, base) = map_vec_pos((1, 0), (0, resolution - 2), resolution - 1, plane, south_plane);
+        let (dir, base) = map_vec_pos((1, 0),
+                                      (0, resolution - 2),
+                                      resolution - 1,
+                                      plane,
+                                      south_plane);
         let mut idx = Self::calc_pos(1, 0, bordered_resolution);
         for i in 0..resolution {
             let (x, y) = (base.0 + dir.0 * i, base.1 + dir.1 * i);
@@ -247,7 +281,11 @@ impl Heightmap {
             idx += Self::calc_step(1, 0, bordered_resolution);
         }
         // East
-        let (dir, base) = map_vec_pos((0, 1), (1, 0), resolution - 1, plane, east_plane);
+        let (dir, base) = map_vec_pos((0, 1),
+                                      (1, 0),
+                                      resolution - 1,
+                                      plane,
+                                      east_plane);
         let mut idx = Self::calc_pos(bordered_resolution - 1, 1, bordered_resolution);
         for i in 0..resolution {
             let (x, y) = (base.0 + dir.0 * i, base.1 + dir.1 * i);
@@ -256,7 +294,11 @@ impl Heightmap {
             idx += Self::calc_step(0, 1, bordered_resolution);
         }
         // West
-        let (dir, base) = map_vec_pos((0, 1), (resolution - 2, 0), resolution - 1, plane, west_plane);
+        let (dir, base) = map_vec_pos((0, 1),
+                                      (resolution - 2, 0),
+                                      resolution - 1,
+                                      plane,
+                                      west_plane);
         let mut idx = Self::calc_pos(0, 1, bordered_resolution);
         for i in 0..resolution {
             let (x, y) = (base.0 + dir.0 * i, base.1 + dir.1 * i);

@@ -54,12 +54,14 @@ impl ColourCurve {
         match self.control_points.binary_search_by(f) {
             Ok(_) => {
                 panic!("Control point with given input value already exists!");
-            },
+            }
             Err(idx) => {
-                self.control_points.insert(idx, ControlPoint {
-                    input_value: input_value,
-                    output_value: output_value
-                });
+                self.control_points
+                    .insert(idx,
+                            ControlPoint {
+                                input_value: input_value,
+                                output_value: output_value,
+                            });
             }
         }
     }
@@ -71,13 +73,11 @@ impl ColourCurve {
             Err(idx) => idx as isize,
         };
 
-        let idx0 = clamp(idx_pos - 1,
-                         0, self.control_points.len() as isize - 1) as usize;
-        let idx1 = clamp(idx_pos,
-                         0, self.control_points.len() as isize - 1) as usize;
+        let idx0 = clamp(idx_pos - 1, 0, self.control_points.len() as isize - 1) as usize;
+        let idx1 = clamp(idx_pos, 0, self.control_points.len() as isize - 1) as usize;
 
         if idx0 == idx1 {
-            return self.control_points[idx0].output_value
+            return self.control_points[idx0].output_value;
         }
 
         let input0 = self.control_points[idx0].input_value;
