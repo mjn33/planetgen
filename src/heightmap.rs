@@ -19,6 +19,9 @@
 // SOFTWARE.
 
 use common::{map_vec_pos, Plane};
+use png;
+use png::{ColorType, BitDepth};
+use std::fs::File;
 
 #[derive(Default)]
 pub struct Heightmap {
@@ -32,7 +35,101 @@ pub struct Heightmap {
     zn_heightmap: Box<[f32]>,
 }
 
+fn load_heightmap(filename: &str) -> Result<(Box<[f32]>, u32), String> {
+    let file = try!(File::open(filename).map_err(|_| "Failed to open file"));
+    let decoder = png::Decoder::new(file);
+    let (info, mut reader) = try!(decoder.read_info().map_err(|e| format!("Failed to create decoder: {}", e)));
+
+    if info.width != info.height {
+        return Err(format!("Heightmap width and height not equal. W = {}, H = {}", info.width, info.height));
+    }
+
+    let mut img_data = vec![0; info.buffer_size()];
+    let mut heightmap = vec![0.0; (info.width * info.height) as usize];
+
+    try!(reader.next_frame(&mut img_data).map_err(|e| format!("Failed to read image data: {}", e)));
+
+    match (info.color_type, info.bit_depth) {
+        (ColorType::Grayscale, BitDepth::Eight) => {
+            let mut idx = 0;
+            let mut img_idx = 0;
+            while idx < img_data.len() {
+                let value = img_data[img_idx];
+                let value = (value as f32) / 255.0;
+                heightmap[idx] = value;
+                idx += 1;
+                img_idx += 1;
+            }
+        }
+        (ColorType::Grayscale, BitDepth::Sixteen) => {
+            let mut idx = 0;
+            let mut img_idx = 0;
+            while idx < img_data.len() {
+                let hi = (img_data[img_idx] as u16) << 8;
+                let lo = img_data[img_idx + 1] as u16;
+                let value = hi | lo;
+                let value = (value as f32) / 65535.0;
+                heightmap[idx] = value;
+                idx += 1;
+                img_idx += 2;
+            }
+        }
+        (ColorType::RGB, BitDepth::Eight) => {
+            let mut idx = 0;
+            let mut img_idx = 0;
+            while idx < img_data.len() {
+                let r = (img_data[img_idx] as u32) << 16;
+                let g = (img_data[img_idx + 1] as u32) << 8;
+                let b = img_data[img_idx + 2] as u32;
+                let value = r | g | b;
+                let value = (value as f32) / 16777215.0;
+                heightmap[idx] = value;
+                idx += 1;
+                img_idx += 3;
+            }
+        }
+        _ => return Err("Unsupported image format".to_owned()),
+    }
+
+    Ok((heightmap.into_boxed_slice(), info.width))
+}
+
 impl Heightmap {
+    pub fn load(prefix: &str) -> Heightmap {
+        let xp_filename = [prefix, "xp.png"].concat();
+        let xn_filename = [prefix, "xn.png"].concat();
+        let yp_filename = [prefix, "yp.png"].concat();
+        let yn_filename = [prefix, "yn.png"].concat();
+        let zp_filename = [prefix, "zp.png"].concat();
+        let zn_filename = [prefix, "zn.png"].concat();
+        let xp_heightmap = load_heightmap(&xp_filename)
+            .expect("Failed to load XP heightmap");
+        let xn_heightmap = load_heightmap(&xn_filename)
+            .expect("Failed to load XN heightmap");
+        let yp_heightmap = load_heightmap(&yp_filename)
+            .expect("Failed to load YP heightmap");
+        let yn_heightmap = load_heightmap(&yn_filename)
+            .expect("Failed to load YN heightmap");
+        let zp_heightmap = load_heightmap(&zp_filename)
+            .expect("Failed to load ZP heightmap");
+        let zn_heightmap = load_heightmap(&zn_filename)
+            .expect("Failed to load ZN heightmap");
+
+        if xp_heightmap.1 != xn_heightmap.1 ||
+            xn_heightmap.1 != yp_heightmap.1 ||
+            yp_heightmap.1 != yn_heightmap.1 ||
+            yn_heightmap.1 != zp_heightmap.1 ||
+            zp_heightmap.1 != zn_heightmap.1 {
+                panic!("Not all heightmap faces have the same resolution")
+        }
+
+        let resolution = xp_heightmap.1 as i32;
+        Heightmap::new(&xp_heightmap.0, &xn_heightmap.0,
+                       &yp_heightmap.0, &yn_heightmap.0,
+                       &zp_heightmap.0, &zn_heightmap.0,
+                       resolution)
+    }
+
     /// Creates a new `Heightmap` from the given heightmap data for each face.
     /// This type creates a border around each face's heightmap based from
     /// height data taken from adjacent faces, for use with bicubic

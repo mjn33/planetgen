@@ -49,8 +49,6 @@ use num::{Zero, One};
 
 use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, MeshRenderer, Object, Scene, Shader, UniformValue};
 
-use png::{ColorType, BitDepth};
-
 use common::{map_quad_pos, map_quad_side, map_vec_pos, Plane, QuadPos, QuadSide};
 use colour_curve::ColourCurve;
 use gen::{gen_indices, vert_off, PatchFlags, PATCH_FLAGS_NONE, PATCH_FLAGS_NORTH, PATCH_FLAGS_SOUTH,
@@ -110,65 +108,6 @@ fn load_image(filename: &str) -> Result<(Box<[u8]>, u32, u32), String> {
     try!(reader.next_frame(&mut img_data).map_err(|e| format!("Failed to read image data: {}", e)));
 
     Ok((img_data.into_boxed_slice(), info.width, info.height))
-}
-
-fn load_heightmap(filename: &str) -> Result<(Box<[f32]>, u32), String> {
-    let file = try!(File::open(filename).map_err(|_| "Failed to open file"));
-    let decoder = png::Decoder::new(file);
-    let (info, mut reader) = try!(decoder.read_info().map_err(|e| format!("Failed to create decoder: {}", e)));
-
-    if info.width != info.height {
-        return Err(format!("Heightmap width and height not equal. W = {}, H = {}", info.width, info.height));
-    }
-
-    let mut img_data = vec![0; info.buffer_size()];
-    let mut heightmap = vec![0.0; (info.width * info.height) as usize];
-
-    try!(reader.next_frame(&mut img_data).map_err(|e| format!("Failed to read image data: {}", e)));
-
-    match (info.color_type, info.bit_depth) {
-        (ColorType::Grayscale, BitDepth::Eight) => {
-            let mut idx = 0;
-            let mut img_idx = 0;
-            while idx < img_data.len() {
-                let value = img_data[img_idx];
-                let value = (value as f32) / 255.0;
-                heightmap[idx] = value;
-                idx += 1;
-                img_idx += 1;
-            }
-        }
-        (ColorType::Grayscale, BitDepth::Sixteen) => {
-            let mut idx = 0;
-            let mut img_idx = 0;
-            while idx < img_data.len() {
-                let hi = (img_data[img_idx] as u16) << 8;
-                let lo = img_data[img_idx + 1] as u16;
-                let value = hi | lo;
-                let value = (value as f32) / 65535.0;
-                heightmap[idx] = value;
-                idx += 1;
-                img_idx += 2;
-            }
-        }
-        (ColorType::RGB, BitDepth::Eight) => {
-            let mut idx = 0;
-            let mut img_idx = 0;
-            while idx < img_data.len() {
-                let r = (img_data[img_idx] as u32) << 16;
-                let g = (img_data[img_idx + 1] as u32) << 8;
-                let b = img_data[img_idx + 2] as u32;
-                let value = r | g | b;
-                let value = (value as f32) / 16777215.0;
-                heightmap[idx] = value;
-                idx += 1;
-                img_idx += 3;
-            }
-        }
-        _ => return Err("Unsupported image format".to_owned()),
-    }
-
-    Ok((heightmap.into_boxed_slice(), info.width))
 }
 
 #[derive(Clone, Copy)]
@@ -1364,17 +1303,6 @@ impl QuadSphere {
         self.queue_normal_update(zn_quad.clone());
 
         self.faces = Some([xp_quad, xn_quad, yp_quad, yn_quad, zp_quad, zn_quad]);
-    }
-
-    fn set_heightmaps(&mut self,
-                      resolution: i32,
-                      xp_heightmap: Box<[f32]>, xn_heightmap: Box<[f32]>,
-                      yp_heightmap: Box<[f32]>, yn_heightmap: Box<[f32]>,
-                      zp_heightmap: Box<[f32]>, zn_heightmap: Box<[f32]>) {
-        self.heightmap = Heightmap::new(&xp_heightmap, &xn_heightmap,
-                                        &yp_heightmap, &yn_heightmap,
-                                        &zp_heightmap, &zn_heightmap,
-                                        resolution);
     }
 
     fn calc_ranges(&mut self)  {
@@ -2783,25 +2711,7 @@ fn main() {
     let quad_sphere = scene.add_component::<RefCell<QuadSphere>>(&quad_sphere_obj).unwrap();
     quad_sphere.borrow_mut().camera_controller.camera_obj = Some(camera_obj);
 
-    let xp_heightmap = load_heightmap("xp.png").expect("Failed to load XP heightmap");
-    let xn_heightmap = load_heightmap("xn.png").expect("Failed to load XN heightmap");
-    let yp_heightmap = load_heightmap("yp.png").expect("Failed to load YP heightmap");
-    let yn_heightmap = load_heightmap("yn.png").expect("Failed to load YN heightmap");
-    let zp_heightmap = load_heightmap("zp.png").expect("Failed to load ZP heightmap");
-    let zn_heightmap = load_heightmap("zn.png").expect("Failed to load ZN heightmap");
-
-    if xp_heightmap.1 != xn_heightmap.1 ||
-        xn_heightmap.1 != yp_heightmap.1 ||
-        yp_heightmap.1 != yn_heightmap.1 ||
-        yn_heightmap.1 != zp_heightmap.1 ||
-        zp_heightmap.1 != zn_heightmap.1 {
-        panic!("Not all heightmap faces have the same resolution")
-    }
-
-    quad_sphere.borrow_mut().set_heightmaps(xp_heightmap.1 as i32,
-                                            xp_heightmap.0, xn_heightmap.0,
-                                            yp_heightmap.0, yn_heightmap.0,
-                                            zp_heightmap.0, zn_heightmap.0);
+    quad_sphere.borrow_mut().heightmap = Heightmap::load("");
 
     quad_sphere.borrow_mut().init(&mut scene, 8, 12,
                                   6_000_000.0, 0.0, 160_000.0);
