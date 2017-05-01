@@ -47,12 +47,13 @@ use noise::noisegen::NoiseQuality;
 
 use num::{Zero, One};
 
-use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, MeshRenderer, Object, Scene, Shader, UniformValue};
+use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, MeshRenderer, Object,
+                       Scene, Shader, UniformValue};
 
 use common::{map_quad_pos, map_quad_side, map_vec_pos, Plane, QuadPos, QuadSide};
 use colour_curve::ColourCurve;
-use gen::{gen_indices, vert_off, PatchFlags, PATCH_FLAGS_NONE, PATCH_FLAGS_NORTH, PATCH_FLAGS_SOUTH,
-          PATCH_FLAGS_EAST, PATCH_FLAGS_WEST};
+use gen::{gen_indices, vert_off, PatchFlags, PATCH_FLAGS_NONE, PATCH_FLAGS_NORTH,
+          PATCH_FLAGS_SOUTH, PATCH_FLAGS_EAST, PATCH_FLAGS_WEST};
 use heightmap::Heightmap;
 
 fn create_generator() -> Box<Module> {
@@ -102,10 +103,14 @@ fn bicubic_interp(p00: f64, p10: f64, p20: f64, p30: f64,
 fn load_image(filename: &str) -> Result<(Box<[u8]>, u32, u32), String> {
     let file = try!(File::open(filename).map_err(|_| "Failed to open file"));
     let decoder = png::Decoder::new(file);
-    let (info, mut reader) = try!(decoder.read_info().map_err(|e| format!("Failed to create decoder: {}", e)));
+    let (info, mut reader) = try!(decoder
+                                      .read_info()
+                                      .map_err(|e| format!("Failed to create decoder: {}", e)));
 
     let mut img_data = vec![0; info.buffer_size()];
-    try!(reader.next_frame(&mut img_data).map_err(|e| format!("Failed to read image data: {}", e)));
+    try!(reader
+             .next_frame(&mut img_data)
+             .map_err(|e| format!("Failed to read image data: {}", e)));
 
     Ok((img_data.into_boxed_slice(), info.width, info.height))
 }
@@ -213,7 +218,8 @@ impl Quad {
     /// Calculates the coordinates of the middle of this quad.
     fn mid_coord_pos(&self, sphere: &QuadSphere) -> Vector3<f64> {
         let half_quad_length = sphere.quad_length(self.cur_subdivision) / 2;
-        let mid_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1 + half_quad_length);
+        let mid_coord = (self.base_coord.0 + half_quad_length,
+                         self.base_coord.1 + half_quad_length);
         sphere.vc_to_pos(VertCoord(self.plane, mid_coord.0, mid_coord.1)).normalize()
     }
 
@@ -255,7 +261,7 @@ impl Quad {
 
     fn in_subdivision_range(&self, sphere: &QuadSphere) -> bool {
         if self.cur_subdivision == sphere.max_subdivision {
-            return false
+            return false;
         }
 
         let range = sphere.subdivide_range(self.cur_subdivision);
@@ -317,16 +323,14 @@ impl Quad {
                 let north = self.north();
                 let north_borrow = north.borrow();
                 let pos = map_quad_pos(QuadPos::SouthWest, self.plane, north_borrow.plane);
-                north_borrow.get_child_opt(pos)
-                    .map(Rc::clone)
-            },
+                north_borrow.get_child_opt(pos).map(Rc::clone)
+            }
             QuadPos::NorthEast => {
                 let north = self.north();
                 let north_borrow = north.borrow();
                 let pos = map_quad_pos(QuadPos::SouthEast, self.plane, north_borrow.plane);
-                north_borrow.get_child_opt(pos)
-                    .map(Rc::clone)
-            },
+                north_borrow.get_child_opt(pos).map(Rc::clone)
+            }
         }
     }
 
@@ -337,16 +341,14 @@ impl Quad {
                 let south = self.south();
                 let south_borrow = south.borrow();
                 let pos = map_quad_pos(QuadPos::NorthWest, self.plane, south_borrow.plane);
-                south_borrow.get_child_opt(pos)
-                    .map(Rc::clone)
-            },
+                south_borrow.get_child_opt(pos).map(Rc::clone)
+            }
             QuadPos::SouthEast => {
                 let south = self.south();
                 let south_borrow = south.borrow();
                 let pos = map_quad_pos(QuadPos::NorthEast, self.plane, south_borrow.plane);
-                south_borrow.get_child_opt(pos)
-                    .map(Rc::clone)
-            },
+                south_borrow.get_child_opt(pos).map(Rc::clone)
+            }
         }
     }
 
@@ -357,16 +359,14 @@ impl Quad {
                 let east = self.east();
                 let east_borrow = east.borrow();
                 let pos = map_quad_pos(QuadPos::NorthWest, self.plane, east_borrow.plane);
-                east_borrow.get_child_opt(pos)
-                    .map(Rc::clone)
-            },
+                east_borrow.get_child_opt(pos).map(Rc::clone)
+            }
             QuadPos::SouthEast => {
                 let east = self.east();
                 let east_borrow = east.borrow();
                 let pos = map_quad_pos(QuadPos::SouthWest, self.plane, east_borrow.plane);
-                east_borrow.get_child_opt(pos)
-                    .map(Rc::clone)
-            },
+                east_borrow.get_child_opt(pos).map(Rc::clone)
+            }
         }
     }
 
@@ -377,16 +377,14 @@ impl Quad {
                 let west = self.west();
                 let west_borrow = west.borrow();
                 let pos = map_quad_pos(QuadPos::NorthEast, self.plane, west_borrow.plane);
-                west_borrow.get_child_opt(pos)
-                    .map(Rc::clone)
-            },
+                west_borrow.get_child_opt(pos).map(Rc::clone)
+            }
             QuadPos::SouthWest => {
                 let west = self.west();
                 let west_borrow = west.borrow();
                 let pos = map_quad_pos(QuadPos::SouthEast, self.plane, west_borrow.plane);
-                west_borrow.get_child_opt(pos)
-                    .map(Rc::clone)
-            },
+                west_borrow.get_child_opt(pos).map(Rc::clone)
+            }
         }
     }
 
@@ -410,7 +408,8 @@ impl Quad {
     /// Checks if this quad is able to collapse without causing quad-tree
     /// invariants to be violated.
     fn can_collapse(&self) -> bool {
-        assert!(self.is_subdivided(), "can_collapse() should only be called on subdivided quads");
+        assert!(self.is_subdivided(),
+                "can_collapse() should only be called on subdivided quads");
         let direct_north = self.direct_north().unwrap();
         let direct_south = self.direct_south().unwrap();
         let direct_east = self.direct_east().unwrap();
@@ -423,7 +422,7 @@ impl Quad {
             let q1 = direct_north.get_child(pos1);
             let q2 = direct_north.get_child(pos2);
             if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
-                return false
+                return false;
             }
         }
 
@@ -434,7 +433,7 @@ impl Quad {
             let q1 = direct_south.get_child(pos1);
             let q2 = direct_south.get_child(pos2);
             if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
-                return false
+                return false;
             }
         }
 
@@ -445,7 +444,7 @@ impl Quad {
             let q1 = direct_east.get_child(pos1);
             let q2 = direct_east.get_child(pos2);
             if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
-                return false
+                return false;
             }
         }
 
@@ -456,13 +455,13 @@ impl Quad {
             let q1 = direct_west.get_child(pos1);
             let q2 = direct_west.get_child(pos2);
             if q1.borrow().is_subdivided() || q2.borrow().is_subdivided() {
-                return false
+                return false;
             }
         }
 
         for q in self.children.as_ref().unwrap() {
             if q.borrow().is_subdivided() {
-                return false
+                return false;
             }
         }
 
@@ -473,17 +472,17 @@ impl Quad {
         let half_quad_length = sphere.quad_length(self.cur_subdivision) / 2;
 
         let upper_left_base_coord = (self.base_coord.0, self.base_coord.1 + half_quad_length);
-        let upper_right_base_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1 + half_quad_length);
+        let upper_right_base_coord = (self.base_coord.0 + half_quad_length,
+                                      self.base_coord.1 + half_quad_length);
         let lower_left_base_coord = (self.base_coord.0, self.base_coord.1);
         let lower_right_base_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1);
 
-        let result =
-            sphere.calc_subdivided_verts(self.plane,
-                                         upper_left_base_coord,
-                                         upper_right_base_coord,
-                                         lower_left_base_coord,
-                                         lower_right_base_coord,
-                                         self.cur_subdivision + 1);
+        let result = sphere.calc_subdivided_verts(self.plane,
+                                                  upper_left_base_coord,
+                                                  upper_right_base_coord,
+                                                  lower_left_base_coord,
+                                                  lower_right_base_coord,
+                                                  self.cur_subdivision + 1);
         let upper_left_vpos = result.q1_vpos;
         let upper_left_vcolour = result.q1_vcolour;
         let upper_right_vpos = result.q2_vpos;
@@ -618,7 +617,8 @@ impl Quad {
             let q2 = north_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchFlags::from(map_quad_side(QuadSide::South, self.plane, north_borrow.plane));
+            let flags =
+                PatchFlags::from(map_quad_side(QuadSide::South, self.plane, north_borrow.plane));
             q1_borrow.patch_flags &= !flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -643,7 +643,8 @@ impl Quad {
             let q2 = south_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchFlags::from(map_quad_side(QuadSide::North, self.plane, south_borrow.plane));
+            let flags =
+                PatchFlags::from(map_quad_side(QuadSide::North, self.plane, south_borrow.plane));
             q1_borrow.patch_flags &= !flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -668,7 +669,8 @@ impl Quad {
             let q2 = east_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchFlags::from(map_quad_side(QuadSide::West, self.plane, east_borrow.plane));
+            let flags =
+                PatchFlags::from(map_quad_side(QuadSide::West, self.plane, east_borrow.plane));
             q1_borrow.patch_flags &= !flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -693,7 +695,8 @@ impl Quad {
             let q2 = west_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchFlags::from(map_quad_side(QuadSide::East, self.plane, west_borrow.plane));
+            let flags =
+                PatchFlags::from(map_quad_side(QuadSide::East, self.plane, west_borrow.plane));
             q1_borrow.patch_flags &= !flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -778,7 +781,8 @@ impl Quad {
             let q2 = north_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchFlags::from(map_quad_side(QuadSide::South, self.plane, north_borrow.plane));
+            let flags =
+                PatchFlags::from(map_quad_side(QuadSide::South, self.plane, north_borrow.plane));
             q1_borrow.patch_flags |= flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -803,7 +807,8 @@ impl Quad {
             let q2 = south_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchFlags::from(map_quad_side(QuadSide::North, self.plane, south_borrow.plane));
+            let flags =
+                PatchFlags::from(map_quad_side(QuadSide::North, self.plane, south_borrow.plane));
             q1_borrow.patch_flags |= flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -828,7 +833,8 @@ impl Quad {
             let q2 = east_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchFlags::from(map_quad_side(QuadSide::West, self.plane, east_borrow.plane));
+            let flags =
+                PatchFlags::from(map_quad_side(QuadSide::West, self.plane, east_borrow.plane));
             q1_borrow.patch_flags |= flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -853,7 +859,8 @@ impl Quad {
             let q2 = west_borrow.get_child(pos2);
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
-            let flags = PatchFlags::from(map_quad_side(QuadSide::East, self.plane, west_borrow.plane));
+            let flags =
+                PatchFlags::from(map_quad_side(QuadSide::East, self.plane, west_borrow.plane));
             q1_borrow.patch_flags |= flags;
             q1_borrow.needs_normal_update = true;
             q1_borrow.needs_normal_merge = true;
@@ -1032,9 +1039,15 @@ struct QuadSphere {
 }
 
 impl QuadSphere {
-    fn init(&mut self, scene: &mut Scene, quad_mesh_size: u16, max_subdivision: u32, radius: f64, min_height: f64, max_height: f64) {
+    fn init(&mut self,
+            scene: &mut Scene,
+            quad_mesh_size: u16,
+            max_subdivision: u32,
+            radius: f64,
+            min_height: f64,
+            max_height: f64) {
         assert!(quad_mesh_size > 1);
-        let bits =  (quad_mesh_size as u32 - 1).leading_zeros();
+        let bits = (quad_mesh_size as u32 - 1).leading_zeros();
         assert!(max_subdivision <= (bits - 1));
 
         self.quad_mesh_size = quad_mesh_size;
@@ -1128,7 +1141,8 @@ impl QuadSphere {
         let skybox_zp = load_image("skybox_zp.png").expect("Failed to load ZP skybox");
         let skybox_zn = load_image("skybox_zn.png").expect("Failed to load ZN skybox");
 
-        let cubemap = scene.create_cubemap(skybox_zn.1 as usize, skybox_zn.2 as usize,
+        let cubemap = scene.create_cubemap(skybox_zn.1 as usize,
+                                           skybox_zn.2 as usize,
                                            [&skybox_xp.0,
                                             &skybox_xn.0,
                                             &skybox_yp.0,
@@ -1305,7 +1319,7 @@ impl QuadSphere {
         self.faces = Some([xp_quad, xn_quad, yp_quad, yn_quad, zp_quad, zn_quad]);
     }
 
-    fn calc_ranges(&mut self)  {
+    fn calc_ranges(&mut self) {
         self.collapse_ranges = Vec::with_capacity(self.max_subdivision as usize + 1);
         self.subdivide_ranges = Vec::with_capacity(self.max_subdivision as usize + 1);
 
@@ -1478,16 +1492,8 @@ impl QuadSphere {
         let ix = x as i32;
         let iy = y as i32;
 
-        let ix = if ix == max {
-            ix - 1
-        } else {
-            ix
-        };
-        let iy = if iy == max {
-            iy - 1
-        } else {
-            iy
-        };
+        let ix = if ix == max { ix - 1 } else { ix };
+        let iy = if iy == max { iy - 1 } else { iy };
 
         let alpha_x = x - ix as f32;
         let alpha_y = y - iy as f32;
@@ -1548,7 +1554,8 @@ impl QuadSphere {
 
                 let height = self.sample_heightmap_avg(vert_coord) as f64;
                 // Add some noise to make things look a bit more interesting
-                let noise = self.generator.get_value(vert_pos.x as f64, vert_pos.y as f64, vert_pos.z as f64);
+                let noise = self.generator
+                    .get_value(vert_pos.x as f64, vert_pos.y as f64, vert_pos.z as f64);
                 let height = noise * 0.25 + height * 0.75;
                 let height = f64::min(1.0, f64::max(0.0, height));
 
@@ -1557,7 +1564,8 @@ impl QuadSphere {
                 let g = (g as f32) / 255.0;
                 let b = (b as f32) / 255.0;
 
-                let height = (self.radius + self.min_height) + height * (self.max_height - self.min_height);
+                let height = (self.radius + self.min_height) +
+                             height * (self.max_height - self.min_height);
                 let vert_pos = vert_pos * height;
 
                 vpos.push(vert_pos.cast());
@@ -1613,7 +1621,9 @@ impl QuadSphere {
                 &mut horizon_cull_visible_count);
         }
 
-        println!("Horizon culled count = {} ({} total)", horizon_cull_visible_count, horizon_cull_count);
+        println!("Horizon culled count = {} ({} total)",
+                 horizon_cull_visible_count,
+                 horizon_cull_count);
         println!("");
 
         println!("------");
@@ -1694,7 +1704,11 @@ impl BehaviourMessages for QuadSphere {
 
         self.sun_controller.update(scene, &self.camera_controller);
 
-        self.skybox_cam_obj.as_ref().unwrap().set_world_rot(scene, self.camera_controller.cam_rot).unwrap();
+        self.skybox_cam_obj
+            .as_ref()
+            .unwrap()
+            .set_world_rot(scene, self.camera_controller.cam_rot)
+            .unwrap();
 
         self.calc_cull_range();
 
@@ -1820,11 +1834,7 @@ impl CameraController {
             self.mouse_prev_x = state.x();
             self.mouse_prev_y = state.y();
 
-            if state.right() {
-                (dx, dy)
-            } else {
-                (0, 0)
-            }
+            if state.right() { (dx, dy) } else { (0, 0) }
         };
 
         self.cam_rot = self.cam_rot * Quaternion::from(Euler {
@@ -1905,10 +1915,9 @@ impl SunController {
         // Render separately from the planet
         mrenderer.set_layers(scene, 2).unwrap();
 
-        let shader = scene.create_shader(
-            include_str!("sun_vs.glsl"),
-            include_str!("sun_fs.glsl"),
-            None);
+        let shader = scene.create_shader(include_str!("sun_vs.glsl"),
+                                         include_str!("sun_fs.glsl"),
+                                         None);
         let material = scene.create_material(shader.clone()).unwrap();
 
         mrenderer.set_material(scene, Some(material.clone())).unwrap();
@@ -1931,7 +1940,11 @@ impl SunController {
     fn set_sun_size(&mut self, scene: &mut Scene, arcsecs: f64) {
         let rad = (arcsecs / 3600.0).to_radians();
         let radius = f64::tan(0.5 * rad) as f32;
-        self.sun_material.as_ref().unwrap().set_uniform(scene, "sun_radius", UniformValue::Float(radius)).unwrap();
+        self.sun_material
+            .as_ref()
+            .unwrap()
+            .set_uniform(scene, "sun_radius", UniformValue::Float(radius))
+            .unwrap();
     }
 
     fn update_sun(&mut self, scene: &mut Scene, camera_controller: &CameraController) {
@@ -1953,7 +1966,9 @@ impl SunController {
         let light_dir = -self.sun_pos;
         {
             let quad_material = self.quad_material.as_ref().unwrap();
-            quad_material.set_uniform(scene, "light_dir", UniformValue::Vec3(light_dir.into())).unwrap();
+            quad_material
+                .set_uniform(scene, "light_dir", UniformValue::Vec3(light_dir.into()))
+                .unwrap();
         }
 
         self.update_sun(scene, camera_controller);
@@ -1973,7 +1988,9 @@ impl SunController {
         self.sun_pos = rot * self.sun_pos;
         {
             let quad_material = self.quad_material.as_ref().unwrap();
-            quad_material.set_uniform(scene, "light_dir", UniformValue::Vec3(self.sun_pos.into())).unwrap();
+            quad_material
+                .set_uniform(scene, "light_dir", UniformValue::Vec3(self.sun_pos.into()))
+                .unwrap();
         }
 
         self.update_sun(scene, camera_controller);
@@ -2090,14 +2107,14 @@ impl Quad {
                     QuadSide::North => ((0, max), (0, 0)),
                     QuadSide::South => ((0, 0), (0, max)),
                     QuadSide::East => ((max, 0), (0, 0)),
-                    QuadSide::West => ((0, 0), (max, 0))
+                    QuadSide::West => ((0, 0), (max, 0)),
                 };
 
                 let (q1_pos, q2_pos) = match side {
                     QuadSide::North => (QuadPos::SouthWest, QuadPos::SouthEast),
                     QuadSide::South => (QuadPos::NorthWest, QuadPos::NorthEast),
                     QuadSide::East => (QuadPos::SouthWest, QuadPos::NorthWest),
-                    QuadSide::West => (QuadPos::SouthEast, QuadPos::NorthEast)
+                    QuadSide::West => (QuadPos::SouthEast, QuadPos::NorthEast),
                 };
 
                 let q1_pos = map_quad_pos(q1_pos, self.plane, direct_side.plane);
@@ -2109,11 +2126,11 @@ impl Quad {
                 let (step_sx, step_sy) = (dir_sx, dir_sy);
                 let (step_dx, step_dy) = (dir_sx * 2, dir_sy * 2);
 
-                let ((step_dx, step_dy), (base_dx, base_dy)) = map_vec_pos(
-                    (step_dx, step_dy),
-                    (base_dx, base_dy),
-                    quad_mesh_size,
-                    self.plane, direct_side.plane);
+                let ((step_dx, step_dy), (base_dx, base_dy)) = map_vec_pos((step_dx, step_dy),
+                                                                           (base_dx, base_dy),
+                                                                           quad_mesh_size,
+                                                                           self.plane,
+                                                                           direct_side.plane);
 
                 // TODO: don't touch corners
                 self.merge_normals(sphere,
@@ -2125,8 +2142,7 @@ impl Quad {
                                    (step_dx, step_dy),
                                    quad_mesh_size / 2 + 1);
 
-                let (base_sx2, base_sy2) = (base_sx + step_sx * half,
-                                            base_sy + step_sy * half);
+                let (base_sx2, base_sy2) = (base_sx + step_sx * half, base_sy + step_sy * half);
 
                 // TODO: don't touch corners
                 self.merge_normals(sphere,
@@ -2143,17 +2159,17 @@ impl Quad {
                     QuadSide::North => ((0, max), (0, 0)),
                     QuadSide::South => ((0, 0), (0, max)),
                     QuadSide::East => ((max, 0), (0, 0)),
-                    QuadSide::West => ((0, 0), (max, 0))
+                    QuadSide::West => ((0, 0), (max, 0)),
                 };
 
                 let (step_sx, step_sy) = (dir_sx, dir_sy);
                 let (step_dx, step_dy) = (dir_sx, dir_sy);
 
-                let ((step_dx, step_dy), (base_dx, base_dy)) = map_vec_pos(
-                    (step_dx, step_dy),
-                    (base_dx, base_dy),
-                    quad_mesh_size,
-                    self.plane, direct_side.plane);
+                let ((step_dx, step_dy), (base_dx, base_dy)) = map_vec_pos((step_dx, step_dy),
+                                                                           (base_dx, base_dy),
+                                                                           quad_mesh_size,
+                                                                           self.plane,
+                                                                           direct_side.plane);
 
                 // TODO: don't touch corners
                 self.merge_normals(sphere,
@@ -2187,16 +2203,16 @@ impl Quad {
                 QuadSide::North => ((0, max), (x * half, 0)),
                 QuadSide::South => ((0, 0), (x * half, max)),
                 QuadSide::East => ((max, 0), (0, y * half)),
-                QuadSide::West => ((0, 0), (max, y * half))
+                QuadSide::West => ((0, 0), (max, y * half)),
             };
             let (step_sx, step_sy) = (dir_sx * 2, dir_sy * 2);
             let (step_dx, step_dy) = (dir_sx, dir_sy);
 
-            let ((step_dx, step_dy), (base_dx, base_dy)) = map_vec_pos(
-                (step_dx, step_dy),
-                (base_dx, base_dy),
-                quad_mesh_size,
-                self.plane, indirect_side.plane);
+            let ((step_dx, step_dy), (base_dx, base_dy)) = map_vec_pos((step_dx, step_dy),
+                                                                       (base_dx, base_dy),
+                                                                       quad_mesh_size,
+                                                                       self.plane,
+                                                                       indirect_side.plane);
 
             // TODO: don't touch corners
             self.merge_normals(sphere,
@@ -2366,11 +2382,11 @@ impl Quad {
 
         let (q1, q1_is_direct) = match self.get_direct_side(side1) {
             Some(q1) => (q1, true),
-            None => (self.get_side(side1), false)
+            None => (self.get_side(side1), false),
         };
         let (q2, q2_is_direct) = match self.get_direct_side(side2) {
             Some(q2) => (q2, true),
-            None => (self.get_side(side2), false)
+            None => (self.get_side(side2), false),
         };
 
         let q1_plane = q1.borrow().plane;
@@ -2388,7 +2404,7 @@ impl Quad {
             match side2 {
                 QuadSide::East => max,
                 QuadSide::West => 0,
-                _ => unreachable!()
+                _ => unreachable!(),
             }
         } else {
             // Note: we don't need to handle `QuadPos::None` here since we know we
@@ -2416,11 +2432,8 @@ impl Quad {
             QuadPos::None => unreachable!(),
         };
 
-        let (_, (q1_x, q1_y)) = map_vec_pos(
-            (0, 0),
-            (q1_x, q1_y),
-            quad_mesh_size,
-            self.plane, q1_plane);
+        let (_, (q1_x, q1_y)) =
+            map_vec_pos((0, 0), (q1_x, q1_y), quad_mesh_size, self.plane, q1_plane);
         let q1_pos = map_quad_pos(q1_pos, self.plane, q1_plane);
 
         let q2_x = match side2 {
@@ -2432,7 +2445,7 @@ impl Quad {
             match side1 {
                 QuadSide::North => max,
                 QuadSide::South => 0,
-                _ => unreachable!()
+                _ => unreachable!(),
             }
         } else {
             // Note: we don't need to handle `QuadPos::None` here since we know we
@@ -2455,11 +2468,8 @@ impl Quad {
             QuadPos::None => unreachable!(),
         };
 
-        let (_, (q2_x, q2_y)) = map_vec_pos(
-            (0, 0),
-            (q2_x, q2_y),
-            quad_mesh_size,
-            self.plane, q2_plane);
+        let (_, (q2_x, q2_y)) =
+            map_vec_pos((0, 0), (q2_x, q2_y), quad_mesh_size, self.plane, q2_plane);
         let q2_pos = map_quad_pos(q2_pos, self.plane, q2_plane);
 
         let q1 = if q1.borrow().is_subdivided() {
@@ -2473,7 +2483,9 @@ impl Quad {
             q2
         };
 
-        if self.plane != q1_plane && self.plane != q2_plane && q1_plane != q2_plane || q1_x == half || q1_y == half || q2_x == half || q2_y == half {
+        if self.plane != q1_plane && self.plane != q2_plane && q1_plane != q2_plane ||
+           q1_x == half || q1_y == half || q2_x == half ||
+           q2_y == half {
             // There will only be three quads to consider in the following two
             // cases:
             //
@@ -2499,7 +2511,9 @@ impl Quad {
         } else {
             let side2 = map_quad_side(side2, self.plane, q1_plane);
 
-            let mut q3 = q1.borrow().get_direct_side(side2).unwrap_or_else(|| q1.borrow().get_side(side2));
+            let mut q3 = q1.borrow()
+                .get_direct_side(side2)
+                .unwrap_or_else(|| q1.borrow().get_side(side2));
             let q3_plane = q3.borrow().plane;
             let q3_pos = corner.opposite();
             let q3_pos = map_quad_pos(q3_pos, self.plane, q3_plane);
@@ -2556,10 +2570,9 @@ struct QuadPool {
 
 impl QuadPool {
     fn new(scene: &mut Scene, quad_mesh_size: u16, initial_size: usize) -> QuadPool {
-        let shader = scene.create_shader(
-            include_str!("default_vs.glsl"),
-            include_str!("default_fs.glsl"),
-            None);
+        let shader = scene.create_shader(include_str!("default_vs.glsl"),
+                                         include_str!("default_fs.glsl"),
+                                         None);
         let quad_material = scene.create_material(shader.clone()).unwrap();
 
         let mut indices_configs = Vec::with_capacity(16);
@@ -2686,8 +2699,7 @@ impl QuadPool {
 }
 
 fn main() {
-    let sdl = sdl2::init()
-        .expect("Failed to initialize SDL2");
+    let sdl = sdl2::init().expect("Failed to initialize SDL2");
 
     let mut scene = Scene::new(sdl);
     let camera_obj = scene.create_object();
@@ -2701,7 +2713,7 @@ fn main() {
     camera_far.set_near_clip(&mut scene, 100000.0).unwrap();
     camera_far.set_far_clip(&mut scene, 10000000.0).unwrap();
     camera_far.set_order(&mut scene, 0).unwrap();
-    camera_near.set_near_clip(&mut scene,  100.0).unwrap();
+    camera_near.set_near_clip(&mut scene, 100.0).unwrap();
     camera_near.set_far_clip(&mut scene, 110000.0).unwrap();
     camera_near.set_order(&mut scene, 1).unwrap();
 
@@ -2720,7 +2732,7 @@ fn main() {
 
     loop {
         if !scene.do_frame() {
-            break
+            break;
         }
     }
 }
