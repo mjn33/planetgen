@@ -18,15 +18,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-bitflags! {
-    pub flags PatchFlags: u32 {
-        const PATCH_FLAGS_NONE = 0x00,
-        const PATCH_FLAGS_NORTH = 0x01,
-        const PATCH_FLAGS_SOUTH = 0x02,
-        const PATCH_FLAGS_EAST = 0x04,
-        const PATCH_FLAGS_WEST = 0x08,
-    }
-}
+use common::{QuadSideFlags, QUAD_SIDE_FLAGS_NORTH, QUAD_SIDE_FLAGS_SOUTH, QUAD_SIDE_FLAGS_EAST,
+             QUAD_SIDE_FLAGS_WEST};
 
 /// Utility function for computing the index of a vertex with a given stride.
 pub fn vert_off(x: u16, y: u16, stride: u16) -> u16 {
@@ -90,12 +83,12 @@ fn gen_indices_range(indices: &mut Vec<u16>, x1: u16, y1: u16, x2: u16, y2: u16,
 
 /// Generate the indices for a quad of the given size and the specified
 /// edges "patched".
-pub fn gen_indices(size: u16, sides: PatchFlags) -> Vec<u16> {
+pub fn gen_indices(size: u16, sides: QuadSideFlags) -> Vec<u16> {
     let adj_size = size + 1;
     let vert_off = |x, y| vert_off(x, y, adj_size);
     let mut indices = Vec::new();
     gen_indices_range(&mut indices, 1, 1, size - 1, size - 1, size);
-    if sides.contains(PATCH_FLAGS_WEST) {
+    if sides.contains(QUAD_SIDE_FLAGS_WEST) {
         for y in 1..adj_size-1 {
             if (y % 2) == 1 {
                 // *
@@ -188,7 +181,7 @@ pub fn gen_indices(size: u16, sides: PatchFlags) -> Vec<u16> {
         }
     }
 
-    if sides.contains(PATCH_FLAGS_SOUTH) {
+    if sides.contains(QUAD_SIDE_FLAGS_SOUTH) {
         for x in 1..adj_size-1 {
             if (x % 2) == 1 {
                 //
@@ -262,7 +255,7 @@ pub fn gen_indices(size: u16, sides: PatchFlags) -> Vec<u16> {
         }
     }
 
-    if sides.contains(PATCH_FLAGS_EAST) {
+    if sides.contains(QUAD_SIDE_FLAGS_EAST) {
         for y in 1..adj_size-1 {
             if (y % 2) == 1 {
                 //          *
@@ -355,7 +348,7 @@ pub fn gen_indices(size: u16, sides: PatchFlags) -> Vec<u16> {
         }
     }
 
-    if sides.contains(PATCH_FLAGS_NORTH) {
+    if sides.contains(QUAD_SIDE_FLAGS_NORTH) {
         for x in 1..adj_size-1 {
             if (x % 2) == 1 {
                 // *-----------------*

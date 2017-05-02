@@ -50,10 +50,11 @@ use num::{Zero, One};
 use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Material, Mesh, MeshRenderer, Object,
                        Scene, Shader, UniformValue};
 
-use common::{map_quad_pos, map_quad_side, map_vec_pos, Plane, QuadPos, QuadSide};
+use common::{map_quad_pos, map_quad_side, map_vec_pos, Plane, QuadPos, QuadSide, QuadSideFlags,
+             QUAD_SIDE_FLAGS_NONE, QUAD_SIDE_FLAGS_NORTH, QUAD_SIDE_FLAGS_SOUTH,
+             QUAD_SIDE_FLAGS_EAST, QUAD_SIDE_FLAGS_WEST, QUAD_SIDE_FLAGS_ALL};
 use colour_curve::ColourCurve;
-use gen::{gen_indices, vert_off, PatchFlags, PATCH_FLAGS_NONE, PATCH_FLAGS_NORTH,
-          PATCH_FLAGS_SOUTH, PATCH_FLAGS_EAST, PATCH_FLAGS_WEST};
+use gen::{gen_indices, vert_off};
 use heightmap::Heightmap;
 
 fn create_generator() -> Box<Module> {
@@ -130,15 +131,15 @@ struct Quad {
     /// A tuple containing the sine and cosine of an angle which encloses the
     /// entire quad.
     angle_size: (f64, f64),
-    patch_flags: PatchFlags,
+    patch_flags: QuadSideFlags,
 
     non_normalized: Vec<Vector3<f32>>,
 
     /// True if this quad needs the `non_normalized` normals to be recomputed.
     needs_normal_update: bool,
-    /// True if this quad needs to have quad normals to be merge with
-    /// neighbouring quads.
-    needs_normal_merge: bool,
+    /// Describes which sides of this quad need to have quad normals be merge
+    /// with neighbouring quads.
+    needs_normal_merge: QuadSideFlags,
     /// True if this quad is currently being rendered.
     render: bool,
 
@@ -163,12 +164,12 @@ impl Quad {
             cur_subdivision: 0,
             mid_coord_pos: Vector3::new(0.0, 0.0, 0.0),
             angle_size: (1.0, 1.0),
-            patch_flags: PATCH_FLAGS_NONE,
+            patch_flags: QUAD_SIDE_FLAGS_NONE,
 
             non_normalized: Vec::new(),
 
             needs_normal_update: false,
-            needs_normal_merge: false,
+            needs_normal_merge: QUAD_SIDE_FLAGS_NONE,
             render: false,
 
             self_ptr: None,
@@ -180,7 +181,7 @@ impl Quad {
         }
     }
 
-    fn calc_normals(&mut self, scene: &mut Scene) {
+    fn calc_normals(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
         {
             let verts = self.mesh.as_ref().unwrap().vpos(scene).unwrap();
             let indices = self.mesh.as_ref().unwrap().indices(scene).unwrap();
@@ -208,10 +209,17 @@ impl Quad {
             }
         }
 
+        let adj_size = sphere.quad_mesh_size as usize + 1;
         let normals = self.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap();
-        normals.clear();
-        for n in &self.non_normalized {
-            normals.push(n.normalize());
+        let mut i = 0;
+        for x in 0..adj_size {
+            for y in 0..adj_size {
+                // Don't change edge normals, they will be updated elsewhere
+                if x != 0 && y != 0 && x != adj_size - 1 && y != adj_size - 1 {
+                    normals[i] = self.non_normalized[i].normalize();
+                }
+                i += 1;
+            }
         }
     }
 
@@ -509,7 +517,7 @@ impl Quad {
             upper_left.plane = self.plane;
             upper_left.pos = QuadPos::NorthWest;
             upper_left.needs_normal_update = true;
-            upper_left.needs_normal_merge = true;
+            upper_left.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             upper_left.self_ptr = Some(self_ptr);
             upper_left.north = direct_north.as_ref().map(Rc::downgrade);
             upper_left.east = Some(Rc::downgrade(&upper_right));
@@ -533,7 +541,7 @@ impl Quad {
             upper_right.plane = self.plane;
             upper_right.pos = QuadPos::NorthEast;
             upper_right.needs_normal_update = true;
-            upper_right.needs_normal_merge = true;
+            upper_right.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             upper_right.self_ptr = Some(self_ptr);
             upper_right.north = direct_north.as_ref().map(Rc::downgrade);
             upper_right.east = direct_east.as_ref().map(Rc::downgrade);
@@ -557,7 +565,7 @@ impl Quad {
             lower_left.plane = self.plane;
             lower_left.pos = QuadPos::SouthWest;
             lower_left.needs_normal_update = true;
-            lower_left.needs_normal_merge = true;
+            lower_left.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             lower_left.self_ptr = Some(self_ptr);
             lower_left.north = Some(Rc::downgrade(&upper_left));
             lower_left.east = Some(Rc::downgrade(&lower_right));
@@ -581,7 +589,7 @@ impl Quad {
             lower_right.plane = self.plane;
             lower_right.pos = QuadPos::SouthEast;
             lower_right.needs_normal_update = true;
-            lower_right.needs_normal_merge = true;
+            lower_right.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             lower_right.self_ptr = Some(self_ptr);
             lower_right.north = Some(Rc::downgrade(&upper_right));
             lower_right.east = direct_east.as_ref().map(Rc::downgrade);
@@ -618,20 +626,22 @@ impl Quad {
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags =
-                PatchFlags::from(map_quad_side(QuadSide::South, self.plane, north_borrow.plane));
+                QuadSideFlags::from(map_quad_side(QuadSide::South, self.plane, north_borrow.plane));
             q1_borrow.patch_flags &= !flags;
             q1_borrow.needs_normal_update = true;
-            q1_borrow.needs_normal_merge = true;
+            q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags &= !flags;
             q2_borrow.needs_normal_update = true;
-            q2_borrow.needs_normal_merge = true;
+            q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
         } else {
             let mut north_borrow = direct_north.borrow_mut();
+            let flags =
+                QuadSideFlags::from(map_quad_side(QuadSide::South, self.plane, north_borrow.plane));
             // TODO: would this be strictly necessary if `merge_normals` updates
             // both quads?
-            north_borrow.needs_normal_merge = true;
+            north_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(direct_north.clone());
         }
 
@@ -644,20 +654,22 @@ impl Quad {
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags =
-                PatchFlags::from(map_quad_side(QuadSide::North, self.plane, south_borrow.plane));
+                QuadSideFlags::from(map_quad_side(QuadSide::North, self.plane, south_borrow.plane));
             q1_borrow.patch_flags &= !flags;
             q1_borrow.needs_normal_update = true;
-            q1_borrow.needs_normal_merge = true;
+            q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags &= !flags;
             q2_borrow.needs_normal_update = true;
-            q2_borrow.needs_normal_merge = true;
+            q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
         } else {
             let mut south_borrow = direct_south.borrow_mut();
+            let flags =
+                QuadSideFlags::from(map_quad_side(QuadSide::North, self.plane, south_borrow.plane));
             // TODO: would this be strictly necessary if `merge_normals` updates
             // both quads?
-            south_borrow.needs_normal_merge = true;
+            south_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(direct_south.clone());
         }
 
@@ -670,20 +682,22 @@ impl Quad {
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags =
-                PatchFlags::from(map_quad_side(QuadSide::West, self.plane, east_borrow.plane));
+                QuadSideFlags::from(map_quad_side(QuadSide::West, self.plane, east_borrow.plane));
             q1_borrow.patch_flags &= !flags;
             q1_borrow.needs_normal_update = true;
-            q1_borrow.needs_normal_merge = true;
+            q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags &= !flags;
             q2_borrow.needs_normal_update = true;
-            q2_borrow.needs_normal_merge = true;
+            q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
         } else {
             let mut east_borrow = direct_east.borrow_mut();
+            let flags =
+                QuadSideFlags::from(map_quad_side(QuadSide::West, self.plane, east_borrow.plane));
             // TODO: would this be strictly necessary if `merge_normals` updates
             // both quads?
-            east_borrow.needs_normal_merge = true;
+            east_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(direct_east.clone());
         }
 
@@ -696,20 +710,22 @@ impl Quad {
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags =
-                PatchFlags::from(map_quad_side(QuadSide::East, self.plane, west_borrow.plane));
+                QuadSideFlags::from(map_quad_side(QuadSide::East, self.plane, west_borrow.plane));
             q1_borrow.patch_flags &= !flags;
             q1_borrow.needs_normal_update = true;
-            q1_borrow.needs_normal_merge = true;
+            q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags &= !flags;
             q2_borrow.needs_normal_update = true;
-            q2_borrow.needs_normal_merge = true;
+            q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
         } else {
             let mut west_borrow = direct_west.borrow_mut();
+            let flags =
+                QuadSideFlags::from(map_quad_side(QuadSide::East, self.plane, west_borrow.plane));
             // TODO: would this be strictly necessary if `merge_normals` updates
             // both quads?
-            west_borrow.needs_normal_merge = true;
+            west_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(direct_west.clone());
         }
 
@@ -720,23 +736,23 @@ impl Quad {
             let mut lower_right = lower_right.borrow_mut();
 
             if !north_subdivided {
-                upper_left.patch_flags |= PATCH_FLAGS_NORTH;
-                upper_right.patch_flags |= PATCH_FLAGS_NORTH;
+                upper_left.patch_flags |= QUAD_SIDE_FLAGS_NORTH;
+                upper_right.patch_flags |= QUAD_SIDE_FLAGS_NORTH;
             }
 
             if !south_subdivided {
-                lower_left.patch_flags |= PATCH_FLAGS_SOUTH;
-                lower_right.patch_flags |= PATCH_FLAGS_SOUTH;
+                lower_left.patch_flags |= QUAD_SIDE_FLAGS_SOUTH;
+                lower_right.patch_flags |= QUAD_SIDE_FLAGS_SOUTH;
             }
 
             if !east_subdivided {
-                upper_right.patch_flags |= PATCH_FLAGS_EAST;
-                lower_right.patch_flags |= PATCH_FLAGS_EAST;
+                upper_right.patch_flags |= QUAD_SIDE_FLAGS_EAST;
+                lower_right.patch_flags |= QUAD_SIDE_FLAGS_EAST;
             }
 
             if !west_subdivided {
-                upper_left.patch_flags |= PATCH_FLAGS_WEST;
-                lower_left.patch_flags |= PATCH_FLAGS_WEST;
+                upper_left.patch_flags |= QUAD_SIDE_FLAGS_WEST;
+                lower_left.patch_flags |= QUAD_SIDE_FLAGS_WEST;
             }
         }
 
@@ -747,7 +763,7 @@ impl Quad {
         lower_right.borrow_mut().update_visibility(sphere, scene);
 
         self.needs_normal_update = false;
-        self.needs_normal_merge = false;
+        self.needs_normal_merge = QUAD_SIDE_FLAGS_NONE;
 
         self.children = Some([upper_left, upper_right, lower_left, lower_right]);
     }
@@ -757,7 +773,7 @@ impl Quad {
             sphere.quad_pool().recycle_quad(scene, q.clone());
             let mut q_borrow = q.borrow_mut();
             q_borrow.needs_normal_update = false;
-            q_borrow.needs_normal_merge = false;
+            q_borrow.needs_normal_merge = QUAD_SIDE_FLAGS_NONE;
         }
 
         self.children = None;
@@ -782,20 +798,22 @@ impl Quad {
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags =
-                PatchFlags::from(map_quad_side(QuadSide::South, self.plane, north_borrow.plane));
+                QuadSideFlags::from(map_quad_side(QuadSide::South, self.plane, north_borrow.plane));
             q1_borrow.patch_flags |= flags;
             q1_borrow.needs_normal_update = true;
-            q1_borrow.needs_normal_merge = true;
+            q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags |= flags;
             q2_borrow.needs_normal_update = true;
-            q2_borrow.needs_normal_merge = true;
+            q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
         } else {
             let mut north_borrow = direct_north.borrow_mut();
+            let flags =
+                QuadSideFlags::from(map_quad_side(QuadSide::South, self.plane, north_borrow.plane));
             // TODO: would this be strictly necessary if `merge_normals` updates
             // both quads?
-            north_borrow.needs_normal_merge = true;
+            north_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(direct_north.clone());
         }
 
@@ -808,20 +826,22 @@ impl Quad {
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags =
-                PatchFlags::from(map_quad_side(QuadSide::North, self.plane, south_borrow.plane));
+                QuadSideFlags::from(map_quad_side(QuadSide::North, self.plane, south_borrow.plane));
             q1_borrow.patch_flags |= flags;
             q1_borrow.needs_normal_update = true;
-            q1_borrow.needs_normal_merge = true;
+            q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags |= flags;
             q2_borrow.needs_normal_update = true;
-            q2_borrow.needs_normal_merge = true;
+            q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
         } else {
             let mut south_borrow = direct_south.borrow_mut();
+            let flags =
+                QuadSideFlags::from(map_quad_side(QuadSide::North, self.plane, south_borrow.plane));
             // TODO: would this be strictly necessary if `merge_normals` updates
             // both quads?
-            south_borrow.needs_normal_merge = true;
+            south_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(direct_south.clone());
         }
 
@@ -834,20 +854,22 @@ impl Quad {
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags =
-                PatchFlags::from(map_quad_side(QuadSide::West, self.plane, east_borrow.plane));
+                QuadSideFlags::from(map_quad_side(QuadSide::West, self.plane, east_borrow.plane));
             q1_borrow.patch_flags |= flags;
             q1_borrow.needs_normal_update = true;
-            q1_borrow.needs_normal_merge = true;
+            q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags |= flags;
             q2_borrow.needs_normal_update = true;
-            q2_borrow.needs_normal_merge = true;
+            q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
         } else {
             let mut east_borrow = direct_east.borrow_mut();
+            let flags =
+                QuadSideFlags::from(map_quad_side(QuadSide::West, self.plane, east_borrow.plane));
             // TODO: would this be strictly necessary if `merge_normals` updates
             // both quads?
-            east_borrow.needs_normal_merge = true;
+            east_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(direct_east.clone());
         }
 
@@ -860,26 +882,28 @@ impl Quad {
             let mut q1_borrow = q1.borrow_mut();
             let mut q2_borrow = q2.borrow_mut();
             let flags =
-                PatchFlags::from(map_quad_side(QuadSide::East, self.plane, west_borrow.plane));
+                QuadSideFlags::from(map_quad_side(QuadSide::East, self.plane, west_borrow.plane));
             q1_borrow.patch_flags |= flags;
             q1_borrow.needs_normal_update = true;
-            q1_borrow.needs_normal_merge = true;
+            q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags |= flags;
             q2_borrow.needs_normal_update = true;
-            q2_borrow.needs_normal_merge = true;
+            q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
         } else {
             let mut west_borrow = direct_west.borrow_mut();
+            let flags =
+                QuadSideFlags::from(map_quad_side(QuadSide::East, self.plane, west_borrow.plane));
             // TODO: would this be strictly necessary if `merge_normals` updates
             // both quads?
-            west_borrow.needs_normal_merge = true;
+            west_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(direct_west.clone());
         }
 
-        self.patch_flags = PATCH_FLAGS_NONE;
+        self.patch_flags = QUAD_SIDE_FLAGS_NONE;
         self.needs_normal_update = true;
-        self.needs_normal_merge = true;
+        self.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
         sphere.queue_normal_update(self.self_ptr.as_ref().unwrap().upgrade().unwrap());
     }
 
@@ -938,18 +962,39 @@ impl Quad {
             indices.clear();
             indices.extend(new_indices);
         }
-        self.calc_normals(scene);
+        self.calc_normals(sphere, scene);
     }
 
     fn update_edge_normals(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
-        self.merge_side_normals(sphere, scene, QuadSide::North);
-        self.merge_side_normals(sphere, scene, QuadSide::South);
-        self.merge_side_normals(sphere, scene, QuadSide::East);
-        self.merge_side_normals(sphere, scene, QuadSide::West);
-        self.merge_corner_normal(sphere, scene, QuadPos::NorthWest);
-        self.merge_corner_normal(sphere, scene, QuadPos::NorthEast);
-        self.merge_corner_normal(sphere, scene, QuadPos::SouthWest);
-        self.merge_corner_normal(sphere, scene, QuadPos::SouthEast);
+        if self.needs_normal_merge.contains(QUAD_SIDE_FLAGS_NORTH) {
+            self.merge_side_normals(sphere, scene, QuadSide::North);
+        }
+        if self.needs_normal_merge.contains(QUAD_SIDE_FLAGS_SOUTH) {
+            self.merge_side_normals(sphere, scene, QuadSide::South);
+        }
+        if self.needs_normal_merge.contains(QUAD_SIDE_FLAGS_EAST) {
+            self.merge_side_normals(sphere, scene, QuadSide::East);
+        }
+        if self.needs_normal_merge.contains(QUAD_SIDE_FLAGS_WEST) {
+            self.merge_side_normals(sphere, scene, QuadSide::West);
+        }
+
+        if self.needs_normal_merge.contains(QUAD_SIDE_FLAGS_NORTH) ||
+           self.needs_normal_merge.contains(QUAD_SIDE_FLAGS_WEST) {
+            self.merge_corner_normal(sphere, scene, QuadPos::NorthWest);
+        }
+        if self.needs_normal_merge.contains(QUAD_SIDE_FLAGS_NORTH) ||
+           self.needs_normal_merge.contains(QUAD_SIDE_FLAGS_EAST) {
+            self.merge_corner_normal(sphere, scene, QuadPos::NorthEast);
+        }
+        if self.needs_normal_merge.contains(QUAD_SIDE_FLAGS_SOUTH) ||
+           self.needs_normal_merge.contains(QUAD_SIDE_FLAGS_WEST) {
+            self.merge_corner_normal(sphere, scene, QuadPos::SouthWest);
+        }
+        if self.needs_normal_merge.contains(QUAD_SIDE_FLAGS_SOUTH) ||
+           self.needs_normal_merge.contains(QUAD_SIDE_FLAGS_EAST) {
+            self.merge_corner_normal(sphere, scene, QuadPos::SouthEast);
+        }
     }
 
     #[allow(dead_code)]
@@ -1184,7 +1229,7 @@ impl QuadSphere {
             xp_quad.plane = Plane::XP;
             xp_quad.pos = QuadPos::None;
             xp_quad.needs_normal_update = true;
-            xp_quad.needs_normal_merge = true;
+            xp_quad.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             xp_quad.self_ptr = Some(self_ptr);
             xp_quad.north = Some(Rc::downgrade(&yp_quad));
             xp_quad.south = Some(Rc::downgrade(&yn_quad));
@@ -1207,7 +1252,7 @@ impl QuadSphere {
             xn_quad.plane = Plane::XN;
             xn_quad.pos = QuadPos::None;
             xn_quad.needs_normal_update = true;
-            xn_quad.needs_normal_merge = true;
+            xn_quad.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             xn_quad.self_ptr = Some(self_ptr);
             xn_quad.north = Some(Rc::downgrade(&yp_quad));
             xn_quad.south = Some(Rc::downgrade(&yn_quad));
@@ -1230,7 +1275,7 @@ impl QuadSphere {
             yp_quad.plane = Plane::YP;
             yp_quad.pos = QuadPos::None;
             yp_quad.needs_normal_update = true;
-            yp_quad.needs_normal_merge = true;
+            yp_quad.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             yp_quad.self_ptr = Some(self_ptr);
             yp_quad.north = Some(Rc::downgrade(&zn_quad));
             yp_quad.south = Some(Rc::downgrade(&zp_quad));
@@ -1253,7 +1298,7 @@ impl QuadSphere {
             yn_quad.plane = Plane::YN;
             yn_quad.pos = QuadPos::None;
             yn_quad.needs_normal_update = true;
-            yn_quad.needs_normal_merge = true;
+            yn_quad.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             yn_quad.self_ptr = Some(self_ptr);
             yn_quad.north = Some(Rc::downgrade(&zp_quad));
             yn_quad.south = Some(Rc::downgrade(&zn_quad));
@@ -1276,7 +1321,7 @@ impl QuadSphere {
             zp_quad.plane = Plane::ZP;
             zp_quad.pos = QuadPos::None;
             zp_quad.needs_normal_update = true;
-            zp_quad.needs_normal_merge = true;
+            zp_quad.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             zp_quad.self_ptr = Some(self_ptr);
             zp_quad.north = Some(Rc::downgrade(&yp_quad));
             zp_quad.south = Some(Rc::downgrade(&yn_quad));
@@ -1299,7 +1344,7 @@ impl QuadSphere {
             zn_quad.plane = Plane::ZN;
             zn_quad.pos = QuadPos::None;
             zn_quad.needs_normal_update = true;
-            zn_quad.needs_normal_merge = true;
+            zn_quad.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             zn_quad.self_ptr = Some(self_ptr);
             zn_quad.north = Some(Rc::downgrade(&yp_quad));
             zn_quad.south = Some(Rc::downgrade(&yn_quad));
@@ -1727,10 +1772,10 @@ impl BehaviourMessages for QuadSphere {
 
         for q in &*self.normal_update_queue.borrow() {
             let mut q = q.borrow_mut();
-            if q.needs_normal_merge {
+            if q.needs_normal_merge != QUAD_SIDE_FLAGS_NONE {
                 q.update_edge_normals(self, scene);
             }
-            q.needs_normal_merge = false;
+            q.needs_normal_merge = QUAD_SIDE_FLAGS_NONE;
         }
 
         self.normal_update_queue.borrow_mut().clear();
@@ -2577,14 +2622,14 @@ impl QuadPool {
 
         let mut indices_configs = Vec::with_capacity(16);
         for i in 0..16 {
-            indices_configs.push(gen_indices(quad_mesh_size, PatchFlags::from_bits(i).unwrap()));
+            indices_configs.push(gen_indices(quad_mesh_size, QuadSideFlags::from_bits(i).unwrap()));
         }
 
         let adj_size = quad_mesh_size as usize + 1;
         let vertices_cap = adj_size * adj_size;
-        // Base the mesh indices capacity from `PATCH_FLAGS_NONE` since that
+        // Base the mesh indices capacity from `QUAD_SIDE_FLAGS_NONE` since that
         // generates the largest buffer size.
-        let indices_cap = indices_configs[PATCH_FLAGS_NONE.bits() as usize].len();
+        let indices_cap = indices_configs[QUAD_SIDE_FLAGS_NONE.bits() as usize].len();
 
         let pool = QuadPool {
             shader: shader,
@@ -2620,7 +2665,7 @@ impl QuadPool {
             // Don't allocate for vpos since it will be allocated elsewhere
             *mesh.vpos_mut(scene).unwrap() = Vec::new();
             *mesh.vnorm_mut(scene).unwrap() = vec![Vector3::zero(); self.vertices_cap];
-            *mesh.indices_mut(scene).unwrap() = self.indices_configs[PATCH_FLAGS_NONE.bits() as usize].clone();
+            *mesh.indices_mut(scene).unwrap() = self.indices_configs[QUAD_SIDE_FLAGS_NONE.bits() as usize].clone();
             mrenderer.set_enabled(scene, false).unwrap();
             mrenderer.set_mesh(scene, Some(mesh.clone())).unwrap();
             mrenderer.set_material(scene, Some(self.quad_material.clone())).unwrap();
@@ -2638,10 +2683,10 @@ impl QuadPool {
         quad.base_coord = (0, 0);
         quad.cur_subdivision = 0;
         quad.mid_coord_pos = Vector3::new(0.0, 0.0, 0.0);
-        quad.patch_flags = PATCH_FLAGS_NONE;
+        quad.patch_flags = QUAD_SIDE_FLAGS_NONE;
 
         quad.needs_normal_update = false;
-        quad.needs_normal_merge = false;
+        quad.needs_normal_merge = QUAD_SIDE_FLAGS_NONE;
         quad.render = false;
 
         quad.self_ptr = None;
@@ -2667,8 +2712,8 @@ impl QuadPool {
         }
     }
 
-    /// Get the indices for a given `PatchFlags` configuration.
-    fn get_indices(&self, flags: PatchFlags) -> &Vec<u16> {
+    /// Get the indices for a given `QuadSideFlags` configuration.
+    fn get_indices(&self, flags: QuadSideFlags) -> &Vec<u16> {
         &self.indices_configs[flags.bits() as usize]
     }
 

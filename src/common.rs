@@ -18,7 +18,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use gen::{PatchFlags, PATCH_FLAGS_NORTH, PATCH_FLAGS_SOUTH, PATCH_FLAGS_EAST, PATCH_FLAGS_WEST};
 use num;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +52,17 @@ pub enum QuadSide {
     South,
     East,
     West,
+}
+
+bitflags! {
+    pub flags QuadSideFlags: u32 {
+        const QUAD_SIDE_FLAGS_NONE = 0x00,
+        const QUAD_SIDE_FLAGS_NORTH = 0x01,
+        const QUAD_SIDE_FLAGS_SOUTH = 0x02,
+        const QUAD_SIDE_FLAGS_EAST = 0x04,
+        const QUAD_SIDE_FLAGS_WEST = 0x08,
+        const QUAD_SIDE_FLAGS_ALL = 0x0F,
+    }
 }
 
 /// Calculates three values that allow mapping coordinates / vectors from one
@@ -224,13 +234,13 @@ impl QuadPos {
     }
 }
 
-impl From<QuadSide> for PatchFlags {
+impl From<QuadSide> for QuadSideFlags {
     fn from(side: QuadSide) -> Self {
         match side {
-            QuadSide::North => PATCH_FLAGS_NORTH,
-            QuadSide::South => PATCH_FLAGS_SOUTH,
-            QuadSide::East => PATCH_FLAGS_EAST,
-            QuadSide::West => PATCH_FLAGS_WEST,
+            QuadSide::North => QUAD_SIDE_FLAGS_NORTH,
+            QuadSide::South => QUAD_SIDE_FLAGS_SOUTH,
+            QuadSide::East => QUAD_SIDE_FLAGS_EAST,
+            QuadSide::West => QUAD_SIDE_FLAGS_WEST,
         }
     }
 }
