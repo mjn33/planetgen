@@ -1996,6 +1996,15 @@ impl Scene {
         gl::Enable(gl::BLEND);
         gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
 
+        {
+            let (width, height) = self.window.as_ref().unwrap().size();
+            let aspect_ratio = width as f32 / height as f32;
+            for camera in &mut self.camera_data {
+                camera.aspect = aspect_ratio;
+            }
+            gl::Viewport(0, 0, width as GLint, height as GLint);
+        }
+
         if let Some(fence) = self.fences[self.cur_fence].take() {
             if !self.buggy_intel {
                 let result = gl::ClientWaitSync(fence, gl::SYNC_FLUSH_COMMANDS_BIT,

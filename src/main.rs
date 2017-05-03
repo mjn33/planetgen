@@ -1174,7 +1174,7 @@ impl QuadSphere {
 
         let skybox_cam_obj = scene.create_object();
         let skybox_cam = scene.add_component::<Camera>(&skybox_cam_obj).unwrap();
-        skybox_cam.set_near_clip(scene, 0.5).unwrap();
+        skybox_cam.set_near_clip(scene, 0.1).unwrap();
         skybox_cam.set_far_clip(scene, 5.0).unwrap();
         skybox_cam.set_layers(scene, 4).unwrap();
         skybox_cam.set_order(scene, -2).unwrap();
@@ -1971,7 +1971,7 @@ impl SunController {
         let sun_cam = scene.add_component::<Camera>(&sun_cam_obj).unwrap();
         // Render behind the planet
         sun_cam.set_order(scene, -1).unwrap();
-        sun_cam.set_near_clip(scene, 0.5).unwrap();
+        sun_cam.set_near_clip(scene, 0.1).unwrap();
         sun_cam.set_far_clip(scene, 5.0).unwrap();
         sun_cam.set_layers(scene, 2).unwrap();
 
