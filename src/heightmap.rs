@@ -100,6 +100,30 @@ fn load_heightmap(filename: &str) -> Result<(Box<[f32]>, u32), String> {
     Ok((heightmap.into_boxed_slice(), info.width))
 }
 
+fn cubic_interp(p0: f64, p1: f64, p2: f64, p3: f64, alpha: f64) -> f64 {
+    let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+    let b = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+    let c = -0.5 * p0 + 0.5 * p2;
+    let d = p1;
+
+    a * alpha * alpha * alpha +
+    b * alpha * alpha +
+    c * alpha +
+    d
+}
+
+fn bicubic_interp(p00: f64, p10: f64, p20: f64, p30: f64,
+                  p01: f64, p11: f64, p21: f64, p31: f64,
+                  p02: f64, p12: f64, p22: f64, p32: f64,
+                  p03: f64, p13: f64, p23: f64, p33: f64,
+                  x: f64, y: f64) -> f64 {
+    let x0 = cubic_interp(p00, p01, p02, p03, y);
+    let x1 = cubic_interp(p10, p11, p12, p13, y);
+    let x2 = cubic_interp(p20, p21, p22, p23, y);
+    let x3 = cubic_interp(p30, p31, p32, p33, y);
+    cubic_interp(x0, x1, x2, x3, x)
+}
+
 impl Heightmap {
     pub fn load(prefix: &str) -> Heightmap {
         let xp_filename = [prefix, "xp.png"].concat();
@@ -344,8 +368,55 @@ impl Heightmap {
         }
     }
 
-    pub fn resolution(&self) -> i32 {
-        self.resolution
+    pub fn sample(&self, plane: Plane, x: f32, y: f32) -> f32 {
+        let max = self.resolution - 1;
+        let x = x * max as f32;
+        let y = y * max as f32;
+
+        let ix = x as i32;
+        let iy = y as i32;
+
+        let ix = if ix == max { ix - 1 } else { ix };
+        let iy = if iy == max { iy - 1 } else { iy };
+
+        let alpha_x = x - ix as f32;
+        let alpha_y = y - iy as f32;
+
+        let x0 = ix - 1;
+        let x1 = ix;
+        let x2 = ix + 1;
+        let x3 = ix + 2;
+
+        let y0 = iy - 1;
+        let y1 = iy;
+        let y2 = iy + 1;
+        let y3 = iy + 2;
+
+        let p00 = self.get_height_data(plane, x0, y0);
+        let p10 = self.get_height_data(plane, x1, y0);
+        let p20 = self.get_height_data(plane, x2, y0);
+        let p30 = self.get_height_data(plane, x3, y0);
+
+        let p01 = self.get_height_data(plane, x0, y1);
+        let p11 = self.get_height_data(plane, x1, y1);
+        let p21 = self.get_height_data(plane, x2, y1);
+        let p31 = self.get_height_data(plane, x3, y1);
+
+        let p02 = self.get_height_data(plane, x0, y2);
+        let p12 = self.get_height_data(plane, x1, y2);
+        let p22 = self.get_height_data(plane, x2, y2);
+        let p32 = self.get_height_data(plane, x3, y2);
+
+        let p03 = self.get_height_data(plane, x0, y3);
+        let p13 = self.get_height_data(plane, x1, y3);
+        let p23 = self.get_height_data(plane, x2, y3);
+        let p33 = self.get_height_data(plane, x3, y3);
+
+        bicubic_interp(p00 as f64, p10 as f64, p20 as f64, p30 as f64,
+                       p01 as f64, p11 as f64, p21 as f64, p31 as f64,
+                       p02 as f64, p12 as f64, p22 as f64, p32 as f64,
+                       p03 as f64, p13 as f64, p23 as f64, p33 as f64,
+                       alpha_x as f64, alpha_y as f64) as f32
     }
 
     /// Utility function for calculating an index from a position
