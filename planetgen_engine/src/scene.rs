@@ -844,6 +844,8 @@ impl Object {
 const FRAME_TIME_MAX_SAMPLES: usize = 60;
 const INITIAL_VERTEX_BUF_CAPACITY: usize = 4 * 1024 * 1024;
 const INITIAL_INDEX_BUF_CAPACITY: usize = 4 * 1024 * 1024;
+const MESH_MIN_VERT_CAPACITY: usize = 1;
+const MESH_MIN_INDICES_CAPACITY: usize = 1;
 
 pub struct Scene {
     /// The OpenGL used for rendering, None if in headless mode.
@@ -1129,6 +1131,9 @@ impl Scene {
             panic!("Tried to create mesh in headless mode.");
         }
 
+        let vert_capacity = std::cmp::max(vert_capacity, MESH_MIN_VERT_CAPACITY);
+        let indices_capacity = std::cmp::max(indices_capacity, MESH_MIN_INDICES_CAPACITY);
+
         let rv = Rc::new(Mesh { idx: Cell::new(None) });
         let data = MeshData {
             object: rv.clone(),
@@ -1137,10 +1142,10 @@ impl Scene {
             vnorm_vec: Vec::new(),
             vcolour_vec: Vec::new(),
             indices_vec: Vec::new(),
-            vertex_buf_dirty: false,
+            vertex_buf_dirty: true,
             vertex_buf_alloc: None,
             vertex_buf_capacity: vert_capacity,
-            index_buf_dirty: false,
+            index_buf_dirty: true,
             index_buf_alloc: None,
             index_buf_capacity: indices_capacity,
             aabb_dirty: false,
