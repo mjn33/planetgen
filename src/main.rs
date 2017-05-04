@@ -1040,6 +1040,7 @@ struct QuadSphere {
     radius: f64,
     min_height: f64,
     max_height: f64,
+    range_factor: f64,
     collapse_ranges: Vec<f64>,
     subdivide_ranges: Vec<f64>,
     centre_pos: Vector3<f64>,
@@ -1066,6 +1067,21 @@ impl QuadSphere {
         let bits = (quad_mesh_size as u32 - 1).leading_zeros();
         assert!(max_subdivision <= (bits - 1));
 
+        let range_factor = 4.0;
+        // Try to put a good upper bound on the number of quads:
+        //
+        //  * Assume quads are half the size they would normally be (accounts
+        //    for changing quad density at cube edges)
+        //
+        //  * Assume all quads within collapse range are subdivided
+        //
+        //  * Multiply by max subdivision (subdivision level 0 can only have the
+        //    6 root quads)
+        let pool_size = range_factor * 2.0 * 1.6 * 2.0;
+        let pool_size = std::f64::consts::PI * pool_size * pool_size;
+        let pool_size = pool_size * max_subdivision as f64;
+        let pool_size = pool_size as usize;
+
         let object = scene.create_object();
         let mut rv = QuadSphere {
             object: object,
@@ -1075,6 +1091,7 @@ impl QuadSphere {
             radius: radius,
             min_height: min_height,
             max_height: max_height,
+            range_factor: range_factor,
             collapse_ranges: Vec::new(),
             subdivide_ranges: Vec::new(),
             centre_pos: Vector3::unit_z(),
@@ -1083,8 +1100,7 @@ impl QuadSphere {
             cull_cos_theta: 0.0,
             faces: None,
             normal_update_queue: RefCell::new(Vec::new()),
-            // TODO: calculate better initial value for pool size
-            quad_pool: QuadPool::new(scene, quad_mesh_size, 10000),
+            quad_pool: QuadPool::new(scene, quad_mesh_size, pool_size),
             generator: create_generator(),
             heightmap: Heightmap::default(),
             colour_curve: ColourCurve::new(),
@@ -1264,8 +1280,8 @@ impl QuadSphere {
 
             // sqrt(0.5^2 + 1.5^2) = ~1.6, this means any point within a quad
             // will cause all four neighbours to be subdivided as well.
-            let collapse_range = 4.0 * 2.0 * 1.6 * real_quad_length;
-            let subdivide_range = 4.0 * 1.6 * real_quad_length;
+            let collapse_range = self.range_factor * 2.0 * 1.6 * real_quad_length;
+            let subdivide_range = self.range_factor * 1.6 * real_quad_length;
 
             let r = 1.0;
             let collapse_cos_theta = f64::cos(f64::min(std::f64::consts::PI, collapse_range / r));
