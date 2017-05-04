@@ -1608,6 +1608,8 @@ struct CameraController {
     camera_obj: Rc<Object>,
     /// Speed the camera moves in m/s
     speed: f32,
+    /// Speed the camera rotates in degrees/s
+    rot_speed: f32,
     mouse_prev_x: i32,
     mouse_prev_y: i32,
     cam_pos: Vector3<f32>,
@@ -1637,6 +1639,7 @@ impl CameraController {
             prev_time: std::time::Instant::now(),
             camera_obj: camera_obj,
             speed: 10000.0,
+            rot_speed: 60.0,
             mouse_prev_x: 0,
             mouse_prev_y: 0,
             cam_pos: Vector3::zero(),
@@ -1706,6 +1709,8 @@ impl CameraController {
 
             if state.right() { (dx, dy) } else { (0, 0) }
         };
+
+        let roll = roll * self.rot_speed * dt;
 
         self.cam_rot = self.cam_rot * Quaternion::from(Euler {
             x: Deg(-dy as f32),
