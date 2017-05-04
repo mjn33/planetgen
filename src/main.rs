@@ -129,7 +129,8 @@ struct Quad {
 }
 
 impl Quad {
-    fn new(object: Rc<Object>) -> Quad {
+    fn new(scene: &mut Scene) -> Quad {
+        let object = scene.create_object();
         Quad {
             object: object,
             plane: Plane::XP,
@@ -476,7 +477,7 @@ impl Quad {
         let lower_right_vpos = result.q4_vpos;
         let lower_right_vcolour = result.q4_vcolour;
 
-        let sphere_obj = sphere.behaviour().object(scene).unwrap().clone();
+        let sphere_obj = &sphere.object;
         let upper_left = sphere.quad_pool().get_quad(scene);
         let upper_right = sphere.quad_pool().get_quad(scene);
         let lower_left = sphere.quad_pool().get_quad(scene);
@@ -1032,27 +1033,22 @@ struct SubdivideResult {
 }
 
 struct QuadSphere {
-    behaviour: Behaviour,
+    object: Rc<Object>,
     quad_mesh_size: u16,
     max_subdivision: u32,
     max_coord: u32,
-    collapse_ranges: Vec<f64>,
-    subdivide_ranges: Vec<f64>,
     radius: f64,
     min_height: f64,
     max_height: f64,
+    collapse_ranges: Vec<f64>,
+    subdivide_ranges: Vec<f64>,
     centre_pos: Vector3<f64>,
     centre_dist: f64,
     cull_sin_theta: f64,
     cull_cos_theta: f64,
     faces: Option<[Rc<RefCell<Quad>>; 6]>,
     normal_update_queue: RefCell<Vec<Rc<RefCell<Quad>>>>,
-    quad_pool: Option<QuadPool>,
-
-    camera_controller: CameraController,
-    sun_controller: SunController,
-    skybox_obj: Option<Rc<Object>>,
-    skybox_cam_obj: Option<Rc<Object>>,
+    quad_pool: QuadPool,
 
     generator: Box<Module>,
     heightmap: Heightmap,
@@ -1060,129 +1056,47 @@ struct QuadSphere {
 }
 
 impl QuadSphere {
-    fn init(&mut self,
-            scene: &mut Scene,
-            quad_mesh_size: u16,
-            max_subdivision: u32,
-            radius: f64,
-            min_height: f64,
-            max_height: f64) {
+    fn new(scene: &mut Scene,
+           quad_mesh_size: u16,
+           max_subdivision: u32,
+           radius: f64,
+           min_height: f64,
+           max_height: f64) -> QuadSphere {
         assert!(quad_mesh_size > 1);
         let bits = (quad_mesh_size as u32 - 1).leading_zeros();
         assert!(max_subdivision <= (bits - 1));
 
-        self.quad_mesh_size = quad_mesh_size;
-        self.max_subdivision = max_subdivision;
-        self.max_coord = (1 << max_subdivision) * quad_mesh_size as u32;
-        self.radius = radius;
-        self.min_height = min_height;
-        self.max_height = max_height;
+        let object = scene.create_object();
+        let mut rv = QuadSphere {
+            object: object,
+            quad_mesh_size: quad_mesh_size,
+            max_subdivision: max_subdivision,
+            max_coord: (1 << max_subdivision) * quad_mesh_size as u32,
+            radius: radius,
+            min_height: min_height,
+            max_height: max_height,
+            collapse_ranges: Vec::new(),
+            subdivide_ranges: Vec::new(),
+            centre_pos: Vector3::unit_z(),
+            centre_dist: 1.0,
+            cull_sin_theta: 0.0,
+            cull_cos_theta: 0.0,
+            faces: None,
+            normal_update_queue: RefCell::new(Vec::new()),
+            // TODO: calculate better initial value for pool size
+            quad_pool: QuadPool::new(scene, quad_mesh_size, 10000),
+            generator: create_generator(),
+            heightmap: Heightmap::default(),
+            colour_curve: ColourCurve::new(),
+        };
 
-        self.calc_ranges();
-
-        let quad_pool = QuadPool::new(scene, quad_mesh_size, 10000);
-        self.sun_controller.init(scene, quad_pool.quad_material.clone());
-        self.quad_pool = Some(quad_pool);
-
-        let skybox_obj = scene.create_object();
-        let skybox_renderer = scene.add_component::<MeshRenderer>(&skybox_obj).unwrap();
-        let skybox_mesh = scene.create_mesh(36, 36);
-        *skybox_mesh.vpos_mut(scene).unwrap() = vec![
-            // ZP
-            Vector3::new(1.0, -1.0, 1.0),
-            Vector3::new(-1.0, -1.0, 1.0),
-            Vector3::new(-1.0, 1.0, 1.0),
-            Vector3::new(-1.0, 1.0, 1.0),
-            Vector3::new(1.0, 1.0, 1.0),
-            Vector3::new(1.0, -1.0, 1.0),
-            // XP
-            Vector3::new(1.0, -1.0, -1.0),
-            Vector3::new(1.0, -1.0, 1.0),
-            Vector3::new(1.0, 1.0, 1.0),
-            Vector3::new(1.0, 1.0, 1.0),
-            Vector3::new(1.0, 1.0, -1.0),
-            Vector3::new(1.0, -1.0, -1.0),
-            // ZN
-            Vector3::new(-1.0, -1.0, -1.0),
-            Vector3::new(1.0, -1.0, -1.0),
-            Vector3::new(1.0, 1.0, -1.0),
-            Vector3::new(1.0, 1.0, -1.0),
-            Vector3::new(-1.0, 1.0, -1.0),
-            Vector3::new(-1.0, -1.0, -1.0),
-            // XN
-            Vector3::new(-1.0, -1.0, 1.0),
-            Vector3::new(-1.0, -1.0, -1.0),
-            Vector3::new(-1.0, 1.0, -1.0),
-            Vector3::new(-1.0, 1.0, -1.0),
-            Vector3::new(-1.0, 1.0, 1.0),
-            Vector3::new(-1.0, -1.0, 1.0),
-            // YN
-            Vector3::new(1.0, -1.0, -1.0),
-            Vector3::new(-1.0, -1.0, -1.0),
-            Vector3::new(-1.0, -1.0, 1.0),
-            Vector3::new(-1.0, -1.0, 1.0),
-            Vector3::new(1.0, -1.0, 1.0),
-            Vector3::new(1.0, -1.0, -1.0),
-            // YP
-            Vector3::new(1.0, 1.0, 1.0),
-            Vector3::new(-1.0, 1.0, 1.0),
-            Vector3::new(-1.0, 1.0, -1.0),
-            Vector3::new(-1.0, 1.0, -1.0),
-            Vector3::new(1.0, 1.0, -1.0),
-            Vector3::new(1.0, 1.0, 1.0),
-        ];
-        *skybox_mesh.indices_mut(scene).unwrap() = vec![
-            0, 1, 2, 3, 4, 5,
-            6, 7, 8, 9, 10, 11,
-            12, 13, 14, 15, 16, 17,
-            18, 19, 20, 21, 22, 23,
-            24, 25, 26, 27, 28, 29,
-            30, 31, 32, 33, 34, 35,
-        ];
-        let skybox_shader = scene.create_shader(
-            include_str!("skybox_vs.glsl"),
-            include_str!("skybox_fs.glsl"),
-            None);
-        let skybox_material = scene.create_material(skybox_shader.clone()).unwrap();
-        skybox_renderer.set_material(scene, Some(skybox_material.clone())).unwrap();
-        skybox_renderer.set_mesh(scene, Some(skybox_mesh)).unwrap();
-        skybox_renderer.set_layers(scene, 4).unwrap();
-
-        let skybox_cam_obj = scene.create_object();
-        let skybox_cam = scene.add_component::<Camera>(&skybox_cam_obj).unwrap();
-        skybox_cam.set_near_clip(scene, 0.1).unwrap();
-        skybox_cam.set_far_clip(scene, 5.0).unwrap();
-        skybox_cam.set_layers(scene, 4).unwrap();
-        skybox_cam.set_order(scene, -2).unwrap();
-
-        let skybox_xp = load_image("skybox_xp.png").expect("Failed to load XP skybox");
-        let skybox_xn = load_image("skybox_xn.png").expect("Failed to load XN skybox");
-        let skybox_yp = load_image("skybox_yp.png").expect("Failed to load YP skybox");
-        let skybox_yn = load_image("skybox_yn.png").expect("Failed to load YN skybox");
-        let skybox_zp = load_image("skybox_zp.png").expect("Failed to load ZP skybox");
-        let skybox_zn = load_image("skybox_zn.png").expect("Failed to load ZN skybox");
-
-        let cubemap = scene.create_cubemap(skybox_zn.1 as usize,
-                                           skybox_zn.2 as usize,
-                                           [&skybox_xp.0,
-                                            &skybox_xn.0,
-                                            &skybox_yp.0,
-                                            &skybox_yn.0,
-                                            &skybox_zp.0,
-                                            &skybox_zn.0]);
-
-        skybox_material.set_uniform(scene, "cubemap", UniformValue::Cubemap(cubemap)).unwrap();
-
-        self.skybox_obj = Some(skybox_obj);
-        self.skybox_cam_obj = Some(skybox_cam_obj);
-
-        self.colour_curve.add_control_point(0.0, (0x42, 0x29, 0x13, 0xff));
-        self.colour_curve.add_control_point(0.5, (0x58, 0x35, 0x17, 0xff));
-        self.colour_curve.add_control_point(0.51, (0x5e, 0x36, 0x15, 0xff));
-        self.colour_curve.add_control_point(0.6, (0x7c, 0x4e, 0x28, 0xff));
-        self.colour_curve.add_control_point(0.8, (0x74, 0x44, 0x1d, 0xff));
-        self.colour_curve.add_control_point(0.81, (0x8b, 0x59, 0x31, 0xff));
-        self.colour_curve.add_control_point(1.0, (0x9a, 0x66, 0x3b, 0xff));
+        rv.init(scene);
+        rv
+    }
+    fn init(&mut self, scene: &mut Scene) {
+        self.init_ranges();
+        self.init_heightmap();
+        self.init_colour_curve();
 
         let (xp_quad_vpos, xp_quad_vcolour) = self.calc_quad_verts(Plane::XP, (0, 0), 0);
         let (xn_quad_vpos, xn_quad_vcolour) = self.calc_quad_verts(Plane::XN, (0, 0), 0);
@@ -1191,13 +1105,12 @@ impl QuadSphere {
         let (zp_quad_vpos, zp_quad_vcolour) = self.calc_quad_verts(Plane::ZP, (0, 0), 0);
         let (zn_quad_vpos, zn_quad_vcolour) = self.calc_quad_verts(Plane::ZN, (0, 0), 0);
 
-        let self_object = self.behaviour().object(scene).unwrap().clone();
-        let xp_quad = self.quad_pool.as_mut().unwrap().get_quad(scene);
-        let xn_quad = self.quad_pool.as_mut().unwrap().get_quad(scene);
-        let yp_quad = self.quad_pool.as_mut().unwrap().get_quad(scene);
-        let yn_quad = self.quad_pool.as_mut().unwrap().get_quad(scene);
-        let zp_quad = self.quad_pool.as_mut().unwrap().get_quad(scene);
-        let zn_quad = self.quad_pool.as_mut().unwrap().get_quad(scene);
+        let xp_quad = self.quad_pool.get_quad(scene);
+        let xn_quad = self.quad_pool.get_quad(scene);
+        let yp_quad = self.quad_pool.get_quad(scene);
+        let yn_quad = self.quad_pool.get_quad(scene);
+        let zp_quad = self.quad_pool.get_quad(scene);
+        let zn_quad = self.quad_pool.get_quad(scene);
 
         {
             let self_ptr = Rc::downgrade(&xp_quad);
@@ -1215,7 +1128,7 @@ impl QuadSphere {
             xp_quad.base_coord = (0, 0);
             xp_quad.mid_coord_pos = xp_quad.mid_coord_pos(self);
 
-            scene.set_object_parent(&xp_quad.object, Some(&self_object));
+            scene.set_object_parent(&xp_quad.object, Some(&self.object));
             let mesh = xp_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = xp_quad_vpos;
             *mesh.vcolour_mut(scene).unwrap() = xp_quad_vcolour;
@@ -1238,7 +1151,7 @@ impl QuadSphere {
             xn_quad.base_coord = (0, 0);
             xn_quad.mid_coord_pos = xn_quad.mid_coord_pos(self);
 
-            scene.set_object_parent(&xn_quad.object, Some(&self_object));
+            scene.set_object_parent(&xn_quad.object, Some(&self.object));
             let mesh = xn_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = xn_quad_vpos;
             *mesh.vcolour_mut(scene).unwrap() = xn_quad_vcolour;
@@ -1261,7 +1174,7 @@ impl QuadSphere {
             yp_quad.base_coord = (0, 0);
             yp_quad.mid_coord_pos = yp_quad.mid_coord_pos(self);
 
-            scene.set_object_parent(&yp_quad.object, Some(&self_object));
+            scene.set_object_parent(&yp_quad.object, Some(&self.object));
             let mesh = yp_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = yp_quad_vpos;
             *mesh.vcolour_mut(scene).unwrap() = yp_quad_vcolour;
@@ -1284,7 +1197,7 @@ impl QuadSphere {
             yn_quad.base_coord = (0, 0);
             yn_quad.mid_coord_pos = yn_quad.mid_coord_pos(self);
 
-            scene.set_object_parent(&yn_quad.object, Some(&self_object));
+            scene.set_object_parent(&yn_quad.object, Some(&self.object));
             let mesh = yn_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = yn_quad_vpos;
             *mesh.vcolour_mut(scene).unwrap() = yn_quad_vcolour;
@@ -1307,7 +1220,7 @@ impl QuadSphere {
             zp_quad.base_coord = (0, 0);
             zp_quad.mid_coord_pos = zp_quad.mid_coord_pos(self);
 
-            scene.set_object_parent(&zp_quad.object, Some(&self_object));
+            scene.set_object_parent(&zp_quad.object, Some(&self.object));
             let mesh = zp_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = zp_quad_vpos;
             *mesh.vcolour_mut(scene).unwrap() = zp_quad_vcolour;
@@ -1330,7 +1243,7 @@ impl QuadSphere {
             zn_quad.base_coord = (0, 0);
             zn_quad.mid_coord_pos = zn_quad.mid_coord_pos(self);
 
-            scene.set_object_parent(&zn_quad.object, Some(&self_object));
+            scene.set_object_parent(&zn_quad.object, Some(&self.object));
             let mesh = zn_quad.mesh.as_ref().unwrap();
             *mesh.vpos_mut(scene).unwrap() = zn_quad_vpos;
             *mesh.vcolour_mut(scene).unwrap() = zn_quad_vcolour;
@@ -1340,7 +1253,7 @@ impl QuadSphere {
         self.faces = Some([xp_quad, xn_quad, yp_quad, yn_quad, zp_quad, zn_quad]);
     }
 
-    fn calc_ranges(&mut self) {
+    fn init_ranges(&mut self) {
         self.collapse_ranges = Vec::with_capacity(self.max_subdivision as usize + 1);
         self.subdivide_ranges = Vec::with_capacity(self.max_subdivision as usize + 1);
 
@@ -1361,6 +1274,20 @@ impl QuadSphere {
             self.collapse_ranges.push(collapse_cos_theta);
             self.subdivide_ranges.push(subdivide_cos_theta);
         }
+    }
+
+    fn init_heightmap(&mut self) {
+        self.heightmap = Heightmap::load("");
+    }
+
+    fn init_colour_curve(&mut self) {
+        self.colour_curve.add_control_point(0.0, (0x42, 0x29, 0x13, 0xff));
+        self.colour_curve.add_control_point(0.5, (0x58, 0x35, 0x17, 0xff));
+        self.colour_curve.add_control_point(0.51, (0x5e, 0x36, 0x15, 0xff));
+        self.colour_curve.add_control_point(0.6, (0x7c, 0x4e, 0x28, 0xff));
+        self.colour_curve.add_control_point(0.8, (0x74, 0x44, 0x1d, 0xff));
+        self.colour_curve.add_control_point(0.81, (0x8b, 0x59, 0x31, 0xff));
+        self.colour_curve.add_control_point(1.0, (0x9a, 0x66, 0x3b, 0xff));
     }
 
     fn quad_length(&self, level: u32) -> u32 {
@@ -1574,7 +1501,7 @@ impl QuadSphere {
     }
 
     fn quad_pool(&self) -> &QuadPool {
-        self.quad_pool.as_ref().unwrap()
+        &self.quad_pool
     }
 
     #[allow(dead_code)]
@@ -1635,54 +1562,11 @@ impl QuadSphere {
     }
 }
 
-impl BehaviourMessages for QuadSphere {
-    fn create(behaviour: Behaviour) -> QuadSphere {
-        QuadSphere {
-            behaviour: behaviour,
-            quad_mesh_size: 0,
-            max_subdivision: 0,
-            max_coord: 0,
-            collapse_ranges: Vec::new(),
-            subdivide_ranges: Vec::new(),
-            radius: 1.0,
-            min_height: 0.0,
-            max_height: 0.0,
-            centre_pos: Vector3::unit_z(),
-            centre_dist: 1.0,
-            cull_sin_theta: 0.0,
-            cull_cos_theta: 0.0,
-            faces: None,
-            normal_update_queue: RefCell::new(Vec::new()),
-            quad_pool: None,
-            camera_controller: CameraController::new(),
-            sun_controller: SunController::new(),
-            skybox_obj: None,
-            skybox_cam_obj: None,
-            generator: create_generator(),
-            heightmap: Heightmap::default(),
-            colour_curve: ColourCurve::new(),
-        }
-    }
-
-    fn start(&mut self, scene: &mut Scene) {
-        self.camera_controller.start(scene);
-        self.sun_controller.start(scene, &self.camera_controller);
+impl QuadSphere {
+    fn start(&mut self, _scene: &mut Scene) {
     }
 
     fn update(&mut self, scene: &mut Scene) {
-        self.camera_controller.update(scene);
-        let cam_pos = self.camera_controller.cam_pos();
-        self.centre_pos = cam_pos.normalize().cast();
-        self.centre_dist = cam_pos.magnitude() as f64;
-
-        self.sun_controller.update(scene, &self.camera_controller);
-
-        self.skybox_cam_obj
-            .as_ref()
-            .unwrap()
-            .set_world_rot(scene, self.camera_controller.cam_rot)
-            .unwrap();
-
         self.calc_cull_range();
 
         for i in 0..6 {
@@ -1715,17 +1599,13 @@ impl BehaviourMessages for QuadSphere {
             q.borrow_mut().cleanup(scene);
             scene.destroy_object(&q.borrow().object);
         }
-        self.quad_pool.as_ref().map(|p| p.cleanup(scene));
-    }
-
-    fn behaviour(&self) -> &Behaviour {
-        &self.behaviour
+        self.quad_pool.cleanup(scene);
     }
 }
 
 struct CameraController {
     prev_time: std::time::Instant,
-    camera_obj: Option<Rc<Object>>,
+    camera_obj: Rc<Object>,
     /// Speed the camera moves in m/s
     speed: f32,
     mouse_prev_x: i32,
@@ -1735,10 +1615,27 @@ struct CameraController {
 }
 
 impl CameraController {
-    fn new() -> CameraController {
+    fn new(scene: &mut Scene) -> CameraController {
+        let camera_obj = scene.create_object();
+        let camera_far_obj = scene.create_object();
+        let camera_near_obj = scene.create_object();
+        scene.set_object_parent(&camera_far_obj, Some(&camera_obj));
+        scene.set_object_parent(&camera_near_obj, Some(&camera_obj));
+
+        let camera_far = scene.add_component::<Camera>(&*camera_far_obj).unwrap();
+        let camera_near = scene.add_component::<Camera>(&*camera_near_obj).unwrap();
+        camera_far.set_near_clip(scene, 100000.0).unwrap();
+        camera_far.set_far_clip(scene, 10000000.0).unwrap();
+        camera_far.set_order(scene, 0).unwrap();
+        camera_near.set_near_clip(scene, 100.0).unwrap();
+        camera_near.set_far_clip(scene, 110000.0).unwrap();
+        camera_near.set_order(scene, 1).unwrap();
+
+        camera_obj.set_world_pos(scene, -Vector3::unit_z() * 6_600_000.0).unwrap();
+
         CameraController {
             prev_time: std::time::Instant::now(),
-            camera_obj: None,
+            camera_obj: camera_obj,
             speed: 10000.0,
             mouse_prev_x: 0,
             mouse_prev_y: 0,
@@ -1816,9 +1713,7 @@ impl CameraController {
             z: Deg(roll)
         });
 
-        let camera_obj = self.camera_obj.as_ref().unwrap();
-
-        let old_pos = camera_obj.world_pos(scene).unwrap();
+        let old_pos = self.camera_obj.world_pos(scene).unwrap();
 
         let forward = Vector3::new(0.0, 0.0, -1.0) * forward_amount;
         let left = Vector3::new(-1.0, 0.0, 0.0) * left_amount;
@@ -1829,18 +1724,20 @@ impl CameraController {
 
         self.cam_pos = old_pos + direction_world * dt;
 
-        camera_obj.set_world_pos(scene, self.cam_pos).unwrap();
-        camera_obj.set_world_rot(scene, self.cam_rot).unwrap();
+        self.camera_obj.set_world_pos(scene, self.cam_pos).unwrap();
+        self.camera_obj.set_world_rot(scene, self.cam_rot).unwrap();
     }
 
     fn cam_pos(&self) -> Vector3<f32> {
         self.cam_pos
     }
+
+    fn destroy(&mut self, _scene: &mut Scene) {
+    }
 }
 
 struct SunController {
     prev_time: std::time::Instant,
-    quad_material: Option<Rc<Material>>,
     /// Speed multiplier for the sun, 1.0 is a 24-hour day.
     speed: f32,
     sun_pos: Vector3<f32>,
@@ -1848,28 +1745,13 @@ struct SunController {
     was_inc_key_down: bool,
     /// Whether the decrease speed key was pressed last frame
     was_dec_key_down: bool,
-    sun_obj: Option<Rc<Object>>,
-    sun_material: Option<Rc<Material>>,
-    sun_cam_obj: Option<Rc<Object>>,
+    sun_obj: Rc<Object>,
+    sun_material: Rc<Material>,
+    sun_cam_obj: Rc<Object>,
 }
 
 impl SunController {
-    fn new() -> SunController {
-        SunController {
-            prev_time: std::time::Instant::now(),
-            quad_material: None,
-            speed: 1.0,
-            sun_pos: Vector3::new(0.0, 1.0, 0.0),
-            was_inc_key_down: false,
-            was_dec_key_down: false,
-            sun_obj: None,
-            sun_material: None,
-            sun_cam_obj: None,
-        }
-    }
-
-    fn init(&mut self, scene: &mut Scene, quad_material: Rc<Material>) {
-        self.quad_material = Some(quad_material);
+    fn new(scene: &mut Scene) -> SunController {
         let sun_obj = scene.create_object();
         let mrenderer = scene.add_component::<MeshRenderer>(&sun_obj).unwrap();
         let mesh = scene.create_mesh(6, 6);
@@ -1903,19 +1785,26 @@ impl SunController {
         sun_cam.set_far_clip(scene, 5.0).unwrap();
         sun_cam.set_layers(scene, 2).unwrap();
 
-        self.sun_obj = Some(sun_obj);
-        self.sun_material = Some(material);
-        self.sun_cam_obj = Some(sun_cam_obj);
+        let mut rv = SunController {
+            prev_time: std::time::Instant::now(),
+            speed: 1.0,
+            sun_pos: Vector3::new(0.0, 1.0, 0.0),
+            was_inc_key_down: false,
+            was_dec_key_down: false,
+            sun_obj: sun_obj,
+            sun_material: material,
+            sun_cam_obj: sun_cam_obj,
+        };
 
-        self.set_sun_size(scene, 3600.0 * 10.0);
+        // 10 degrees
+        rv.set_sun_size(scene, 3600.0 * 10.0);
+        rv
     }
 
     fn set_sun_size(&mut self, scene: &mut Scene, arcsecs: f64) {
         let rad = (arcsecs / 3600.0).to_radians();
         let radius = f64::tan(0.5 * rad) as f32;
         self.sun_material
-            .as_ref()
-            .unwrap()
             .set_uniform(scene, "sun_radius", UniformValue::Float(radius))
             .unwrap();
     }
@@ -1925,25 +1814,15 @@ impl SunController {
         let cam_rot = camera_controller.cam_rot;
         let cam_up = cam_rot * up;
 
-        let sun_cam_obj = self.sun_cam_obj.as_ref().unwrap();
-        sun_cam_obj.set_world_rot(scene, cam_rot).unwrap();
+        self.sun_cam_obj.set_world_rot(scene, cam_rot).unwrap();
 
         let rot = Quaternion::look_at(-self.sun_pos, cam_up).invert();
-        let sun_obj = self.sun_obj.as_ref().unwrap();
-        sun_obj.set_world_pos(scene, self.sun_pos.normalize()).unwrap();
-        sun_obj.set_world_rot(scene, rot).unwrap();
+        self.sun_obj.set_world_pos(scene, self.sun_pos.normalize()).unwrap();
+        self.sun_obj.set_world_rot(scene, rot).unwrap();
     }
 
     fn start(&mut self, scene: &mut Scene, camera_controller: &CameraController) {
         self.prev_time = std::time::Instant::now();
-        let light_dir = -self.sun_pos;
-        {
-            let quad_material = self.quad_material.as_ref().unwrap();
-            quad_material
-                .set_uniform(scene, "light_dir", UniformValue::Vec3(light_dir.into()))
-                .unwrap();
-        }
-
         self.update_sun(scene, camera_controller);
     }
 
@@ -1959,12 +1838,6 @@ impl SunController {
             z: Deg(0.0),
         });
         self.sun_pos = rot * self.sun_pos;
-        {
-            let quad_material = self.quad_material.as_ref().unwrap();
-            quad_material
-                .set_uniform(scene, "light_dir", UniformValue::Vec3(self.sun_pos.into()))
-                .unwrap();
-        }
 
         self.update_sun(scene, camera_controller);
 
@@ -1986,6 +1859,9 @@ impl SunController {
         }
         self.was_inc_key_down = inc_key_down;
         self.was_dec_key_down = dec_key_down;
+    }
+
+    fn destroy(&mut self, _scene: &mut Scene) {
     }
 }
 
@@ -2581,12 +2457,11 @@ impl QuadPool {
     }
 
     fn create_quad(&self, scene: &mut Scene) -> Rc<RefCell<Quad>> {
-        let q_obj = scene.create_object();
-        let q = Rc::new(RefCell::new(Quad::new(q_obj.clone())));
+        let q = Rc::new(RefCell::new(Quad::new(scene)));
 
         {
             let mut q_borrow = q.borrow_mut();
-            let mrenderer = scene.add_component::<MeshRenderer>(&q_obj).unwrap();
+            let mrenderer = scene.add_component::<MeshRenderer>(&q_borrow.object).unwrap();
             let mesh = scene.create_mesh(self.vertices_cap, self.indices_cap);
 
             q_borrow.non_normalized = vec![Vector3::zero(); self.vertices_cap];
@@ -2671,37 +2546,172 @@ impl QuadPool {
     }
 }
 
+struct MainDriver {
+    behaviour: Behaviour,
+    camera_controller: Option<CameraController>,
+    sun_controller: Option<SunController>,
+    quad_sphere: Option<QuadSphere>,
+    skybox_obj: Option<Rc<Object>>,
+    skybox_cam_obj: Option<Rc<Object>>,
+}
+
+impl BehaviourMessages for MainDriver {
+    fn create(behaviour: Behaviour) -> MainDriver {
+        MainDriver {
+            behaviour: behaviour,
+            camera_controller: None,
+            sun_controller: None,
+            quad_sphere: None,
+            skybox_obj: None,
+            skybox_cam_obj: None,
+        }
+    }
+
+    fn start(&mut self, scene: &mut Scene) {
+        self.camera_controller = Some(CameraController::new(scene));
+        self.sun_controller = Some(SunController::new(scene));
+        self.quad_sphere = Some(QuadSphere::new(scene, 8, 12, 6_000_000.0, 0.0, 160_000.0));
+
+        let skybox_obj = scene.create_object();
+        let skybox_renderer = scene.add_component::<MeshRenderer>(&skybox_obj).unwrap();
+        let skybox_mesh = scene.create_mesh(36, 36);
+        *skybox_mesh.vpos_mut(scene).unwrap() = vec![
+            // ZP
+            Vector3::new(1.0, -1.0, 1.0),
+            Vector3::new(-1.0, -1.0, 1.0),
+            Vector3::new(-1.0, 1.0, 1.0),
+            Vector3::new(-1.0, 1.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(1.0, -1.0, 1.0),
+            // XP
+            Vector3::new(1.0, -1.0, -1.0),
+            Vector3::new(1.0, -1.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(1.0, 1.0, -1.0),
+            Vector3::new(1.0, -1.0, -1.0),
+            // ZN
+            Vector3::new(-1.0, -1.0, -1.0),
+            Vector3::new(1.0, -1.0, -1.0),
+            Vector3::new(1.0, 1.0, -1.0),
+            Vector3::new(1.0, 1.0, -1.0),
+            Vector3::new(-1.0, 1.0, -1.0),
+            Vector3::new(-1.0, -1.0, -1.0),
+            // XN
+            Vector3::new(-1.0, -1.0, 1.0),
+            Vector3::new(-1.0, -1.0, -1.0),
+            Vector3::new(-1.0, 1.0, -1.0),
+            Vector3::new(-1.0, 1.0, -1.0),
+            Vector3::new(-1.0, 1.0, 1.0),
+            Vector3::new(-1.0, -1.0, 1.0),
+            // YN
+            Vector3::new(1.0, -1.0, -1.0),
+            Vector3::new(-1.0, -1.0, -1.0),
+            Vector3::new(-1.0, -1.0, 1.0),
+            Vector3::new(-1.0, -1.0, 1.0),
+            Vector3::new(1.0, -1.0, 1.0),
+            Vector3::new(1.0, -1.0, -1.0),
+            // YP
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(-1.0, 1.0, 1.0),
+            Vector3::new(-1.0, 1.0, -1.0),
+            Vector3::new(-1.0, 1.0, -1.0),
+            Vector3::new(1.0, 1.0, -1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+        ];
+        *skybox_mesh.indices_mut(scene).unwrap() = vec![
+            0, 1, 2, 3, 4, 5,
+            6, 7, 8, 9, 10, 11,
+            12, 13, 14, 15, 16, 17,
+            18, 19, 20, 21, 22, 23,
+            24, 25, 26, 27, 28, 29,
+            30, 31, 32, 33, 34, 35,
+        ];
+        let skybox_shader = scene.create_shader(
+            include_str!("skybox_vs.glsl"),
+            include_str!("skybox_fs.glsl"),
+            None);
+        let skybox_material = scene.create_material(skybox_shader.clone()).unwrap();
+        skybox_renderer.set_material(scene, Some(skybox_material.clone())).unwrap();
+        skybox_renderer.set_mesh(scene, Some(skybox_mesh)).unwrap();
+        skybox_renderer.set_layers(scene, 4).unwrap();
+
+        let skybox_cam_obj = scene.create_object();
+        let skybox_cam = scene.add_component::<Camera>(&skybox_cam_obj).unwrap();
+        skybox_cam.set_near_clip(scene, 0.1).unwrap();
+        skybox_cam.set_far_clip(scene, 5.0).unwrap();
+        skybox_cam.set_layers(scene, 4).unwrap();
+        skybox_cam.set_order(scene, -2).unwrap();
+
+        let skybox_xp = load_image("skybox_xp.png").expect("Failed to load XP skybox");
+        let skybox_xn = load_image("skybox_xn.png").expect("Failed to load XN skybox");
+        let skybox_yp = load_image("skybox_yp.png").expect("Failed to load YP skybox");
+        let skybox_yn = load_image("skybox_yn.png").expect("Failed to load YN skybox");
+        let skybox_zp = load_image("skybox_zp.png").expect("Failed to load ZP skybox");
+        let skybox_zn = load_image("skybox_zn.png").expect("Failed to load ZN skybox");
+
+        let cubemap = scene.create_cubemap(skybox_zn.1 as usize,
+                                           skybox_zn.2 as usize,
+                                           [&skybox_xp.0,
+                                            &skybox_xn.0,
+                                            &skybox_yp.0,
+                                            &skybox_yn.0,
+                                            &skybox_zp.0,
+                                            &skybox_zn.0]);
+
+        skybox_material.set_uniform(scene, "cubemap", UniformValue::Cubemap(cubemap)).unwrap();
+
+        self.skybox_obj = Some(skybox_obj);
+        self.skybox_cam_obj = Some(skybox_cam_obj);
+
+        self.camera_controller.as_mut().unwrap().start(scene);
+        self.sun_controller.as_mut().unwrap().start(scene, self.camera_controller.as_ref().unwrap());
+        self.quad_sphere.as_mut().unwrap().start(scene);
+    }
+
+    fn update(&mut self, scene: &mut Scene) {
+        self.camera_controller.as_mut().unwrap().update(scene);
+        self.sun_controller.as_mut().unwrap().update(scene, self.camera_controller.as_ref().unwrap());
+
+
+        {
+            let quad_sphere = self.quad_sphere.as_mut().unwrap();
+            let cam_pos = self.camera_controller.as_ref().unwrap().cam_pos();
+            let sun_pos = self.sun_controller.as_ref().unwrap().sun_pos;
+            quad_sphere.quad_pool.quad_material
+                .set_uniform(scene, "light_dir", UniformValue::Vec3(sun_pos.into()))
+                .unwrap();
+
+            quad_sphere.centre_pos = cam_pos.normalize().cast();
+            quad_sphere.centre_dist = cam_pos.magnitude() as f64;
+            quad_sphere.update(scene);
+        }
+
+        self.skybox_cam_obj
+            .as_ref()
+            .unwrap()
+            .set_world_rot(scene, self.camera_controller.as_ref().unwrap().cam_rot)
+            .unwrap();
+    }
+
+    fn destroy(&mut self, scene: &mut Scene) {
+        self.camera_controller.as_mut().unwrap().destroy(scene);
+        self.sun_controller.as_mut().unwrap().destroy(scene);
+        self.quad_sphere.as_mut().unwrap().destroy(scene);
+    }
+
+    fn behaviour(&self) -> &Behaviour {
+        &self.behaviour
+    }
+}
+
+
 fn main() {
     let sdl = sdl2::init().expect("Failed to initialize SDL2");
 
     let mut scene = Scene::new(sdl);
-    let camera_obj = scene.create_object();
-    let camera_far_obj = scene.create_object();
-    let camera_near_obj = scene.create_object();
-    scene.set_object_parent(&camera_far_obj, Some(&camera_obj));
-    scene.set_object_parent(&camera_near_obj, Some(&camera_obj));
-
-    let camera_far = scene.add_component::<Camera>(&*camera_far_obj).unwrap();
-    let camera_near = scene.add_component::<Camera>(&*camera_near_obj).unwrap();
-    camera_far.set_near_clip(&mut scene, 100000.0).unwrap();
-    camera_far.set_far_clip(&mut scene, 10000000.0).unwrap();
-    camera_far.set_order(&mut scene, 0).unwrap();
-    camera_near.set_near_clip(&mut scene, 100.0).unwrap();
-    camera_near.set_far_clip(&mut scene, 110000.0).unwrap();
-    camera_near.set_order(&mut scene, 1).unwrap();
-
-    camera_obj.set_world_pos(&mut scene, -Vector3::unit_z() * 6_600_000.0).unwrap();
-
-    let quad_sphere_obj = scene.create_object();
-    let quad_sphere = scene.add_component::<RefCell<QuadSphere>>(&quad_sphere_obj).unwrap();
-    quad_sphere.borrow_mut().camera_controller.camera_obj = Some(camera_obj);
-
-    quad_sphere.borrow_mut().heightmap = Heightmap::load("");
-
-    quad_sphere.borrow_mut().init(&mut scene, 8, 12,
-                                  6_000_000.0, 0.0, 160_000.0);
-    quad_sphere_obj.set_world_pos(&mut scene, Vector3::new(0.0, 0.0, 0.0)).unwrap();
-    //quad_sphere.borrow().object().set_world_rot(&mut scene, Quaternion::from(Euler { x: Deg(45.0), y: Deg(0.0), z: Deg(0.0) })).unwrap();
+    let main_obj = scene.create_object();
+    scene.add_component::<RefCell<MainDriver>>(&main_obj).unwrap();
 
     loop {
         if !scene.do_frame() {
