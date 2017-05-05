@@ -1309,7 +1309,7 @@ impl QuadSphere {
     }
 
     fn init_heightmap(&mut self) {
-        self.heightmap = Heightmap::load("");
+        self.heightmap = Heightmap::load("heightmap/");
     }
 
     fn init_colour_curve(&mut self) {
@@ -2680,12 +2680,12 @@ impl BehaviourMessages for MainDriver {
         skybox_cam.set_layers(scene, 4).unwrap();
         skybox_cam.set_order(scene, -2).unwrap();
 
-        let skybox_xp = load_image("skybox_xp.png").expect("Failed to load XP skybox");
-        let skybox_xn = load_image("skybox_xn.png").expect("Failed to load XN skybox");
-        let skybox_yp = load_image("skybox_yp.png").expect("Failed to load YP skybox");
-        let skybox_yn = load_image("skybox_yn.png").expect("Failed to load YN skybox");
-        let skybox_zp = load_image("skybox_zp.png").expect("Failed to load ZP skybox");
-        let skybox_zn = load_image("skybox_zn.png").expect("Failed to load ZN skybox");
+        let skybox_xp = load_image("skybox/xp.png").expect("Failed to load XP skybox");
+        let skybox_xn = load_image("skybox/xn.png").expect("Failed to load XN skybox");
+        let skybox_yp = load_image("skybox/yp.png").expect("Failed to load YP skybox");
+        let skybox_yn = load_image("skybox/yn.png").expect("Failed to load YN skybox");
+        let skybox_zp = load_image("skybox/zp.png").expect("Failed to load ZP skybox");
+        let skybox_zn = load_image("skybox/zn.png").expect("Failed to load ZN skybox");
 
         let cubemap = scene.create_cubemap(skybox_zn.1 as usize,
                                            skybox_zn.2 as usize,
