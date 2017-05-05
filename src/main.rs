@@ -1034,14 +1034,30 @@ struct SubdivideResult {
 
 struct QuadSphere {
     object: Rc<Object>,
+    /// The dimensions of the mesh of a quad, the quad with have
+    /// `(quad_mesh_size + 1) * (quad_mesh_size + 1)` vertices.
     quad_mesh_size: u16,
+    /// The maxiumum subdivision level we are allowed to go to, e.g. a value of
+    /// 1 would only allow us to subdivide the root quads once.
     max_subdivision: u32,
+    /// The maximum valid x or y value for a `VertCoord`.
     max_coord: u32,
+    /// The base radius for the quad-sphere
     radius: f64,
+    /// The minimum allowed height for the quad-sphere, the minimum radius is
+    /// thus `radius - min_height`.
     min_height: f64,
+    /// The maximum allowed height for the quad-sphere, the maximum radius is
+    /// thus `radius + max_height`.
     max_height: f64,
+    /// A factor to apply to subdivision and collapse ranges. A higher value
+    /// means better planetary detail, however the number of quads (and thus
+    /// vertex and polygon count) scales in quadratic fasion to this value and
+    /// should not be set too high.
     range_factor: f64,
+    /// A vector storing the collapse ranges for each subdivision level.
     collapse_ranges: Vec<f64>,
+    /// A vector storing the subdivision ranges for each subdivision level.
     subdivide_ranges: Vec<f64>,
     centre_pos: Vector3<f64>,
     centre_dist: f64,
