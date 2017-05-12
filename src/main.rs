@@ -93,7 +93,7 @@ fn load_image(filename: &str) -> Result<(Box<[u8]>, u32, u32), String> {
 }
 
 #[derive(Clone, Copy)]
-struct VertCoord(Plane, u32, u32);
+struct VertCoord(Plane, i32, i32);
 
 struct Quad {
     object: Rc<Object>,
@@ -101,8 +101,8 @@ struct Quad {
     pos: QuadPos,
     mrenderer: Option<Rc<MeshRenderer>>,
     mesh: Option<Rc<Mesh>>,
-    base_coord: (u32, u32),
-    cur_subdivision: u32,
+    base_coord: (i32, i32),
+    cur_subdivision: i32,
     mid_coord_pos: Vector3<f64>,
     /// A tuple containing the sine and cosine of an angle which encloses the
     /// entire quad.
@@ -186,7 +186,7 @@ impl Quad {
             }
         }
 
-        let adj_size = sphere.quad_mesh_size as usize + 1;
+        let adj_size = sphere.quad_mesh_size + 1;
         let normals = self.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap();
         let mut i = 0;
         for x in 0..adj_size {
@@ -1036,12 +1036,12 @@ struct QuadSphere {
     object: Rc<Object>,
     /// The dimensions of the mesh of a quad, the quad with have
     /// `(quad_mesh_size + 1) * (quad_mesh_size + 1)` vertices.
-    quad_mesh_size: u16,
+    quad_mesh_size: i32,
     /// The maxiumum subdivision level we are allowed to go to, e.g. a value of
     /// 1 would only allow us to subdivide the root quads once.
-    max_subdivision: u32,
+    max_subdivision: i32,
     /// The maximum valid x or y value for a `VertCoord`.
-    max_coord: u32,
+    max_coord: i32,
     /// The base radius for the quad-sphere
     radius: f64,
     /// The minimum allowed height for the quad-sphere, the minimum radius is
@@ -1074,14 +1074,14 @@ struct QuadSphere {
 
 impl QuadSphere {
     fn new(scene: &mut Scene,
-           quad_mesh_size: u16,
-           max_subdivision: u32,
+           quad_mesh_size: i32,
+           max_subdivision: i32,
            radius: f64,
            min_height: f64,
            max_height: f64) -> QuadSphere {
-        assert!(quad_mesh_size > 1);
-        let bits = (quad_mesh_size as u32 - 1).leading_zeros();
-        assert!(max_subdivision <= (bits - 1));
+        assert!(quad_mesh_size > 1 && (quad_mesh_size % 2) == 0 && quad_mesh_size <= 128);
+        let bits = (quad_mesh_size - 1).leading_zeros();
+        assert!(max_subdivision as u32 <= (bits - 2));
 
         let range_factor = 4.0;
         // Try to put a good upper bound on the number of quads:
@@ -1103,7 +1103,7 @@ impl QuadSphere {
             object: object,
             quad_mesh_size: quad_mesh_size,
             max_subdivision: max_subdivision,
-            max_coord: (1 << max_subdivision) * quad_mesh_size as u32,
+            max_coord: (1 << max_subdivision) * quad_mesh_size,
             radius: radius,
             min_height: min_height,
             max_height: max_height,
@@ -1322,8 +1322,8 @@ impl QuadSphere {
         self.colour_curve.add_control_point(1.0, (0x9a, 0x66, 0x3b, 0xff));
     }
 
-    fn quad_length(&self, level: u32) -> u32 {
-        (1 << (self.max_subdivision - level)) * (self.quad_mesh_size as u32)
+    fn quad_length(&self, level: i32) -> i32 {
+        (1 << (self.max_subdivision - level)) * self.quad_mesh_size
     }
 
     fn centre_pos(&self) -> Vector3<f64> {
@@ -1333,13 +1333,13 @@ impl QuadSphere {
     /// Lookup the range required for us to try collapsing a quad for a given
     /// subdivision level. The returned value isn't a distance, but instead the
     /// cosine of the angle of the arc formed over that distance.
-    fn collapse_range(&self, subdivision: u32) -> f64 {
+    fn collapse_range(&self, subdivision: i32) -> f64 {
         self.collapse_ranges[subdivision as usize]
     }
 
     /// Lookup the range required for us to try subdividing a quad for a given
     /// subdivision level. See `collapse_range()` for more details.
-    fn subdivide_range(&self, subdivision: u32) -> f64 {
+    fn subdivide_range(&self, subdivision: i32) -> f64 {
         self.subdivide_ranges[subdivision as usize]
     }
 
@@ -1391,7 +1391,7 @@ impl QuadSphere {
 
     /// Converts a `VertCoord` to a position on the quad sphere in integer
     /// coordinates (not normalized).
-    fn vc_to_ipos(&self, coord: VertCoord) -> (u32, u32, u32) {
+    fn vc_to_ipos(&self, coord: VertCoord) -> (i32, i32, i32) {
         match coord {
             VertCoord(Plane::XP, a, b) => (self.max_coord, b, self.max_coord - a),
             VertCoord(Plane::XN, a, b) => (0, b, a),
@@ -1403,7 +1403,7 @@ impl QuadSphere {
     }
 
     /// Converts integer coordinates to a `VertCoord` on the given plane.
-    fn ipos_to_vc(&self, plane: Plane, x: u32, y: u32, z: u32) -> VertCoord {
+    fn ipos_to_vc(&self, plane: Plane, x: i32, y: i32, z: i32) -> VertCoord {
         match plane {
             Plane::XP => VertCoord(Plane::XP, self.max_coord - z, y),
             Plane::XN => VertCoord(Plane::XN, z, y),
@@ -1469,19 +1469,19 @@ impl QuadSphere {
 
     fn calc_quad_verts(&self,
                        plane: Plane,
-                       base_coord: (u32, u32),
-                       subdivision: u32)
+                       base_coord: (i32, i32),
+                       subdivision: i32)
                        -> (Vec<Vector3<f32>>, Vec<Vector3<f32>>) {
         let vert_step = 1 << (self.max_subdivision - subdivision);
-        let adj_size = self.quad_mesh_size as usize + 1;
+        let adj_size = self.quad_mesh_size + 1;
 
-        let mut vpos = Vec::with_capacity(adj_size * adj_size);
-        let mut vcolour = Vec::with_capacity(adj_size * adj_size);
+        let mut vpos = Vec::with_capacity((adj_size * adj_size) as usize);
+        let mut vcolour = Vec::with_capacity((adj_size * adj_size) as usize);
         for x in 0..adj_size {
             for y in 0..adj_size {
                 let vert_coord = VertCoord(plane,
-                                           base_coord.0 + x as u32 * vert_step,
-                                           base_coord.1 + y as u32 * vert_step);
+                                           base_coord.0 + x * vert_step,
+                                           base_coord.1 + y * vert_step);
                 let vert_pos = self.vc_to_pos(vert_coord).normalize();
 
                 let height = self.sample_heightmap_avg(vert_coord) as f64;
@@ -1510,11 +1510,11 @@ impl QuadSphere {
 
     fn calc_subdivided_verts(&self,
                              plane: Plane,
-                             base_coord1: (u32, u32),
-                             base_coord2: (u32, u32),
-                             base_coord3: (u32, u32),
-                             base_coord4: (u32, u32),
-                             subdivision: u32)
+                             base_coord1: (i32, i32),
+                             base_coord2: (i32, i32),
+                             base_coord3: (i32, i32),
+                             base_coord4: (i32, i32),
+                             subdivision: i32)
                              -> SubdivideResult {
         let (q1_vpos, q1_vcolour) = self.calc_quad_verts(plane, base_coord1, subdivision);
         let (q2_vpos, q2_vcolour) = self.calc_quad_verts(plane, base_coord2, subdivision);
@@ -1976,7 +1976,7 @@ impl Quad {
         //
         // This function purposefully doesn't handle the problem of quads
         // corners as this simplifies the logic.
-        let quad_mesh_size = sphere.quad_mesh_size as i32;
+        let quad_mesh_size = sphere.quad_mesh_size;
         let direct_side = self.get_direct_side(side);
         let (dir_sx, dir_sy) = match side {
             QuadSide::North => (1, 0),
@@ -2123,7 +2123,7 @@ impl Quad {
                      (base_dx, base_dy): (i32, i32),
                      (step_dx, step_dy): (i32, i32),
                      vert_count: i32) {
-        let quad_mesh_size = sphere.quad_mesh_size as i32;
+        let quad_mesh_size = sphere.quad_mesh_size;
         let adj_size = quad_mesh_size + 1;
         let vert_off = |x, y| vert_off(x, y, adj_size as u16);
 
@@ -2258,7 +2258,7 @@ impl Quad {
         //     +-----------------+
         assert!(corner != QuadPos::None);
 
-        let quad_mesh_size = sphere.quad_mesh_size as i32;
+        let quad_mesh_size = sphere.quad_mesh_size;
         let adj_size = quad_mesh_size + 1;
         let vert_off = |x, y| vert_off(x, y, adj_size as u16);
         let max = quad_mesh_size;
@@ -2455,7 +2455,7 @@ struct QuadPool {
 }
 
 impl QuadPool {
-    fn new(scene: &mut Scene, quad_mesh_size: u16, initial_size: usize) -> QuadPool {
+    fn new(scene: &mut Scene, quad_mesh_size: i32, initial_size: usize) -> QuadPool {
         let shader = scene.create_shader(include_str!("default_vs.glsl"),
                                          include_str!("default_fs.glsl"),
                                          None);
@@ -2463,14 +2463,14 @@ impl QuadPool {
 
         let mut indices_configs = Vec::with_capacity(16);
         for i in 0..16 {
-            indices_configs.push(gen_indices(quad_mesh_size, QuadSideFlags::from_bits(i).unwrap()));
+            indices_configs.push(gen_indices(quad_mesh_size as u16, QuadSideFlags::from_bits(i).unwrap()));
         }
 
         let adj_size = quad_mesh_size as usize + 1;
         let vertices_cap = adj_size * adj_size;
         // Base the mesh indices capacity from `QUAD_SIDE_FLAGS_NONE` since that
         // generates the largest buffer size.
-        let indices_cap = indices_configs[QUAD_SIDE_FLAGS_NONE.bits() as usize].len();
+        let indices_cap = indices_configs[QUAD_SIDE_FLAGS_NONE.to_idx()].len();
 
         let pool = QuadPool {
             shader: shader,
@@ -2505,7 +2505,7 @@ impl QuadPool {
             // Don't allocate for vpos since it will be allocated elsewhere
             *mesh.vpos_mut(scene).unwrap() = Vec::new();
             *mesh.vnorm_mut(scene).unwrap() = vec![Vector3::zero(); self.vertices_cap];
-            *mesh.indices_mut(scene).unwrap() = self.indices_configs[QUAD_SIDE_FLAGS_NONE.bits() as usize].clone();
+            *mesh.indices_mut(scene).unwrap() = self.indices_configs[QUAD_SIDE_FLAGS_NONE.to_idx()].clone();
             mrenderer.set_enabled(scene, false).unwrap();
             mrenderer.set_mesh(scene, Some(mesh.clone())).unwrap();
             mrenderer.set_material(scene, Some(self.quad_material.clone())).unwrap();
@@ -2554,7 +2554,7 @@ impl QuadPool {
 
     /// Get the indices for a given `QuadSideFlags` configuration.
     fn get_indices(&self, flags: QuadSideFlags) -> &Vec<u16> {
-        &self.indices_configs[flags.bits() as usize]
+        &self.indices_configs[flags.to_idx()]
     }
 
     /// Release ownership of the given quad and add it to the pool.

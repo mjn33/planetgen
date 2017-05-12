@@ -244,3 +244,9 @@ impl From<QuadSide> for QuadSideFlags {
         }
     }
 }
+
+impl QuadSideFlags {
+    pub fn to_idx(&self) -> usize {
+        self.bits() as usize
+    }
+}
