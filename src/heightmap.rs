@@ -100,7 +100,7 @@ fn load_heightmap(filename: &str) -> Result<(Box<[f32]>, u32), String> {
     Ok((heightmap.into_boxed_slice(), info.width))
 }
 
-fn cubic_interp(p0: f64, p1: f64, p2: f64, p3: f64, alpha: f64) -> f64 {
+fn cubic_interp(p0: f32, p1: f32, p2: f32, p3: f32, alpha: f32) -> f32 {
     let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
     let b = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
     let c = -0.5 * p0 + 0.5 * p2;
@@ -112,11 +112,11 @@ fn cubic_interp(p0: f64, p1: f64, p2: f64, p3: f64, alpha: f64) -> f64 {
     d
 }
 
-fn bicubic_interp(p00: f64, p10: f64, p20: f64, p30: f64,
-                  p01: f64, p11: f64, p21: f64, p31: f64,
-                  p02: f64, p12: f64, p22: f64, p32: f64,
-                  p03: f64, p13: f64, p23: f64, p33: f64,
-                  x: f64, y: f64) -> f64 {
+fn bicubic_interp(p00: f32, p10: f32, p20: f32, p30: f32,
+                  p01: f32, p11: f32, p21: f32, p31: f32,
+                  p02: f32, p12: f32, p22: f32, p32: f32,
+                  p03: f32, p13: f32, p23: f32, p33: f32,
+                  x: f32, y: f32) -> f32 {
     let x0 = cubic_interp(p00, p01, p02, p03, y);
     let x1 = cubic_interp(p10, p11, p12, p13, y);
     let x2 = cubic_interp(p20, p21, p22, p23, y);
@@ -412,11 +412,11 @@ impl Heightmap {
         let p23 = self.get_height_data(plane, x2, y3);
         let p33 = self.get_height_data(plane, x3, y3);
 
-        bicubic_interp(p00 as f64, p10 as f64, p20 as f64, p30 as f64,
-                       p01 as f64, p11 as f64, p21 as f64, p31 as f64,
-                       p02 as f64, p12 as f64, p22 as f64, p32 as f64,
-                       p03 as f64, p13 as f64, p23 as f64, p33 as f64,
-                       alpha_x as f64, alpha_y as f64) as f32
+        bicubic_interp(p00, p10, p20, p30,
+                       p01, p11, p21, p31,
+                       p02, p12, p22, p32,
+                       p03, p13, p23, p33,
+                       alpha_x, alpha_y)
     }
 
     /// Utility function for calculating an index from a position
