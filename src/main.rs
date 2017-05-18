@@ -109,10 +109,11 @@ struct Quad {
     angle_size: (f64, f64),
     patch_flags: QuadSideFlags,
 
-    non_normalized: Vec<Vector3<f32>>,
+    /// A copy of the normals of this quad before merging.
+    unmerged_normals: Vec<Vector3<f32>>,
 
-    /// True if this quad needs the `non_normalized` normals to be recomputed.
-    needs_normal_update: bool,
+    /// True if this quad's patching has changed.
+    patching_dirty: bool,
     /// Describes which sides of this quad need to have quad normals be merge
     /// with neighbouring quads.
     needs_normal_merge: QuadSideFlags,
@@ -143,9 +144,9 @@ impl Quad {
             angle_size: (1.0, 1.0),
             patch_flags: QUAD_SIDE_FLAGS_NONE,
 
-            non_normalized: Vec::new(),
+            unmerged_normals: Vec::new(),
 
-            needs_normal_update: false,
+            patching_dirty: false,
             needs_normal_merge: QUAD_SIDE_FLAGS_NONE,
             render: false,
 
@@ -155,48 +156,6 @@ impl Quad {
             south: None,
             east: None,
             west: None,
-        }
-    }
-
-    fn calc_normals(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
-        {
-            let verts = self.mesh.as_ref().unwrap().vpos(scene).unwrap();
-            let indices = self.mesh.as_ref().unwrap().indices(scene).unwrap();
-
-            for n in &mut self.non_normalized {
-                *n = Vector3::new(0.0, 0.0, 0.0);
-            }
-
-            let mut i = 0;
-            while i < indices.len() {
-                let i = {
-                    let tmp = i;
-                    i += 3;
-                    tmp
-                };
-                let v1 = verts[indices[i] as usize];
-                let v2 = verts[indices[i + 1] as usize];
-                let v3 = verts[indices[i + 2] as usize];
-                let a = v2 - v1;
-                let b = v3 - v1;
-                let surf_normal = a.cross(b);
-                self.non_normalized[indices[i] as usize] += surf_normal;
-                self.non_normalized[indices[i + 1] as usize] += surf_normal;
-                self.non_normalized[indices[i + 2] as usize] += surf_normal;
-            }
-        }
-
-        let adj_size = sphere.quad_mesh_size + 1;
-        let normals = self.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap();
-        let mut i = 0;
-        for x in 0..adj_size {
-            for y in 0..adj_size {
-                // Don't change edge normals, they will be updated elsewhere
-                if x != 0 && y != 0 && x != adj_size - 1 && y != adj_size - 1 {
-                    normals[i] = self.non_normalized[i].normalize();
-                }
-                i += 1;
-            }
         }
     }
 
@@ -468,14 +427,6 @@ impl Quad {
                                                   lower_left_base_coord,
                                                   lower_right_base_coord,
                                                   self.cur_subdivision + 1);
-        let upper_left_vpos = result.q1_vpos;
-        let upper_left_vcolour = result.q1_vcolour;
-        let upper_right_vpos = result.q2_vpos;
-        let upper_right_vcolour = result.q2_vcolour;
-        let lower_left_vpos = result.q3_vpos;
-        let lower_left_vcolour = result.q3_vcolour;
-        let lower_right_vpos = result.q4_vpos;
-        let lower_right_vcolour = result.q4_vcolour;
 
         let sphere_obj = &sphere.object;
         let upper_left = sphere.quad_pool().get_quad(scene);
@@ -493,7 +444,8 @@ impl Quad {
             let mut upper_left = upper_left.borrow_mut();
             upper_left.plane = self.plane;
             upper_left.pos = QuadPos::NorthWest;
-            upper_left.needs_normal_update = true;
+            upper_left.unmerged_normals.copy_from_slice(&result.q1.vnorm);
+            upper_left.patching_dirty = true;
             upper_left.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             upper_left.self_ptr = Some(self_ptr);
             upper_left.north = direct_north.as_ref().map(Rc::downgrade);
@@ -507,8 +459,9 @@ impl Quad {
 
             scene.set_object_parent(&upper_left.object, Some(&sphere_obj));
             let mesh = upper_left.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = upper_left_vpos;
-            *mesh.vcolour_mut(scene).unwrap() = upper_left_vcolour;
+            *mesh.vpos_mut(scene).unwrap() = result.q1.vpos;
+            *mesh.vcolour_mut(scene).unwrap() = result.q1.vcolour;
+            *mesh.vnorm_mut(scene).unwrap() = result.q1.vnorm;
         }
         sphere.queue_normal_update(upper_left.clone());
 
@@ -517,7 +470,8 @@ impl Quad {
             let mut upper_right = upper_right.borrow_mut();
             upper_right.plane = self.plane;
             upper_right.pos = QuadPos::NorthEast;
-            upper_right.needs_normal_update = true;
+            upper_right.unmerged_normals.copy_from_slice(&result.q2.vnorm);
+            upper_right.patching_dirty = true;
             upper_right.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             upper_right.self_ptr = Some(self_ptr);
             upper_right.north = direct_north.as_ref().map(Rc::downgrade);
@@ -531,8 +485,9 @@ impl Quad {
 
             scene.set_object_parent(&upper_right.object, Some(&sphere_obj));
             let mesh = upper_right.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = upper_right_vpos;
-            *mesh.vcolour_mut(scene).unwrap() = upper_right_vcolour;
+            *mesh.vpos_mut(scene).unwrap() = result.q2.vpos;
+            *mesh.vcolour_mut(scene).unwrap() = result.q2.vcolour;
+            *mesh.vnorm_mut(scene).unwrap() = result.q2.vnorm;
         }
         sphere.queue_normal_update(upper_right.clone());
 
@@ -541,7 +496,8 @@ impl Quad {
             let mut lower_left = lower_left.borrow_mut();
             lower_left.plane = self.plane;
             lower_left.pos = QuadPos::SouthWest;
-            lower_left.needs_normal_update = true;
+            lower_left.unmerged_normals.copy_from_slice(&result.q3.vnorm);
+            lower_left.patching_dirty = true;
             lower_left.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             lower_left.self_ptr = Some(self_ptr);
             lower_left.north = Some(Rc::downgrade(&upper_left));
@@ -555,8 +511,9 @@ impl Quad {
 
             scene.set_object_parent(&lower_left.object, Some(&sphere_obj));
             let mesh = lower_left.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = lower_left_vpos;
-            *mesh.vcolour_mut(scene).unwrap() = lower_left_vcolour;
+            *mesh.vpos_mut(scene).unwrap() = result.q3.vpos;
+            *mesh.vcolour_mut(scene).unwrap() = result.q3.vcolour;
+            *mesh.vnorm_mut(scene).unwrap() = result.q3.vnorm;
         }
         sphere.queue_normal_update(lower_left.clone());
 
@@ -565,7 +522,8 @@ impl Quad {
             let mut lower_right = lower_right.borrow_mut();
             lower_right.plane = self.plane;
             lower_right.pos = QuadPos::SouthEast;
-            lower_right.needs_normal_update = true;
+            lower_right.unmerged_normals.copy_from_slice(&result.q4.vnorm);
+            lower_right.patching_dirty = true;
             lower_right.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             lower_right.self_ptr = Some(self_ptr);
             lower_right.north = Some(Rc::downgrade(&upper_right));
@@ -579,8 +537,9 @@ impl Quad {
 
             scene.set_object_parent(&lower_right.object, Some(&sphere_obj));
             let mesh = lower_right.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = lower_right_vpos;
-            *mesh.vcolour_mut(scene).unwrap() = lower_right_vcolour;
+            *mesh.vpos_mut(scene).unwrap() = result.q4.vpos;
+            *mesh.vcolour_mut(scene).unwrap() = result.q4.vcolour;
+            *mesh.vnorm_mut(scene).unwrap() = result.q4.vnorm;
         }
         sphere.queue_normal_update(lower_right.clone());
 
@@ -605,10 +564,10 @@ impl Quad {
             let flags =
                 QuadSideFlags::from(map_quad_side(QuadSide::South, self.plane, north_borrow.plane));
             q1_borrow.patch_flags &= !flags;
-            q1_borrow.needs_normal_update = true;
+            q1_borrow.patching_dirty = true;
             q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags &= !flags;
-            q2_borrow.needs_normal_update = true;
+            q2_borrow.patching_dirty = true;
             q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
@@ -633,10 +592,10 @@ impl Quad {
             let flags =
                 QuadSideFlags::from(map_quad_side(QuadSide::North, self.plane, south_borrow.plane));
             q1_borrow.patch_flags &= !flags;
-            q1_borrow.needs_normal_update = true;
+            q1_borrow.patching_dirty = true;
             q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags &= !flags;
-            q2_borrow.needs_normal_update = true;
+            q2_borrow.patching_dirty = true;
             q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
@@ -661,10 +620,10 @@ impl Quad {
             let flags =
                 QuadSideFlags::from(map_quad_side(QuadSide::West, self.plane, east_borrow.plane));
             q1_borrow.patch_flags &= !flags;
-            q1_borrow.needs_normal_update = true;
+            q1_borrow.patching_dirty = true;
             q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags &= !flags;
-            q2_borrow.needs_normal_update = true;
+            q2_borrow.patching_dirty = true;
             q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
@@ -689,10 +648,10 @@ impl Quad {
             let flags =
                 QuadSideFlags::from(map_quad_side(QuadSide::East, self.plane, west_borrow.plane));
             q1_borrow.patch_flags &= !flags;
-            q1_borrow.needs_normal_update = true;
+            q1_borrow.patching_dirty = true;
             q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags &= !flags;
-            q2_borrow.needs_normal_update = true;
+            q2_borrow.patching_dirty = true;
             q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
@@ -739,7 +698,7 @@ impl Quad {
         lower_left.borrow_mut().update_visibility(sphere, scene);
         lower_right.borrow_mut().update_visibility(sphere, scene);
 
-        self.needs_normal_update = false;
+        self.patching_dirty = false;
         self.needs_normal_merge = QUAD_SIDE_FLAGS_NONE;
 
         self.children = Some([upper_left, upper_right, lower_left, lower_right]);
@@ -749,7 +708,7 @@ impl Quad {
         for q in self.children.as_ref().unwrap() {
             sphere.quad_pool().recycle_quad(scene, q.clone());
             let mut q_borrow = q.borrow_mut();
-            q_borrow.needs_normal_update = false;
+            q_borrow.patching_dirty = false;
             q_borrow.needs_normal_merge = QUAD_SIDE_FLAGS_NONE;
         }
 
@@ -777,10 +736,10 @@ impl Quad {
             let flags =
                 QuadSideFlags::from(map_quad_side(QuadSide::South, self.plane, north_borrow.plane));
             q1_borrow.patch_flags |= flags;
-            q1_borrow.needs_normal_update = true;
+            q1_borrow.patching_dirty = true;
             q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags |= flags;
-            q2_borrow.needs_normal_update = true;
+            q2_borrow.patching_dirty = true;
             q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
@@ -805,10 +764,10 @@ impl Quad {
             let flags =
                 QuadSideFlags::from(map_quad_side(QuadSide::North, self.plane, south_borrow.plane));
             q1_borrow.patch_flags |= flags;
-            q1_borrow.needs_normal_update = true;
+            q1_borrow.patching_dirty = true;
             q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags |= flags;
-            q2_borrow.needs_normal_update = true;
+            q2_borrow.patching_dirty = true;
             q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
@@ -833,10 +792,10 @@ impl Quad {
             let flags =
                 QuadSideFlags::from(map_quad_side(QuadSide::West, self.plane, east_borrow.plane));
             q1_borrow.patch_flags |= flags;
-            q1_borrow.needs_normal_update = true;
+            q1_borrow.patching_dirty = true;
             q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags |= flags;
-            q2_borrow.needs_normal_update = true;
+            q2_borrow.patching_dirty = true;
             q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
@@ -861,10 +820,10 @@ impl Quad {
             let flags =
                 QuadSideFlags::from(map_quad_side(QuadSide::East, self.plane, west_borrow.plane));
             q1_borrow.patch_flags |= flags;
-            q1_borrow.needs_normal_update = true;
+            q1_borrow.patching_dirty = true;
             q1_borrow.needs_normal_merge |= flags;
             q2_borrow.patch_flags |= flags;
-            q2_borrow.needs_normal_update = true;
+            q2_borrow.patching_dirty = true;
             q2_borrow.needs_normal_merge |= flags;
             sphere.queue_normal_update(q1.clone());
             sphere.queue_normal_update(q2.clone());
@@ -879,7 +838,7 @@ impl Quad {
         }
 
         self.patch_flags = QUAD_SIDE_FLAGS_NONE;
-        self.needs_normal_update = true;
+        self.patching_dirty = true;
         self.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
         sphere.queue_normal_update(self.self_ptr.as_ref().unwrap().upgrade().unwrap());
     }
@@ -939,7 +898,6 @@ impl Quad {
             indices.clear();
             indices.extend(new_indices);
         }
-        self.calc_normals(sphere, scene);
     }
 
     fn update_edge_normals(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
@@ -1021,15 +979,17 @@ impl Quad {
     }
 }
 
+struct QuadGenResult {
+    vpos: Vec<Vector3<f32>>,
+    vcolour: Vec<Vector3<f32>>,
+    vnorm: Vec<Vector3<f32>>,
+}
+
 struct SubdivideResult {
-    q1_vpos: Vec<Vector3<f32>>,
-    q1_vcolour: Vec<Vector3<f32>>,
-    q2_vpos: Vec<Vector3<f32>>,
-    q2_vcolour: Vec<Vector3<f32>>,
-    q3_vpos: Vec<Vector3<f32>>,
-    q3_vcolour: Vec<Vector3<f32>>,
-    q4_vpos: Vec<Vector3<f32>>,
-    q4_vcolour: Vec<Vector3<f32>>,
+    q1: QuadGenResult,
+    q2: QuadGenResult,
+    q3: QuadGenResult,
+    q4: QuadGenResult,
 }
 
 struct QuadSphere {
@@ -1130,12 +1090,12 @@ impl QuadSphere {
         self.init_heightmap();
         self.init_colour_curve();
 
-        let (xp_quad_vpos, xp_quad_vcolour) = self.calc_quad_verts(Plane::XP, (0, 0), 0);
-        let (xn_quad_vpos, xn_quad_vcolour) = self.calc_quad_verts(Plane::XN, (0, 0), 0);
-        let (yp_quad_vpos, yp_quad_vcolour) = self.calc_quad_verts(Plane::YP, (0, 0), 0);
-        let (yn_quad_vpos, yn_quad_vcolour) = self.calc_quad_verts(Plane::YN, (0, 0), 0);
-        let (zp_quad_vpos, zp_quad_vcolour) = self.calc_quad_verts(Plane::ZP, (0, 0), 0);
-        let (zn_quad_vpos, zn_quad_vcolour) = self.calc_quad_verts(Plane::ZN, (0, 0), 0);
+        let xp_quad_result = self.calc_quad_verts(Plane::XP, (0, 0), 0);
+        let xn_quad_result = self.calc_quad_verts(Plane::XN, (0, 0), 0);
+        let yp_quad_result = self.calc_quad_verts(Plane::YP, (0, 0), 0);
+        let yn_quad_result = self.calc_quad_verts(Plane::YN, (0, 0), 0);
+        let zp_quad_result = self.calc_quad_verts(Plane::ZP, (0, 0), 0);
+        let zn_quad_result = self.calc_quad_verts(Plane::ZN, (0, 0), 0);
 
         let xp_quad = self.quad_pool.get_quad(scene);
         let xn_quad = self.quad_pool.get_quad(scene);
@@ -1149,7 +1109,8 @@ impl QuadSphere {
             let mut xp_quad = xp_quad.borrow_mut();
             xp_quad.plane = Plane::XP;
             xp_quad.pos = QuadPos::None;
-            xp_quad.needs_normal_update = true;
+            xp_quad.unmerged_normals.copy_from_slice(&xp_quad_result.vnorm);
+            xp_quad.patching_dirty = true;
             xp_quad.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             xp_quad.self_ptr = Some(self_ptr);
             xp_quad.north = Some(Rc::downgrade(&yp_quad));
@@ -1162,8 +1123,9 @@ impl QuadSphere {
 
             scene.set_object_parent(&xp_quad.object, Some(&self.object));
             let mesh = xp_quad.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = xp_quad_vpos;
-            *mesh.vcolour_mut(scene).unwrap() = xp_quad_vcolour;
+            *mesh.vpos_mut(scene).unwrap() = xp_quad_result.vpos;
+            *mesh.vcolour_mut(scene).unwrap() = xp_quad_result.vcolour;
+            *mesh.vnorm_mut(scene).unwrap() = xp_quad_result.vnorm;
         }
         self.queue_normal_update(xp_quad.clone());
 
@@ -1172,7 +1134,8 @@ impl QuadSphere {
             let mut xn_quad = xn_quad.borrow_mut();
             xn_quad.plane = Plane::XN;
             xn_quad.pos = QuadPos::None;
-            xn_quad.needs_normal_update = true;
+            xn_quad.unmerged_normals.copy_from_slice(&xn_quad_result.vnorm);
+            xn_quad.patching_dirty = true;
             xn_quad.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             xn_quad.self_ptr = Some(self_ptr);
             xn_quad.north = Some(Rc::downgrade(&yp_quad));
@@ -1185,8 +1148,9 @@ impl QuadSphere {
 
             scene.set_object_parent(&xn_quad.object, Some(&self.object));
             let mesh = xn_quad.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = xn_quad_vpos;
-            *mesh.vcolour_mut(scene).unwrap() = xn_quad_vcolour;
+            *mesh.vpos_mut(scene).unwrap() = xn_quad_result.vpos;
+            *mesh.vcolour_mut(scene).unwrap() = xn_quad_result.vcolour;
+            *mesh.vnorm_mut(scene).unwrap() = xn_quad_result.vnorm;
         }
         self.queue_normal_update(xn_quad.clone());
 
@@ -1195,7 +1159,8 @@ impl QuadSphere {
             let mut yp_quad = yp_quad.borrow_mut();
             yp_quad.plane = Plane::YP;
             yp_quad.pos = QuadPos::None;
-            yp_quad.needs_normal_update = true;
+            yp_quad.unmerged_normals.copy_from_slice(&yp_quad_result.vnorm);
+            yp_quad.patching_dirty = true;
             yp_quad.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             yp_quad.self_ptr = Some(self_ptr);
             yp_quad.north = Some(Rc::downgrade(&zn_quad));
@@ -1208,8 +1173,9 @@ impl QuadSphere {
 
             scene.set_object_parent(&yp_quad.object, Some(&self.object));
             let mesh = yp_quad.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = yp_quad_vpos;
-            *mesh.vcolour_mut(scene).unwrap() = yp_quad_vcolour;
+            *mesh.vpos_mut(scene).unwrap() = yp_quad_result.vpos;
+            *mesh.vcolour_mut(scene).unwrap() = yp_quad_result.vcolour;
+            *mesh.vnorm_mut(scene).unwrap() = yp_quad_result.vnorm;
         }
         self.queue_normal_update(yp_quad.clone());
 
@@ -1218,7 +1184,8 @@ impl QuadSphere {
             let mut yn_quad = yn_quad.borrow_mut();
             yn_quad.plane = Plane::YN;
             yn_quad.pos = QuadPos::None;
-            yn_quad.needs_normal_update = true;
+            yn_quad.unmerged_normals.copy_from_slice(&yn_quad_result.vnorm);
+            yn_quad.patching_dirty = true;
             yn_quad.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             yn_quad.self_ptr = Some(self_ptr);
             yn_quad.north = Some(Rc::downgrade(&zp_quad));
@@ -1231,8 +1198,9 @@ impl QuadSphere {
 
             scene.set_object_parent(&yn_quad.object, Some(&self.object));
             let mesh = yn_quad.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = yn_quad_vpos;
-            *mesh.vcolour_mut(scene).unwrap() = yn_quad_vcolour;
+            *mesh.vpos_mut(scene).unwrap() = yn_quad_result.vpos;
+            *mesh.vcolour_mut(scene).unwrap() = yn_quad_result.vcolour;
+            *mesh.vnorm_mut(scene).unwrap() = yn_quad_result.vnorm;
         }
         self.queue_normal_update(yn_quad.clone());
 
@@ -1241,7 +1209,8 @@ impl QuadSphere {
             let mut zp_quad = zp_quad.borrow_mut();
             zp_quad.plane = Plane::ZP;
             zp_quad.pos = QuadPos::None;
-            zp_quad.needs_normal_update = true;
+            zp_quad.unmerged_normals.copy_from_slice(&zp_quad_result.vnorm);
+            zp_quad.patching_dirty = true;
             zp_quad.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             zp_quad.self_ptr = Some(self_ptr);
             zp_quad.north = Some(Rc::downgrade(&yp_quad));
@@ -1254,8 +1223,9 @@ impl QuadSphere {
 
             scene.set_object_parent(&zp_quad.object, Some(&self.object));
             let mesh = zp_quad.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = zp_quad_vpos;
-            *mesh.vcolour_mut(scene).unwrap() = zp_quad_vcolour;
+            *mesh.vpos_mut(scene).unwrap() = zp_quad_result.vpos;
+            *mesh.vcolour_mut(scene).unwrap() = zp_quad_result.vcolour;
+            *mesh.vnorm_mut(scene).unwrap() = zp_quad_result.vnorm;
         }
         self.queue_normal_update(zp_quad.clone());
 
@@ -1264,7 +1234,8 @@ impl QuadSphere {
             let mut zn_quad = zn_quad.borrow_mut();
             zn_quad.plane = Plane::ZN;
             zn_quad.pos = QuadPos::None;
-            zn_quad.needs_normal_update = true;
+            zn_quad.patching_dirty = true;
+            zn_quad.unmerged_normals.copy_from_slice(&zn_quad_result.vnorm);
             zn_quad.needs_normal_merge = QUAD_SIDE_FLAGS_ALL;
             zn_quad.self_ptr = Some(self_ptr);
             zn_quad.north = Some(Rc::downgrade(&yp_quad));
@@ -1277,8 +1248,9 @@ impl QuadSphere {
 
             scene.set_object_parent(&zn_quad.object, Some(&self.object));
             let mesh = zn_quad.mesh.as_ref().unwrap();
-            *mesh.vpos_mut(scene).unwrap() = zn_quad_vpos;
-            *mesh.vcolour_mut(scene).unwrap() = zn_quad_vcolour;
+            *mesh.vpos_mut(scene).unwrap() = zn_quad_result.vpos;
+            *mesh.vcolour_mut(scene).unwrap() = zn_quad_result.vcolour;
+            *mesh.vnorm_mut(scene).unwrap() = zn_quad_result.vnorm;
         }
         self.queue_normal_update(zn_quad.clone());
 
@@ -1471,7 +1443,7 @@ impl QuadSphere {
                        plane: Plane,
                        base_coord: (i32, i32),
                        subdivision: i32)
-                       -> (Vec<Vector3<f32>>, Vec<Vector3<f32>>) {
+                       -> QuadGenResult {
         let vert_step = 1 << (self.max_subdivision - subdivision);
         let adj_size = self.quad_mesh_size + 1;
 
@@ -1505,7 +1477,45 @@ impl QuadSphere {
             }
         }
 
-        (vpos, vcolour)
+
+        let mut vnorm = Vec::with_capacity((adj_size * adj_size) as usize);
+        for x in 0..adj_size {
+            for y in 0..adj_size {
+                let up = if y < adj_size - 1 {
+                    y + 1
+                } else {
+                    y
+                };
+                let down = if y > 0 {
+                    y - 1
+                } else {
+                    y
+                };
+                let left = if x > 0 {
+                    x - 1
+                } else {
+                    x
+                };
+                let right = if x < adj_size - 1 {
+                    x + 1
+                } else {
+                    x
+                };
+
+                let left = vpos[vert_off(left as u16, y as u16, adj_size as u16) as usize];
+                let right = vpos[vert_off(right as u16, y as u16, adj_size as u16) as usize];
+                let up = vpos[vert_off(x as u16, up as u16, adj_size as u16) as usize];
+                let down = vpos[vert_off(x as u16, down as u16, adj_size as u16) as usize];
+
+                vnorm.push((right - left).cross(up - down).normalize());
+            }
+        }
+
+        QuadGenResult {
+            vpos,
+            vcolour,
+            vnorm,
+        }
     }
 
     fn calc_subdivided_verts(&self,
@@ -1516,19 +1526,11 @@ impl QuadSphere {
                              base_coord4: (i32, i32),
                              subdivision: i32)
                              -> SubdivideResult {
-        let (q1_vpos, q1_vcolour) = self.calc_quad_verts(plane, base_coord1, subdivision);
-        let (q2_vpos, q2_vcolour) = self.calc_quad_verts(plane, base_coord2, subdivision);
-        let (q3_vpos, q3_vcolour) = self.calc_quad_verts(plane, base_coord3, subdivision);
-        let (q4_vpos, q4_vcolour) = self.calc_quad_verts(plane, base_coord4, subdivision);
         SubdivideResult {
-            q1_vpos,
-            q1_vcolour,
-            q2_vpos,
-            q2_vcolour,
-            q3_vpos,
-            q3_vcolour,
-            q4_vpos,
-            q4_vcolour,
+            q1: self.calc_quad_verts(plane, base_coord1, subdivision),
+            q2: self.calc_quad_verts(plane, base_coord2, subdivision),
+            q3: self.calc_quad_verts(plane, base_coord3, subdivision),
+            q4: self.calc_quad_verts(plane, base_coord4, subdivision),
         }
     }
 
@@ -1608,10 +1610,10 @@ impl QuadSphere {
 
         for q in &*self.normal_update_queue.borrow() {
             let mut q = q.borrow_mut();
-            if q.needs_normal_update {
+            if q.patching_dirty {
                 q.update_normals(self, scene);
             }
-            q.needs_normal_update = false;
+            q.patching_dirty = false;
         }
 
         for q in &*self.normal_update_queue.borrow() {
@@ -2141,7 +2143,7 @@ impl Quad {
             let svert_off = vert_off(sx as u16, sy as u16) as usize;
             let dvert_off = vert_off(dx as u16, dy as u16) as usize;
 
-            let combined = self.non_normalized[svert_off] + other.non_normalized[dvert_off];
+            let combined = self.unmerged_normals[svert_off] + other.unmerged_normals[dvert_off];
             let normalized = combined.normalize();
             self_normalized[svert_off] = normalized;
             other_normalized[dvert_off] = normalized;
@@ -2386,9 +2388,9 @@ impl Quad {
             let q2_idx = vert_off(q2_x as u16, q2_y as u16) as usize;
 
             let combined =
-                self.non_normalized[self_idx] +
-                q1.non_normalized[q1_idx] +
-                q2.non_normalized[q2_idx];
+                self.unmerged_normals[self_idx] +
+                q1.unmerged_normals[q1_idx] +
+                q2.unmerged_normals[q2_idx];
             let normalized = combined.normalize();
 
             self.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap()[self_idx] = normalized;
@@ -2430,10 +2432,10 @@ impl Quad {
             let q3_idx = vert_off(q3_x as u16, q3_y as u16) as usize;
 
             let combined =
-                self.non_normalized[self_idx] +
-                q1.non_normalized[q1_idx] +
-                q2.non_normalized[q2_idx] +
-                q3.non_normalized[q3_idx];
+                self.unmerged_normals[self_idx] +
+                q1.unmerged_normals[q1_idx] +
+                q2.unmerged_normals[q2_idx] +
+                q3.unmerged_normals[q3_idx];
             let normalized = combined.normalize();
 
             self.mesh.as_ref().unwrap().vnorm_mut(scene).unwrap()[self_idx] = normalized;
@@ -2501,7 +2503,7 @@ impl QuadPool {
             let mrenderer = scene.add_component::<MeshRenderer>(&q_borrow.object).unwrap();
             let mesh = scene.create_mesh(self.vertices_cap, self.indices_cap);
 
-            q_borrow.non_normalized = vec![Vector3::zero(); self.vertices_cap];
+            q_borrow.unmerged_normals = vec![Vector3::zero(); self.vertices_cap];
             // Don't allocate for vpos since it will be allocated elsewhere
             *mesh.vpos_mut(scene).unwrap() = Vec::new();
             *mesh.vnorm_mut(scene).unwrap() = vec![Vector3::zero(); self.vertices_cap];
@@ -2525,7 +2527,7 @@ impl QuadPool {
         quad.mid_coord_pos = Vector3::new(0.0, 0.0, 0.0);
         quad.patch_flags = QUAD_SIDE_FLAGS_NONE;
 
-        quad.needs_normal_update = false;
+        quad.patching_dirty = false;
         quad.needs_normal_merge = QUAD_SIDE_FLAGS_NONE;
         quad.render = false;
 
