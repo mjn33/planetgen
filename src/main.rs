@@ -204,7 +204,7 @@ impl Quad {
     }
 
     fn in_subdivision_range(&self, sphere: &QuadSphere) -> bool {
-        if self.cur_subdivision == sphere.max_subdivision {
+        if self.cur_subdivision == sphere.max_subdivision() {
             return false;
         }
 
@@ -864,7 +864,7 @@ impl Quad {
 
     fn check_subdivision(&mut self, sphere: &QuadSphere, scene: &mut Scene) {
         if !self.is_subdivided()
-            && self.cur_subdivision < sphere.max_subdivision
+            && self.cur_subdivision < sphere.max_subdivision()
             && self.in_subdivision_range(sphere)
             && self.can_subdivide() {
             self.subdivide(sphere, scene);
@@ -992,8 +992,9 @@ struct SubdivideResult {
     q4: QuadGenResult,
 }
 
-struct QuadSphere {
-    object: Rc<Object>,
+/// Structure containing the set of quad-sphere parameters needed for quad mesh
+/// generation.
+struct QuadSphereParams {
     /// The dimensions of the mesh of a quad, the quad with have
     /// `(quad_mesh_size + 1) * (quad_mesh_size + 1)` vertices.
     quad_mesh_size: i32,
@@ -1010,6 +1011,16 @@ struct QuadSphere {
     /// The maximum allowed height for the quad-sphere, the maximum radius is
     /// thus `radius + max_height`.
     max_height: f64,
+    generator: Box<Module>,
+    heightmap: Heightmap,
+    colour_curve: ColourCurve,
+}
+
+struct QuadSphere {
+    object: Rc<Object>,
+    /// Quad-sphere parameters necessary for quad mesh generation amoung other
+    /// things.
+    params: QuadSphereParams,
     /// A factor to apply to subdivision and collapse ranges. A higher value
     /// means better planetary detail, however the number of quads (and thus
     /// vertex and polygon count) scales in quadratic fasion to this value and
@@ -1026,10 +1037,106 @@ struct QuadSphere {
     faces: Option<[Rc<RefCell<Quad>>; 6]>,
     normal_update_queue: RefCell<Vec<Rc<RefCell<Quad>>>>,
     quad_pool: QuadPool,
+}
 
-    generator: Box<Module>,
-    heightmap: Heightmap,
-    colour_curve: ColourCurve,
+impl QuadSphereParams {
+    fn quad_length(&self, level: i32) -> i32 {
+        (1 << (self.max_subdivision - level)) * self.quad_mesh_size
+    }
+
+    /// Converts a `VertCoord` to a position on the quad sphere (not
+    /// normalized).
+    fn vc_to_pos(&self, coord: VertCoord) -> Vector3<f64> {
+        let (x, y, z) = match coord {
+            VertCoord(Plane::XP, a, b) => (self.max_coord, b, self.max_coord - a),
+            VertCoord(Plane::XN, a, b) => (0, b, a),
+            VertCoord(Plane::YP, a, b) => (a, self.max_coord, self.max_coord - b),
+            VertCoord(Plane::YN, a, b) => (a, 0, b),
+            VertCoord(Plane::ZP, a, b) => (a, b, self.max_coord),
+            VertCoord(Plane::ZN, a, b) => (self.max_coord - a, b, 0),
+        };
+        Vector3::new(-1.0 + x as f64 * 2.0 / self.max_coord as f64,
+                     -1.0 + y as f64 * 2.0 / self.max_coord as f64,
+                     -1.0 + z as f64 * 2.0 / self.max_coord as f64)
+    }
+
+    /// Converts a `VertCoord` to a position on the quad sphere in integer
+    /// coordinates (not normalized).
+    fn vc_to_ipos(&self, coord: VertCoord) -> (i32, i32, i32) {
+        match coord {
+            VertCoord(Plane::XP, a, b) => (self.max_coord, b, self.max_coord - a),
+            VertCoord(Plane::XN, a, b) => (0, b, a),
+            VertCoord(Plane::YP, a, b) => (a, self.max_coord, self.max_coord - b),
+            VertCoord(Plane::YN, a, b) => (a, 0, b),
+            VertCoord(Plane::ZP, a, b) => (a, b, self.max_coord),
+            VertCoord(Plane::ZN, a, b) => (self.max_coord - a, b, 0),
+        }
+    }
+
+    /// Converts integer coordinates to a `VertCoord` on the given plane.
+    fn ipos_to_vc(&self, plane: Plane, x: i32, y: i32, z: i32) -> VertCoord {
+        match plane {
+            Plane::XP => VertCoord(Plane::XP, self.max_coord - z, y),
+            Plane::XN => VertCoord(Plane::XN, z, y),
+            Plane::YP => VertCoord(Plane::YP, x, self.max_coord - z),
+            Plane::YN => VertCoord(Plane::YN, x, z),
+            Plane::ZP => VertCoord(Plane::ZP, x, y),
+            Plane::ZN => VertCoord(Plane::ZN, self.max_coord - x, y),
+        }
+    }
+
+    fn sample_heightmap_avg(&self, coord: VertCoord) -> f32 {
+        let (x, y, z) = self.vc_to_ipos(coord);
+
+        let mut sum = 0.0;
+        let mut count = 0;
+
+        if x == self.max_coord {
+            let vc = self.ipos_to_vc(Plane::XP, x, y, z);
+            let height = self.sample_heightmap(vc);
+            sum += height;
+            count += 1;
+        } else if x == 0 {
+            let vc = self.ipos_to_vc(Plane::XN, x, y, z);
+            let height = self.sample_heightmap(vc);
+            sum += height;
+            count += 1;
+        }
+
+        if y == self.max_coord {
+            let vc = self.ipos_to_vc(Plane::YP, x, y, z);
+            let height = self.sample_heightmap(vc);
+            sum += height;
+            count += 1;
+        } else if y == 0 {
+            let vc = self.ipos_to_vc(Plane::YN, x, y, z);
+            let height = self.sample_heightmap(vc);
+            sum += height;
+            count += 1;
+        }
+
+        if z == self.max_coord {
+            let vc = self.ipos_to_vc(Plane::ZP, x, y, z);
+            let height = self.sample_heightmap(vc);
+            sum += height;
+            count += 1;
+        } else if z == 0 {
+            let vc = self.ipos_to_vc(Plane::ZN, x, y, z);
+            let height = self.sample_heightmap(vc);
+            sum += height;
+            count += 1;
+        }
+
+        sum / count as f32
+    }
+
+    fn sample_heightmap(&self, coord: VertCoord) -> f32 {
+        let VertCoord(plane, vc_a, vc_b) = coord;
+        let x = vc_a as f32 / self.max_coord as f32;
+        let y = vc_b as f32 / self.max_coord as f32;
+
+        self.heightmap.sample(plane, x, y)
+    }
 }
 
 impl QuadSphere {
@@ -1058,15 +1165,34 @@ impl QuadSphere {
         let pool_size = pool_size * max_subdivision as f64;
         let pool_size = pool_size as usize;
 
-        let object = scene.create_object();
-        let mut rv = QuadSphere {
-            object: object,
+        let max_coord = (1 << max_subdivision) * quad_mesh_size;
+
+        let heightmap = Heightmap::load("heightmap/");
+        let mut colour_curve = ColourCurve::new();
+        colour_curve.add_control_point(0.0, (0x42, 0x29, 0x13, 0xff));
+        colour_curve.add_control_point(0.5, (0x58, 0x35, 0x17, 0xff));
+        colour_curve.add_control_point(0.51, (0x5e, 0x36, 0x15, 0xff));
+        colour_curve.add_control_point(0.6, (0x7c, 0x4e, 0x28, 0xff));
+        colour_curve.add_control_point(0.8, (0x74, 0x44, 0x1d, 0xff));
+        colour_curve.add_control_point(0.81, (0x8b, 0x59, 0x31, 0xff));
+        colour_curve.add_control_point(1.0, (0x9a, 0x66, 0x3b, 0xff));
+
+        let params = QuadSphereParams {
             quad_mesh_size: quad_mesh_size,
             max_subdivision: max_subdivision,
-            max_coord: (1 << max_subdivision) * quad_mesh_size,
+            max_coord: max_coord,
             radius: radius,
             min_height: min_height,
             max_height: max_height,
+            generator: create_generator(),
+            heightmap: heightmap.clone(),
+            colour_curve: colour_curve.clone(),
+        };
+
+        let object = scene.create_object();
+        let mut rv = QuadSphere {
+            object: object,
+            params: params,
             range_factor: range_factor,
             collapse_ranges: Vec::new(),
             subdivide_ranges: Vec::new(),
@@ -1077,9 +1203,6 @@ impl QuadSphere {
             faces: None,
             normal_update_queue: RefCell::new(Vec::new()),
             quad_pool: QuadPool::new(scene, quad_mesh_size, pool_size),
-            generator: create_generator(),
-            heightmap: Heightmap::default(),
-            colour_curve: ColourCurve::new(),
         };
 
         rv.init(scene);
@@ -1087,8 +1210,6 @@ impl QuadSphere {
     }
     fn init(&mut self, scene: &mut Scene) {
         self.init_ranges();
-        self.init_heightmap();
-        self.init_colour_curve();
 
         let xp_quad_result = self.calc_quad_verts(Plane::XP, (0, 0), 0);
         let xn_quad_result = self.calc_quad_verts(Plane::XN, (0, 0), 0);
@@ -1258,13 +1379,13 @@ impl QuadSphere {
     }
 
     fn init_ranges(&mut self) {
-        self.collapse_ranges = Vec::with_capacity(self.max_subdivision as usize + 1);
-        self.subdivide_ranges = Vec::with_capacity(self.max_subdivision as usize + 1);
+        self.collapse_ranges = Vec::with_capacity(self.params.max_subdivision as usize + 1);
+        self.subdivide_ranges = Vec::with_capacity(self.params.max_subdivision as usize + 1);
 
-        for lvl in 0..(self.max_subdivision + 1) {
+        for lvl in 0..(self.params.max_subdivision + 1) {
             let quad_length = self.quad_length(lvl);
             // Multiply by two since a plane ranges from -1.0 to +1.0
-            let real_quad_length = 2.0 * (quad_length as f64 / self.max_coord as f64);
+            let real_quad_length = 2.0 * (quad_length as f64 / self.params.max_coord as f64);
 
             // sqrt(0.5^2 + 1.5^2) = ~1.6, this means any point within a quad
             // will cause all four neighbours to be subdivided as well.
@@ -1280,22 +1401,16 @@ impl QuadSphere {
         }
     }
 
-    fn init_heightmap(&mut self) {
-        self.heightmap = Heightmap::load("heightmap/");
+    fn quad_mesh_size(&self) -> i32 {
+        self.params.quad_mesh_size
     }
 
-    fn init_colour_curve(&mut self) {
-        self.colour_curve.add_control_point(0.0, (0x42, 0x29, 0x13, 0xff));
-        self.colour_curve.add_control_point(0.5, (0x58, 0x35, 0x17, 0xff));
-        self.colour_curve.add_control_point(0.51, (0x5e, 0x36, 0x15, 0xff));
-        self.colour_curve.add_control_point(0.6, (0x7c, 0x4e, 0x28, 0xff));
-        self.colour_curve.add_control_point(0.8, (0x74, 0x44, 0x1d, 0xff));
-        self.colour_curve.add_control_point(0.81, (0x8b, 0x59, 0x31, 0xff));
-        self.colour_curve.add_control_point(1.0, (0x9a, 0x66, 0x3b, 0xff));
+    fn max_subdivision(&self) -> i32 {
+        self.params.max_subdivision
     }
 
     fn quad_length(&self, level: i32) -> i32 {
-        (1 << (self.max_subdivision - level)) * self.quad_mesh_size
+        self.params.quad_length(level)
     }
 
     fn centre_pos(&self) -> Vector3<f64> {
@@ -1317,8 +1432,8 @@ impl QuadSphere {
 
     fn calc_cull_range(&mut self) {
         let d = self.centre_dist;
-        let r0 = self.radius + self.min_height;
-        let r1 = self.radius + self.max_height;
+        let r0 = self.params.radius + self.params.min_height;
+        let r1 = self.params.radius + self.params.max_height;
 
         let a = f64::sqrt(d * d - r0 * r0);
         let b = f64::sqrt(r1 * r1 - r0 * r0);
@@ -1348,95 +1463,7 @@ impl QuadSphere {
     /// Converts a `VertCoord` to a position on the quad sphere (not
     /// normalized).
     fn vc_to_pos(&self, coord: VertCoord) -> Vector3<f64> {
-        let (x, y, z) = match coord {
-            VertCoord(Plane::XP, a, b) => (self.max_coord, b, self.max_coord - a),
-            VertCoord(Plane::XN, a, b) => (0, b, a),
-            VertCoord(Plane::YP, a, b) => (a, self.max_coord, self.max_coord - b),
-            VertCoord(Plane::YN, a, b) => (a, 0, b),
-            VertCoord(Plane::ZP, a, b) => (a, b, self.max_coord),
-            VertCoord(Plane::ZN, a, b) => (self.max_coord - a, b, 0),
-        };
-        Vector3::new(-1.0 + x as f64 * 2.0 / self.max_coord as f64,
-                     -1.0 + y as f64 * 2.0 / self.max_coord as f64,
-                     -1.0 + z as f64 * 2.0 / self.max_coord as f64)
-    }
-
-    /// Converts a `VertCoord` to a position on the quad sphere in integer
-    /// coordinates (not normalized).
-    fn vc_to_ipos(&self, coord: VertCoord) -> (i32, i32, i32) {
-        match coord {
-            VertCoord(Plane::XP, a, b) => (self.max_coord, b, self.max_coord - a),
-            VertCoord(Plane::XN, a, b) => (0, b, a),
-            VertCoord(Plane::YP, a, b) => (a, self.max_coord, self.max_coord - b),
-            VertCoord(Plane::YN, a, b) => (a, 0, b),
-            VertCoord(Plane::ZP, a, b) => (a, b, self.max_coord),
-            VertCoord(Plane::ZN, a, b) => (self.max_coord - a, b, 0),
-        }
-    }
-
-    /// Converts integer coordinates to a `VertCoord` on the given plane.
-    fn ipos_to_vc(&self, plane: Plane, x: i32, y: i32, z: i32) -> VertCoord {
-        match plane {
-            Plane::XP => VertCoord(Plane::XP, self.max_coord - z, y),
-            Plane::XN => VertCoord(Plane::XN, z, y),
-            Plane::YP => VertCoord(Plane::YP, x, self.max_coord - z),
-            Plane::YN => VertCoord(Plane::YN, x, z),
-            Plane::ZP => VertCoord(Plane::ZP, x, y),
-            Plane::ZN => VertCoord(Plane::ZN, self.max_coord - x, y),
-        }
-    }
-
-    fn sample_heightmap_avg(&self, coord: VertCoord) -> f32 {
-        let (x, y, z) = self.vc_to_ipos(coord);
-
-        let mut sum = 0.0;
-        let mut count = 0;
-
-        if x == self.max_coord {
-            let vc = self.ipos_to_vc(Plane::XP, x, y, z);
-            let height = self.sample_heightmap(vc);
-            sum += height;
-            count += 1;
-        } else if x == 0 {
-            let vc = self.ipos_to_vc(Plane::XN, x, y, z);
-            let height = self.sample_heightmap(vc);
-            sum += height;
-            count += 1;
-        }
-
-        if y == self.max_coord {
-            let vc = self.ipos_to_vc(Plane::YP, x, y, z);
-            let height = self.sample_heightmap(vc);
-            sum += height;
-            count += 1;
-        } else if y == 0 {
-            let vc = self.ipos_to_vc(Plane::YN, x, y, z);
-            let height = self.sample_heightmap(vc);
-            sum += height;
-            count += 1;
-        }
-
-        if z == self.max_coord {
-            let vc = self.ipos_to_vc(Plane::ZP, x, y, z);
-            let height = self.sample_heightmap(vc);
-            sum += height;
-            count += 1;
-        } else if z == 0 {
-            let vc = self.ipos_to_vc(Plane::ZN, x, y, z);
-            let height = self.sample_heightmap(vc);
-            sum += height;
-            count += 1;
-        }
-
-        sum / count as f32
-    }
-
-    fn sample_heightmap(&self, coord: VertCoord) -> f32 {
-        let VertCoord(plane, vc_a, vc_b) = coord;
-        let x = vc_a as f32 / self.max_coord as f32;
-        let y = vc_b as f32 / self.max_coord as f32;
-
-        self.heightmap.sample(plane, x, y)
+        self.params.vc_to_pos(coord)
     }
 
     fn calc_quad_verts(&self,
@@ -1444,8 +1471,8 @@ impl QuadSphere {
                        base_coord: (i32, i32),
                        subdivision: i32)
                        -> QuadGenResult {
-        let vert_step = 1 << (self.max_subdivision - subdivision);
-        let adj_size = self.quad_mesh_size + 1;
+        let vert_step = 1 << (self.params.max_subdivision - subdivision);
+        let adj_size = self.params.quad_mesh_size + 1;
 
         let mut vpos = Vec::with_capacity((adj_size * adj_size) as usize);
         let mut vcolour = Vec::with_capacity((adj_size * adj_size) as usize);
@@ -1454,22 +1481,22 @@ impl QuadSphere {
                 let vert_coord = VertCoord(plane,
                                            base_coord.0 + x * vert_step,
                                            base_coord.1 + y * vert_step);
-                let vert_pos = self.vc_to_pos(vert_coord).normalize();
+                let vert_pos = self.params.vc_to_pos(vert_coord).normalize();
 
-                let height = self.sample_heightmap_avg(vert_coord) as f64;
+                let height = self.params.sample_heightmap_avg(vert_coord) as f64;
                 // Add some noise to make things look a bit more interesting
-                let noise = self.generator
+                let noise = self.params.generator
                     .get_value(vert_pos.x as f64, vert_pos.y as f64, vert_pos.z as f64);
                 let height = noise * 0.25 + height * 0.75;
                 let height = f64::min(1.0, f64::max(0.0, height));
 
-                let (r, g, b, _) = self.colour_curve.get_colour(height);
+                let (r, g, b, _) = self.params.colour_curve.get_colour(height);
                 let r = (r as f32) / 255.0;
                 let g = (g as f32) / 255.0;
                 let b = (b as f32) / 255.0;
 
-                let height = (self.radius + self.min_height) +
-                             height * (self.max_height - self.min_height);
+                let height = (self.params.radius + self.params.min_height) +
+                             height * (self.params.max_height - self.params.min_height);
                 let vert_pos = vert_pos * height;
 
                 vpos.push(vert_pos.cast());
@@ -1540,8 +1567,8 @@ impl QuadSphere {
 
     #[allow(dead_code)]
     fn debug_print_stats(&self) {
-        let mut level_count = vec![0; self.max_subdivision as usize + 1];
-        let mut visible_level_count = vec![0; self.max_subdivision as usize + 1];
+        let mut level_count = vec![0; self.params.max_subdivision as usize + 1];
+        let mut visible_level_count = vec![0; self.params.max_subdivision as usize + 1];
         let mut horizon_cull_count = 0;
         let mut horizon_cull_visible_count = 0;
 
@@ -1978,7 +2005,7 @@ impl Quad {
         //
         // This function purposefully doesn't handle the problem of quads
         // corners as this simplifies the logic.
-        let quad_mesh_size = sphere.quad_mesh_size;
+        let quad_mesh_size = sphere.quad_mesh_size();
         let direct_side = self.get_direct_side(side);
         let (dir_sx, dir_sy) = match side {
             QuadSide::North => (1, 0),
@@ -2125,7 +2152,7 @@ impl Quad {
                      (base_dx, base_dy): (i32, i32),
                      (step_dx, step_dy): (i32, i32),
                      vert_count: i32) {
-        let quad_mesh_size = sphere.quad_mesh_size;
+        let quad_mesh_size = sphere.quad_mesh_size();
         let adj_size = quad_mesh_size + 1;
         let vert_off = |x, y| vert_off(x, y, adj_size as u16);
 
@@ -2260,7 +2287,7 @@ impl Quad {
         //     +-----------------+
         assert!(corner != QuadPos::None);
 
-        let quad_mesh_size = sphere.quad_mesh_size;
+        let quad_mesh_size = sphere.quad_mesh_size();
         let adj_size = quad_mesh_size + 1;
         let vert_off = |x, y| vert_off(x, y, adj_size as u16);
         let max = quad_mesh_size;

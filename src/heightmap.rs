@@ -23,7 +23,7 @@ use png;
 use png::{ColorType, BitDepth};
 use std::fs::File;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Heightmap {
     resolution: i32,
     bordered_resolution: i32,
