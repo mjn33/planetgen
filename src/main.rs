@@ -119,7 +119,7 @@ struct Quad {
 
     /// True if this quad's patching has changed.
     patching_dirty: bool,
-    /// Describes which sides of this quad need to have quad normals be merge
+    /// Describes which sides of this quad need to have quad normals be merged
     /// with neighbouring quads.
     needs_normal_merge: QuadSideFlags,
     /// True if this quad is currently being rendered.
@@ -127,6 +127,9 @@ struct Quad {
 
     /// Pointer to this quad
     self_ptr: Option<Weak<RefCell<Quad>>>,
+    /// Contains the child quads of this quad in the following order: upper
+    /// left, upper right, lower left and lower right. Is `None` if this quad
+    /// isn't subdivided.
     children: Option<[Rc<RefCell<Quad>>; 4]>,
     north: Option<Weak<RefCell<Quad>>>,
     south: Option<Weak<RefCell<Quad>>>,
@@ -208,6 +211,7 @@ impl Quad {
         cos_gamma
     }
 
+    /// Returns `true` if this quad is within subdivision range.
     fn in_subdivision_range(&self, sphere: &QuadSphere) -> bool {
         if self.cur_subdivision == sphere.max_subdivision() {
             return false;
@@ -223,6 +227,7 @@ impl Quad {
         cur_range >= range
     }
 
+    /// Returns `true` if this quad is within collapse range.
     fn in_collapse_range(&self, sphere: &QuadSphere) -> bool {
         let range = sphere.collapse_range(self.cur_subdivision);
 
@@ -337,10 +342,14 @@ impl Quad {
         }
     }
 
+    /// Returns `true` if this quad is subdivided.
     fn is_subdivided(&self) -> bool {
         self.children.is_some()
     }
 
+    /// Returns `true` if this quad can be subdivided without violating the
+    /// constraint that neighbouring quads can only be, at a maximum, one
+    /// subdivision level higher or lower.
     fn can_subdivide(&self) -> bool {
         let (indirect1, indirect2) = match self.pos {
             QuadPos::NorthWest => (self.north(), self.west()),
@@ -354,8 +363,9 @@ impl Quad {
         subdivided
     }
 
-    /// Checks if this quad is able to collapse without causing quad-tree
-    /// invariants to be violated.
+    /// Returns `true` if this quad can be collapsed without violating the
+    /// constraint that neighbouring quads can only be, at a maximum, one
+    /// subdivision level higher or lower.
     fn can_collapse(&self) -> bool {
         assert!(self.is_subdivided(),
                 "can_collapse() should only be called on subdivided quads");
@@ -1007,7 +1017,7 @@ struct QuadSphereParams {
     /// The dimensions of the mesh of a quad, the quad with have
     /// `(quad_mesh_size + 1) * (quad_mesh_size + 1)` vertices.
     quad_mesh_size: i32,
-    /// The maxiumum subdivision level we are allowed to go to, e.g. a value of
+    /// The maximum subdivision level we are allowed to go to, e.g. a value of
     /// 1 would only allow us to subdivide the root quads once.
     max_subdivision: i32,
     /// The maximum valid x or y value for a `VertCoord`.
@@ -1027,12 +1037,12 @@ struct QuadSphereParams {
 
 struct QuadSphere {
     object: Rc<Object>,
-    /// Quad-sphere parameters necessary for quad mesh generation amoung other
+    /// Quad-sphere parameters necessary for quad mesh generation among other
     /// things.
     params: QuadSphereParams,
     /// A factor to apply to subdivision and collapse ranges. A higher value
     /// means better planetary detail, however the number of quads (and thus
-    /// vertex and polygon count) scales in quadratic fasion to this value and
+    /// vertex and polygon count) scales in quadratic fashion to this value and
     /// should not be set too high.
     range_factor: f64,
     /// A vector storing the collapse ranges for each subdivision level.
@@ -1681,8 +1691,8 @@ impl QuadSphere {
     }
 }
 
-/// Manages subdivision tasks, allowing them to executed asynchronously on a
-/// separate thread and retreived when complete. Tasks have a "lifetime"
+/// Manages subdivision tasks, allowing them to be executed asynchronously on a
+/// separate thread and retrieved when complete. Tasks have a "lifetime"
 /// associated with them and are forgotten if it runs out.
 struct TaskManager {
     manager_rx: Receiver<TaskManagerMsg>,
@@ -1720,7 +1730,7 @@ struct TaskResult {
 
 /// Describes the status of a task.
 enum TaskStatus {
-    /// The given task hasn't been started
+    /// The given task hasn't been started.
     NotStarted,
     /// The given task has been scheduled, but hasn't completed yet.
     NotComplete,
@@ -1742,7 +1752,7 @@ enum TaskManagerMsg {
 enum TaskExecutorMsg {
     /// Sent by the `TaskManager` to start a batch job.
     ExecBatch(Vec<(TaskId, TaskData)>),
-    /// Sent by the `TaskManager` to request the `TaskExecutor` to terminate.
+    /// Sent by the `TaskManager` to request the `TaskExecutor` terminate.
     Stop,
 }
 
@@ -1799,10 +1809,10 @@ impl TaskManager {
     }
 
     /// Schedules the given task to be executed, does nothing if the given task
-    /// is currenly executing or has been completed. The task is not sent for
+    /// is currently executing or has been completed. The task is not sent for
     /// execution immediately, instead tasks are buffered and are only sent once
-    /// large enough batch size has been reach. To force buffered tasks to be
-    /// executed now, call `flush`.
+    /// a large enough batch size has been reached. To force buffered tasks to
+    /// be executed now, call `flush`.
     pub fn add_task(&mut self, task_id: TaskId, task_data: TaskData) {
         use std::collections::hash_map::Entry;
         match self.tasks.entry(task_id) {
@@ -1833,7 +1843,7 @@ impl TaskManager {
         self.tasks.retain(|_, v| v.0 > 0);
     }
 
-    /// Check for batches completed by the `TaskExecutor`
+    /// Check for batches completed by the `TaskExecutor`.
     pub fn check_done(&mut self) {
         loop {
             match self.manager_rx.try_recv() {
@@ -2209,10 +2219,8 @@ impl Quad {
     }
 
     /// Merge the normals of this quad and the neighbouring quad(s) on the given
-    /// `side`. This doesn't update the corner normals.
-    ///
-    /// TODO: currently updates the edges but incorrectly, this is
-    /// inconsequential.
+    /// `side`. Currently changes the corners but incorrectly, this is
+    /// inconsequential however.
     fn merge_side_normals(&mut self, sphere: &QuadSphere, scene: &mut Scene, side: QuadSide) {
         // To simplify the problem we can first look at the situation as being
         // one of three states:
@@ -2351,7 +2359,7 @@ impl Quad {
         } else {
             let indirect_side = self.get_side(side);
             let mut indirect_side = indirect_side.borrow_mut();
-            // FIXME: copy paste code
+            // TODO: copy paste code
             let (x, y) = match self.pos {
                 QuadPos::NorthWest => (0, 1),
                 QuadPos::NorthEast => (1, 1),
