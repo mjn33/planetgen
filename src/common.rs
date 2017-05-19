@@ -20,7 +20,7 @@
 
 use num;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Plane {
     /// +x
     XP,

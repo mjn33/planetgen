@@ -18,6 +18,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+#![feature(retain_hash_collection)]
+
 #[macro_use]
 extern crate bitflags;
 extern crate cgmath;
@@ -36,9 +38,12 @@ mod test;
 
 use sdl2::keyboard::Scancode;
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, RefMut};
+use std::collections::HashMap;
 use std::fs::File;
 use std::rc::{Rc, Weak};
+use std::sync::mpsc::{channel, Sender, Receiver, TryRecvError};
+use std::thread;
 
 use cgmath::{Deg, Euler, InnerSpace, Quaternion, Rotation, Vector3};
 
@@ -57,7 +62,7 @@ use colour_curve::ColourCurve;
 use gen::{gen_indices, vert_off};
 use heightmap::Heightmap;
 
-fn create_generator() -> Box<Module> {
+fn create_generator() -> Box<Module + Send> {
     const SEED: i32 = 600;
     const FREQUENCY: f64 = 20.0;
     const LACUNARITY: f64 = 2.208984375;
@@ -92,7 +97,7 @@ fn load_image(filename: &str) -> Result<(Box<[u8]>, u32, u32), String> {
     Ok((img_data.into_boxed_slice(), info.width, info.height))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct VertCoord(Plane, i32, i32);
 
 struct Quad {
@@ -421,12 +426,21 @@ impl Quad {
         let lower_left_base_coord = (self.base_coord.0, self.base_coord.1);
         let lower_right_base_coord = (self.base_coord.0 + half_quad_length, self.base_coord.1);
 
-        let result = sphere.calc_subdivided_verts(self.plane,
-                                                  upper_left_base_coord,
-                                                  upper_right_base_coord,
-                                                  lower_left_base_coord,
-                                                  lower_right_base_coord,
-                                                  self.cur_subdivision + 1);
+        let task_id = TaskId(VertCoord(self.plane, self.base_coord.0, self.base_coord.1),
+                             self.cur_subdivision);
+        let result = sphere.task_manager().get_task(task_id);
+
+        let result = match result {
+            TaskStatus::Complete(result) => result,
+            TaskStatus::NotComplete => {
+                sphere.task_manager().reset_task_lifetime(task_id);
+                return;
+            }
+            TaskStatus::NotStarted => {
+                sphere.task_manager().add_task(task_id, TaskData(()));
+                return;
+            }
+        };
 
         let sphere_obj = &sphere.object;
         let upper_left = sphere.quad_pool().get_quad(scene);
@@ -985,15 +999,10 @@ struct QuadGenResult {
     vnorm: Vec<Vector3<f32>>,
 }
 
-struct SubdivideResult {
-    q1: QuadGenResult,
-    q2: QuadGenResult,
-    q3: QuadGenResult,
-    q4: QuadGenResult,
-}
-
 /// Structure containing the set of quad-sphere parameters needed for quad mesh
-/// generation.
+/// generation. Currently two copies of this structure exist: one inside the
+/// `QuadSphere` structure itself, and one in `TaskExecutor` for executing quad
+/// subdivision tasks asynchronously.
 struct QuadSphereParams {
     /// The dimensions of the mesh of a quad, the quad with have
     /// `(quad_mesh_size + 1) * (quad_mesh_size + 1)` vertices.
@@ -1011,7 +1020,7 @@ struct QuadSphereParams {
     /// The maximum allowed height for the quad-sphere, the maximum radius is
     /// thus `radius + max_height`.
     max_height: f64,
-    generator: Box<Module>,
+    generator: Box<Module + Send>,
     heightmap: Heightmap,
     colour_curve: ColourCurve,
 }
@@ -1037,6 +1046,8 @@ struct QuadSphere {
     faces: Option<[Rc<RefCell<Quad>>; 6]>,
     normal_update_queue: RefCell<Vec<Rc<RefCell<Quad>>>>,
     quad_pool: QuadPool,
+
+    task_manager: RefCell<TaskManager>,
 }
 
 impl QuadSphereParams {
@@ -1137,6 +1148,85 @@ impl QuadSphereParams {
 
         self.heightmap.sample(plane, x, y)
     }
+
+    fn calc_quad_verts(&self,
+                       plane: Plane,
+                       base_coord: (i32, i32),
+                       subdivision: i32)
+                       -> QuadGenResult {
+        let vert_step = 1 << (self.max_subdivision - subdivision);
+        let adj_size = self.quad_mesh_size + 1;
+
+        let mut vpos = Vec::with_capacity((adj_size * adj_size) as usize);
+        let mut vcolour = Vec::with_capacity((adj_size * adj_size) as usize);
+        for x in 0..adj_size {
+            for y in 0..adj_size {
+                let vert_coord = VertCoord(plane,
+                                           base_coord.0 + x * vert_step,
+                                           base_coord.1 + y * vert_step);
+                let vert_pos = self.vc_to_pos(vert_coord).normalize();
+
+                let height = self.sample_heightmap_avg(vert_coord) as f64;
+                // Add some noise to make things look a bit more interesting
+                let noise = self.generator
+                    .get_value(vert_pos.x as f64, vert_pos.y as f64, vert_pos.z as f64);
+                let height = noise * 0.25 + height * 0.75;
+                let height = f64::min(1.0, f64::max(0.0, height));
+
+                let (r, g, b, _) = self.colour_curve.get_colour(height);
+                let r = (r as f32) / 255.0;
+                let g = (g as f32) / 255.0;
+                let b = (b as f32) / 255.0;
+
+                let height = (self.radius + self.min_height) +
+                             height * (self.max_height - self.min_height);
+                let vert_pos = vert_pos * height;
+
+                vpos.push(vert_pos.cast());
+                vcolour.push(Vector3::new(r, g, b));
+            }
+        }
+
+
+        let mut vnorm = Vec::with_capacity((adj_size * adj_size) as usize);
+        for x in 0..adj_size {
+            for y in 0..adj_size {
+                let up = if y < adj_size - 1 {
+                    y + 1
+                } else {
+                    y
+                };
+                let down = if y > 0 {
+                    y - 1
+                } else {
+                    y
+                };
+                let left = if x > 0 {
+                    x - 1
+                } else {
+                    x
+                };
+                let right = if x < adj_size - 1 {
+                    x + 1
+                } else {
+                    x
+                };
+
+                let left = vpos[vert_off(left as u16, y as u16, adj_size as u16) as usize];
+                let right = vpos[vert_off(right as u16, y as u16, adj_size as u16) as usize];
+                let up = vpos[vert_off(x as u16, up as u16, adj_size as u16) as usize];
+                let down = vpos[vert_off(x as u16, down as u16, adj_size as u16) as usize];
+
+                vnorm.push((right - left).cross(up - down).normalize());
+            }
+        }
+
+        QuadGenResult {
+            vpos,
+            vcolour,
+            vnorm,
+        }
+    }
 }
 
 impl QuadSphere {
@@ -1177,7 +1267,7 @@ impl QuadSphere {
         colour_curve.add_control_point(0.81, (0x8b, 0x59, 0x31, 0xff));
         colour_curve.add_control_point(1.0, (0x9a, 0x66, 0x3b, 0xff));
 
-        let params = QuadSphereParams {
+        let params1 = QuadSphereParams {
             quad_mesh_size: quad_mesh_size,
             max_subdivision: max_subdivision,
             max_coord: max_coord,
@@ -1188,11 +1278,22 @@ impl QuadSphere {
             heightmap: heightmap.clone(),
             colour_curve: colour_curve.clone(),
         };
+        let params2 = QuadSphereParams {
+            quad_mesh_size: quad_mesh_size,
+            max_subdivision: max_subdivision,
+            max_coord: max_coord,
+            radius: radius,
+            min_height: min_height,
+            max_height: max_height,
+            generator: create_generator(),
+            heightmap: heightmap,
+            colour_curve: colour_curve,
+        };
 
         let object = scene.create_object();
         let mut rv = QuadSphere {
             object: object,
-            params: params,
+            params: params1,
             range_factor: range_factor,
             collapse_ranges: Vec::new(),
             subdivide_ranges: Vec::new(),
@@ -1203,6 +1304,9 @@ impl QuadSphere {
             faces: None,
             normal_update_queue: RefCell::new(Vec::new()),
             quad_pool: QuadPool::new(scene, quad_mesh_size, pool_size),
+            // TODO: placeholder value for batch size and lifetime, possibly
+            // investigate tuning these value.
+            task_manager: RefCell::new(TaskManager::new(100, 10, params2)),
         };
 
         rv.init(scene);
@@ -1211,12 +1315,12 @@ impl QuadSphere {
     fn init(&mut self, scene: &mut Scene) {
         self.init_ranges();
 
-        let xp_quad_result = self.calc_quad_verts(Plane::XP, (0, 0), 0);
-        let xn_quad_result = self.calc_quad_verts(Plane::XN, (0, 0), 0);
-        let yp_quad_result = self.calc_quad_verts(Plane::YP, (0, 0), 0);
-        let yn_quad_result = self.calc_quad_verts(Plane::YN, (0, 0), 0);
-        let zp_quad_result = self.calc_quad_verts(Plane::ZP, (0, 0), 0);
-        let zn_quad_result = self.calc_quad_verts(Plane::ZN, (0, 0), 0);
+        let xp_quad_result = self.params.calc_quad_verts(Plane::XP, (0, 0), 0);
+        let xn_quad_result = self.params.calc_quad_verts(Plane::XN, (0, 0), 0);
+        let yp_quad_result = self.params.calc_quad_verts(Plane::YP, (0, 0), 0);
+        let yn_quad_result = self.params.calc_quad_verts(Plane::YN, (0, 0), 0);
+        let zp_quad_result = self.params.calc_quad_verts(Plane::ZP, (0, 0), 0);
+        let zn_quad_result = self.params.calc_quad_verts(Plane::ZN, (0, 0), 0);
 
         let xp_quad = self.quad_pool.get_quad(scene);
         let xn_quad = self.quad_pool.get_quad(scene);
@@ -1466,103 +1570,12 @@ impl QuadSphere {
         self.params.vc_to_pos(coord)
     }
 
-    fn calc_quad_verts(&self,
-                       plane: Plane,
-                       base_coord: (i32, i32),
-                       subdivision: i32)
-                       -> QuadGenResult {
-        let vert_step = 1 << (self.params.max_subdivision - subdivision);
-        let adj_size = self.params.quad_mesh_size + 1;
-
-        let mut vpos = Vec::with_capacity((adj_size * adj_size) as usize);
-        let mut vcolour = Vec::with_capacity((adj_size * adj_size) as usize);
-        for x in 0..adj_size {
-            for y in 0..adj_size {
-                let vert_coord = VertCoord(plane,
-                                           base_coord.0 + x * vert_step,
-                                           base_coord.1 + y * vert_step);
-                let vert_pos = self.params.vc_to_pos(vert_coord).normalize();
-
-                let height = self.params.sample_heightmap_avg(vert_coord) as f64;
-                // Add some noise to make things look a bit more interesting
-                let noise = self.params.generator
-                    .get_value(vert_pos.x as f64, vert_pos.y as f64, vert_pos.z as f64);
-                let height = noise * 0.25 + height * 0.75;
-                let height = f64::min(1.0, f64::max(0.0, height));
-
-                let (r, g, b, _) = self.params.colour_curve.get_colour(height);
-                let r = (r as f32) / 255.0;
-                let g = (g as f32) / 255.0;
-                let b = (b as f32) / 255.0;
-
-                let height = (self.params.radius + self.params.min_height) +
-                             height * (self.params.max_height - self.params.min_height);
-                let vert_pos = vert_pos * height;
-
-                vpos.push(vert_pos.cast());
-                vcolour.push(Vector3::new(r, g, b));
-            }
-        }
-
-
-        let mut vnorm = Vec::with_capacity((adj_size * adj_size) as usize);
-        for x in 0..adj_size {
-            for y in 0..adj_size {
-                let up = if y < adj_size - 1 {
-                    y + 1
-                } else {
-                    y
-                };
-                let down = if y > 0 {
-                    y - 1
-                } else {
-                    y
-                };
-                let left = if x > 0 {
-                    x - 1
-                } else {
-                    x
-                };
-                let right = if x < adj_size - 1 {
-                    x + 1
-                } else {
-                    x
-                };
-
-                let left = vpos[vert_off(left as u16, y as u16, adj_size as u16) as usize];
-                let right = vpos[vert_off(right as u16, y as u16, adj_size as u16) as usize];
-                let up = vpos[vert_off(x as u16, up as u16, adj_size as u16) as usize];
-                let down = vpos[vert_off(x as u16, down as u16, adj_size as u16) as usize];
-
-                vnorm.push((right - left).cross(up - down).normalize());
-            }
-        }
-
-        QuadGenResult {
-            vpos,
-            vcolour,
-            vnorm,
-        }
-    }
-
-    fn calc_subdivided_verts(&self,
-                             plane: Plane,
-                             base_coord1: (i32, i32),
-                             base_coord2: (i32, i32),
-                             base_coord3: (i32, i32),
-                             base_coord4: (i32, i32),
-                             subdivision: i32)
-                             -> SubdivideResult {
-        SubdivideResult {
-            q1: self.calc_quad_verts(plane, base_coord1, subdivision),
-            q2: self.calc_quad_verts(plane, base_coord2, subdivision),
-            q3: self.calc_quad_verts(plane, base_coord3, subdivision),
-            q4: self.calc_quad_verts(plane, base_coord4, subdivision),
-        }
-    }
-
     fn quad_pool(&self) -> &QuadPool {
         &self.quad_pool
+    }
+
+    fn task_manager(&self) -> RefMut<TaskManager> {
+        self.task_manager.borrow_mut()
     }
 
     #[allow(dead_code)]
@@ -1629,6 +1642,7 @@ impl QuadSphere {
 
     fn update(&mut self, scene: &mut Scene) {
         self.calc_cull_range();
+        self.task_manager.borrow_mut().check_done();
 
         for i in 0..6 {
             let q = self.faces.as_ref().unwrap()[i].clone();
@@ -1642,6 +1656,9 @@ impl QuadSphere {
             }
             q.patching_dirty = false;
         }
+
+        self.task_manager.borrow_mut().flush();
+        self.task_manager.borrow_mut().dec_lifetime();
 
         for q in &*self.normal_update_queue.borrow() {
             let mut q = q.borrow_mut();
@@ -1661,6 +1678,241 @@ impl QuadSphere {
             scene.destroy_object(&q.borrow().object);
         }
         self.quad_pool.cleanup(scene);
+    }
+}
+
+/// Manages subdivision tasks, allowing them to executed asynchronously on a
+/// separate thread and retreived when complete. Tasks have a "lifetime"
+/// associated with them and are forgotten if it runs out.
+struct TaskManager {
+    manager_rx: Receiver<TaskManagerMsg>,
+    executor_tx: Sender<TaskExecutorMsg>,
+    batch_size: usize,
+    task_lifetime: i32,
+    cur_batch: Vec<(TaskId, TaskData)>,
+    tasks: HashMap<TaskId, (i32, Option<TaskResult>)>,
+}
+
+/// Structure containing the common data required to execute subdivision tasks.
+struct TaskExecutor {
+    manager_tx: Sender<TaskManagerMsg>,
+    executor_rx: Receiver<TaskExecutorMsg>,
+    params: QuadSphereParams,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+/// A type which represents a subdivision task, contains the base `VertCoord`
+/// and subdivision level of the quad to be subdivided.
+struct TaskId(VertCoord, i32);
+
+#[derive(Copy, Clone)]
+/// A type containing the data required for a subdivision task. Currently, no
+/// data is passed.
+struct TaskData(());
+
+/// The result of a subdivision task.
+struct TaskResult {
+    q1: QuadGenResult,
+    q2: QuadGenResult,
+    q3: QuadGenResult,
+    q4: QuadGenResult,
+}
+
+/// Describes the status of a task.
+enum TaskStatus {
+    /// The given task hasn't been started
+    NotStarted,
+    /// The given task has been scheduled, but hasn't completed yet.
+    NotComplete,
+    /// The given task has been completed with the contained result.
+    Complete(TaskResult),
+}
+
+/// Messages the `TaskManager` can receive.
+enum TaskManagerMsg {
+    /// Sent by the `TaskExecutor` to signal a batch job has been completed and
+    /// pass the result back.
+    BatchComplete(Vec<(TaskId, TaskResult)>),
+    /// Sent by the `TaskExecutor` to signal it has received a `Stop` message
+    /// and is about to terminate.
+    Stop,
+}
+
+/// Messages the `TaskExecutor` can receive.
+enum TaskExecutorMsg {
+    /// Sent by the `TaskManager` to start a batch job.
+    ExecBatch(Vec<(TaskId, TaskData)>),
+    /// Sent by the `TaskManager` to request the `TaskExecutor` to terminate.
+    Stop,
+}
+
+impl TaskManager {
+    /// Constructs a new `TaskManager` with the specified batch size, task
+    /// lifetime and quad-sphere parameters.
+    pub fn new(batch_size: usize, task_lifetime: i32, params: QuadSphereParams) -> TaskManager {
+        let (executor_tx, executor_rx) = channel::<TaskExecutorMsg>();
+        let (manager_tx, manager_rx) = channel::<TaskManagerMsg>();
+        thread::spawn(move || {
+            TaskManager::task_exec_thread(TaskExecutor {
+                manager_tx,
+                executor_rx,
+                params,
+            })
+        });
+        TaskManager {
+            executor_tx,
+            manager_rx,
+            batch_size,
+            task_lifetime,
+            cur_batch: Vec::new(),
+            tasks: HashMap::new(),
+        }
+    }
+
+    /// Try to get the result of the specified task.
+    pub fn get_task(&mut self, task_id: TaskId) -> TaskStatus {
+        use std::collections::hash_map::Entry;
+        match self.tasks.entry(task_id) {
+            Entry::Occupied(e) => {
+                if e.get().1.is_some() {
+                    TaskStatus::Complete(e.remove().1.unwrap())
+                } else {
+                    TaskStatus::NotComplete
+                }
+            }
+            Entry::Vacant(_) => TaskStatus::NotStarted,
+        }
+    }
+
+    /// Reset the lifetime of a task back to the initial value, indicating this
+    /// task is still needed. Does nothing if the task hasn't been started.
+    pub fn reset_task_lifetime(&mut self, task_id: TaskId) {
+        use std::collections::hash_map::Entry;
+        match self.tasks.entry(task_id) {
+            Entry::Occupied(mut e) => {
+                // Reset task lifetime
+                e.get_mut().0 = self.task_lifetime;
+                return;
+            }
+            Entry::Vacant(_) => return,
+        }
+    }
+
+    /// Schedules the given task to be executed, does nothing if the given task
+    /// is currenly executing or has been completed. The task is not sent for
+    /// execution immediately, instead tasks are buffered and are only sent once
+    /// large enough batch size has been reach. To force buffered tasks to be
+    /// executed now, call `flush`.
+    pub fn add_task(&mut self, task_id: TaskId, task_data: TaskData) {
+        use std::collections::hash_map::Entry;
+        match self.tasks.entry(task_id) {
+            Entry::Occupied(_) => return,
+            Entry::Vacant(e) => {
+                e.insert((self.task_lifetime, None));
+            }
+        }
+        self.cur_batch.push((task_id, task_data));
+        if self.cur_batch.len() >= self.batch_size {
+            self.flush();
+        }
+    }
+
+    /// Pushes the currently buffered tasks into a batch to be executed.
+    pub fn flush(&mut self) {
+        let mut batch = Vec::new();
+        std::mem::swap(&mut batch, &mut self.cur_batch);
+        self.executor_tx.send(TaskExecutorMsg::ExecBatch(batch)).unwrap();
+    }
+
+    /// Decrements the lifetime of all tasks, removes tasks which lifetimes
+    /// reach zero.
+    pub fn dec_lifetime(&mut self) {
+        for v in self.tasks.values_mut() {
+            v.0 -= 1;
+        }
+        self.tasks.retain(|_, v| v.0 > 0);
+    }
+
+    /// Check for batches completed by the `TaskExecutor`
+    pub fn check_done(&mut self) {
+        loop {
+            match self.manager_rx.try_recv() {
+                Ok(TaskManagerMsg::BatchComplete(batch)) => {
+                    for (task_id, result) in batch {
+                        match self.tasks.get_mut(&task_id) {
+                            Some(v) => v.1 = Some(result),
+                            None => {
+                                // We aren't interested in this result anymore
+                                continue;
+                            }
+                        }
+                    }
+                },
+                Ok(TaskManagerMsg::Stop) => panic!("Executor sent `Stop` message unexpectedly."),
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => panic!("Executor thread disconnected unexpectedly."),
+            }
+        }
+    }
+
+    fn task_exec_thread(mut executor: TaskExecutor) {
+        executor.execute();
+    }
+}
+
+impl Drop for TaskManager {
+    fn drop(&mut self) {
+        self.executor_tx.send(TaskExecutorMsg::Stop).unwrap();
+        loop {
+            match self.manager_rx.recv() {
+                Ok(TaskManagerMsg::Stop) => {
+                    break;
+                }
+                Ok(_) => (),
+                Err(_) => panic!("Executor thread disconnected unexpectedly."),
+            }
+        }
+    }
+}
+
+impl TaskExecutor {
+    fn execute(&mut self) {
+        loop {
+            match self.executor_rx.recv().unwrap() {
+                TaskExecutorMsg::ExecBatch(batch) => {
+                    let results = self.exec_batch(batch);
+                    self.manager_tx.send(TaskManagerMsg::BatchComplete(results)).unwrap();
+                },
+                TaskExecutorMsg::Stop => {
+                    self.manager_tx.send(TaskManagerMsg::Stop).unwrap();
+                    break;
+                }
+            }
+        }
+    }
+
+    fn exec_batch(&mut self, batch: Vec<(TaskId, TaskData)>) -> Vec<(TaskId, TaskResult)> {
+        batch.into_iter().map(|(task_id, _)| {
+            let TaskId(VertCoord(plane, base_coord_x, base_coord_y), subdivision) = task_id;
+            let half_quad_length = self.params.quad_length(subdivision) / 2;
+
+            let upper_left_base_coord = (base_coord_x, base_coord_y + half_quad_length);
+            let upper_right_base_coord = (base_coord_x + half_quad_length,
+                                          base_coord_y + half_quad_length);
+            let lower_left_base_coord = (base_coord_x, base_coord_y);
+            let lower_right_base_coord = (base_coord_x + half_quad_length, base_coord_y);
+            let q1 = self.params.calc_quad_verts(plane, upper_left_base_coord, subdivision + 1);
+            let q2 = self.params.calc_quad_verts(plane, upper_right_base_coord, subdivision + 1);
+            let q3 = self.params.calc_quad_verts(plane, lower_left_base_coord, subdivision + 1);
+            let q4 = self.params.calc_quad_verts(plane, lower_right_base_coord, subdivision + 1);
+            let result = TaskResult {
+                q1,
+                q2,
+                q3,
+                q4,
+            };
+            (task_id, result)
+        }).collect()
     }
 }
 
