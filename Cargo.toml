@@ -2,6 +2,7 @@
 name = "planetgen"
 version = "0.1.0"
 authors = ["Matthew Nicholls <matthew.nicholls95@hotmail.co.uk>"]
+build = "build.rs"
 
 [profile.release]
 panic = "abort"

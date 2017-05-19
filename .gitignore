@@ -1,12 +1,22 @@
-target
-_scratch
-oprofile_data
+# Build output
 
+target
+
+# Profiling files
+
+oprofile_data
 cachegrind.out.*
 callgrind.out.*
 
-planetgen_engine/Cargo.lock
+# Other
 
-tex/*.pdf
-tex/*.log
-tex/*.aux
+/planetgen_engine/Cargo.lock
+
+/_scratch
+
+/lib
+/bin
+
+/tex/*.pdf
+/tex/*.log
+/tex/*.aux
