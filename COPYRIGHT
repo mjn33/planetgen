@@ -1,0 +1,85 @@
+PlanetGen
+=========
+
+  See LICENSE-MIT
+
+bitflags
+========
+
+  http://github.com/rust-lang-nursery/bitflags
+
+    * See LICENSE-MIT and LICENSE-APACHE
+
+cgmath
+======
+
+  http://github.com/brendanzab/cgmath
+
+    * See LICENSE-APACHE
+
+sdl2
+====
+
+  http://github.com/AngryLawyer/rust-sdl2
+
+    * See LICENSE-MIT
+
+num
+===
+
+  http://github.com/rust-num/num
+
+    * See LICENSE-MIT and LICENSE-APACHE
+
+png
+===
+
+  http://github.com/PistonDevelopers/image-png
+
+    * See LICENSE-MIT and LICENSE-APACHE
+
+gl
+==
+
+  http://github.com/brendanzab/gl-rs
+
+    * See LICENSE-APACHE
+
+rust-libnoise
+=============
+
+  http://github.com/mjn33/rust-libnoise
+
+    * See LICENSE-LGPL
+
+Simple DirectMedia Layer
+========================
+
+  http://www.libsdl.org/
+
+  This software is provided 'as-is', without any express or implied warranty.
+  In no event will the authors be held liable for any damages arising from the
+  use of this software.
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it freely,
+  subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must not claim
+     that you wrote the original software. If you use this software in a
+     product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
+
+Other
+=====
+
+  Files under skybox/
+  -------------------
+
+  http://svs.gsfc.nasa.gov/3572
+
+    * NASA/Goddard Space Flight Center Scientific Visualization Studio
+

@@ -41,7 +41,6 @@ Microsoft Visual C toolchain.
 
 ## Licence
 
-PlanetGen is licensed under the MIT licence (see LICENSE-MIT), portions are
-licensed under the GNU LGPL (rust-libnoise, see LICENSE-LGPL). Files under
-`skybox/` are licensed under the GNU GPL (see `skybox/readme.txt`).
-
+PlanetGen is licensed under the MIT licence (see [LICENSE-MIT](LICENSE-MIT)),
+portions are licensed under the GNU LGPL (rust-libnoise, see
+[LICENSE-LGPL](LICENSE-LGPL)). See [COPYRIGHT](COPYRIGHT) for more information.
