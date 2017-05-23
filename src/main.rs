@@ -3046,8 +3046,9 @@ impl BehaviourMessages for MainDriver {
 
 fn main() {
     let sdl = sdl2::init().expect("Failed to initialize SDL2");
+    let title = format!("PlanetGen {}", env!("CARGO_PKG_VERSION"));
 
-    let mut scene = Scene::new(sdl);
+    let mut scene = Scene::new(sdl, &title);
     let main_obj = scene.create_object();
     scene.add_component::<RefCell<MainDriver>>(&main_obj).unwrap();
 

@@ -966,12 +966,12 @@ impl IndexBuffer {
 }
 
 impl Scene {
-    pub fn new(sdl: Sdl) -> Scene {
+    pub fn new(sdl: Sdl, window_name: &str) -> Scene {
         let video_sys = sdl.video()
             .expect("Failed to initialize the Video subsystem");
         let event_pump = sdl.event_pump()
             .expect("Failed to obtain the SDL event pump");
-        let window = video_sys.window("SDL2 Application", 800, 600)
+        let window = video_sys.window(window_name, 800, 600)
             .position_centered()
             .resizable()
             .opengl()
