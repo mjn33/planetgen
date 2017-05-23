@@ -3013,10 +3013,20 @@ impl BehaviourMessages for MainDriver {
             quad_sphere.update(scene);
         }
 
+        let sun_pos = self.sun_controller.as_ref().unwrap().sun_pos;
+        let cam_rot = self.camera_controller.as_ref().unwrap().cam_rot;
+        let skybox_rot = Quaternion::between_vectors(Vector3::unit_z(), sun_pos);
+
         self.skybox_cam_obj
             .as_ref()
             .unwrap()
-            .set_world_rot(scene, self.camera_controller.as_ref().unwrap().cam_rot)
+            .set_world_rot(scene, cam_rot)
+            .unwrap();
+
+        self.skybox_obj
+            .as_ref()
+            .unwrap()
+            .set_world_rot(scene, skybox_rot)
             .unwrap();
     }
 

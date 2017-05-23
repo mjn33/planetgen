@@ -8,10 +8,10 @@ in vec3 vpos;
 in vec3 vnorm;
 in vec3 vcolour;
 
-out vec3 world_dir;
+out vec3 local_dir;
 
 void main() {
     vec3 world_vpos = (_obj_matrix * vec4(vpos, 1.0)).xyz;
     gl_Position = _cam_matrix * vec4(world_vpos, 1.0);
-    world_dir = world_vpos;
+    local_dir = vpos;
 }
