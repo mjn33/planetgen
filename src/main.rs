@@ -18,6 +18,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+#![windows_subsystem="windows"]
+
 #![feature(retain_hash_collection)]
 
 #[macro_use]
