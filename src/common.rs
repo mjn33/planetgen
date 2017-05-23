@@ -55,13 +55,13 @@ pub enum QuadSide {
 }
 
 bitflags! {
-    pub flags QuadSideFlags: u32 {
-        const QUAD_SIDE_FLAGS_NONE = 0x00,
-        const QUAD_SIDE_FLAGS_NORTH = 0x01,
-        const QUAD_SIDE_FLAGS_SOUTH = 0x02,
-        const QUAD_SIDE_FLAGS_EAST = 0x04,
-        const QUAD_SIDE_FLAGS_WEST = 0x08,
-        const QUAD_SIDE_FLAGS_ALL = 0x0F,
+    pub struct QuadSideFlags: u32 {
+        const QUAD_SIDE_FLAGS_NONE = 0x00;
+        const QUAD_SIDE_FLAGS_NORTH = 0x01;
+        const QUAD_SIDE_FLAGS_SOUTH = 0x02;
+        const QUAD_SIDE_FLAGS_EAST = 0x04;
+        const QUAD_SIDE_FLAGS_WEST = 0x08;
+        const QUAD_SIDE_FLAGS_ALL = 0x0F;
     }
 }
 
