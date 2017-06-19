@@ -22,7 +22,7 @@ use std;
 use std::error;
 use std::fmt;
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Error {
     /// Indicates the operation failed since the underlying object was already
     /// destroyed.

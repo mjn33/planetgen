@@ -31,6 +31,7 @@ extern crate sdl2;
 mod alloc;
 pub mod error;
 mod gl_util;
+mod obj_manager;
 mod scene;
 mod traits;
 

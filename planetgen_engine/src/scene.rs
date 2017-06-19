@@ -32,15 +32,18 @@ use sdl2::keyboard::KeyboardState;
 use sdl2::mouse::MouseState;
 use sdl2::video::{GLContext, GLProfile, Window};
 use std;
-use std::any::{Any, TypeId};
-use std::cell::{Cell, RefCell, UnsafeCell};
+use std::any::TypeId;
+use std::cell::{Cell, UnsafeCell};
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::CStr;
 use std::ptr;
 use std::rc::Rc;
 use std::time::Instant;
+use obj_manager::{GenericHandle, Container, ObjectManager};
 use traits::Component;
+
+pub use obj_manager::Handle;
 
 fn post_add<T: Copy + std::ops::Add<Output=T>>(a: &mut T, b: T) -> T {
     let c = *a;
@@ -127,8 +130,6 @@ pub fn intersects_frustum(mvp: Matrix4<f32>, aabb_x: [f32; 2], aabb_y: [f32; 2],
 }
 
 struct CameraData {
-    /// Reference to the camera object.
-    camera: Rc<Camera>,
     /// Reference to the object we are a component of.
     parent: Rc<Object>,
     /// True when this camera should be used for rendering.
@@ -157,115 +158,119 @@ struct CameraData {
     draw_cmds: Vec<DrawInfo>,
 }
 
-/// A handle to a camera object for a scene.
-pub struct Camera {
-    idx: Cell<Option<usize>>
+struct CameraContainer {
+    data: Vec<CameraData>,
 }
 
-impl Camera {
+impl Container for CameraContainer {
+    type Item = CameraData;
+    type HandleType = Camera;
+
+    fn push(&mut self, value: Self::Item) {
+        self.data.push(value);
+    }
+
+    fn swap_remove(&mut self, idx: usize) {
+        self.data.swap_remove(idx);
+    }
+}
+
+impl CameraContainer {
+    fn new() -> CameraContainer {
+        CameraContainer {
+            data: Vec::new(),
+        }
+    }
+}
+
+/// A handle to a camera object for a scene.
+#[derive(Copy, Clone)]
+pub struct Camera;
+
+impl Handle<Camera> {
     pub fn set_fovy(&self, scene: &mut Scene, fovy: f32) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.camera_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                let data = &mut scene.camera_data[i];
+                let data = &mut scene.camera_data.c.data[i];
                 data.fovy = Deg(fovy);
             })
     }
 
     pub fn set_near_clip(&self, scene: &mut Scene, near_clip: f32) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.camera_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                let data = &mut scene.camera_data[i];
+                let data = &mut scene.camera_data.c.data[i];
                 data.near_clip = near_clip;
             })
     }
 
     pub fn set_far_clip(&self, scene: &mut Scene, far_clip: f32) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.camera_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                let data = &mut scene.camera_data[i];
+                let data = &mut scene.camera_data.c.data[i];
                 data.far_clip = far_clip;
             })
     }
 
     pub fn set_order(&self, scene: &mut Scene, order: i32) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.camera_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                let data = &mut scene.camera_data[i];
+                let data = &mut scene.camera_data.c.data[i];
                 data.order = order;
             })
     }
 
     pub fn set_layers(&self, scene: &mut Scene, layers: i32) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.camera_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                let data = &mut scene.camera_data[i];
+                let data = &mut scene.camera_data.c.data[i];
                 data.layers = layers;
             })
     }
 
     pub fn order(&self, scene: &Scene) -> Result<i32> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.camera_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                let data = &scene.camera_data[i];
+                let data = &scene.camera_data.c.data[i];
                 data.order
             })
     }
 
     pub fn layers(&self, scene: &Scene) -> Result<i32> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.camera_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                let data = &scene.camera_data[i];
+                let data = &scene.camera_data.c.data[i];
                 data.layers
             })
     }
 
-    pub fn is_valid(&self) -> bool {
-        self.idx.get().is_some()
+    pub fn is_valid(&self, scene: &Scene) -> bool {
+        scene.camera_data.is_handle_valid(*self)
     }
 }
 
 impl Component for Camera {
-    fn init(scene: &mut Scene, object: &Object) -> Result<Rc<Camera>> {
+    fn init(scene: &mut Scene, object: &Object) -> Result<Handle<Camera>> {
         scene.create_camera(object)
     }
 
-    fn marked(&self, scene: &Scene) -> Result<bool> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+    fn marked(component: Handle<Camera>, scene: &Scene) -> Result<bool> {
+        let idx = scene.camera_data.data_idx_checked(component);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                scene.camera_data[i].marked
+                scene.camera_data.c.data[i].marked
             })
     }
 
-    fn destroy(&self, scene: &mut Scene) {
-        scene.destroy_camera(self);
-    }
-}
-
-impl<T> Component for RefCell<T> where T: BehaviourMessages + 'static {
-    fn init(scene: &mut Scene, object: &Object) -> Result<Rc<RefCell<T>>> {
-        scene.create_behaviour::<T>(object)
-    }
-
-    fn marked(&self, scene: &Scene) -> Result<bool> {
-        // FIXME: borrow() could fail, how should this be handled?
-        self.borrow().behaviour().idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| {
-                scene.behaviour_data[i].marked
-            })
-    }
-
-    fn destroy(&self, scene: &mut Scene) {
-        // FIXME: borrow() could fail, how should this be handled?
-        scene.destroy_behaviour2(&*self.borrow());
+    fn destroy(component: Handle<Camera>, scene: &mut Scene) {
+        scene.destroy_camera(component);
     }
 }
 
@@ -518,8 +523,6 @@ impl Material {
 }
 
 struct MeshRendererData {
-    /// Reference to the mesh renderer object.
-    object: Rc<MeshRenderer>,
     /// Reference to the object we are a component of.
     parent: Rc<Object>,
     /// True when the mesh renderer has been marked for destruction at the end
@@ -532,146 +535,134 @@ struct MeshRendererData {
     material: Option<Rc<Material>>,
 }
 
-pub struct MeshRenderer {
-    idx: Cell<Option<usize>>,
+struct MeshRendererContainer {
+    data: Vec<MeshRendererData>,
 }
 
-impl MeshRenderer {
+impl Container for MeshRendererContainer {
+    type Item = MeshRendererData;
+    type HandleType = MeshRenderer;
+
+    fn push(&mut self, value: Self::Item) {
+        self.data.push(value);
+    }
+
+    fn swap_remove(&mut self, idx: usize) {
+        self.data.swap_remove(idx);
+    }
+}
+
+impl MeshRendererContainer {
+    fn new() -> MeshRendererContainer {
+        MeshRendererContainer {
+            data: Vec::new(),
+        }
+    }
+}
+
+/// A handle to a mesh renderer object for a scene.
+#[derive(Copy, Clone)]
+pub struct MeshRenderer;
+
+impl Handle<MeshRenderer> {
     pub fn set_enabled(&self, scene: &mut Scene, enabled: bool) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| scene.mrenderer_data[i].enabled = enabled)
+        let idx = scene.mrenderer_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| scene.mrenderer_data.c.data[i].enabled = enabled)
     }
 
     pub fn set_mesh(&self, scene: &mut Scene, mesh: Option<Rc<Mesh>>) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| scene.mrenderer_data[i].mesh = mesh)
+        let idx = scene.mrenderer_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| scene.mrenderer_data.c.data[i].mesh = mesh)
     }
 
     pub fn set_material(&self, scene: &mut Scene, material: Option<Rc<Material>>) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| scene.mrenderer_data[i].material = material)
+        let idx = scene.mrenderer_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| scene.mrenderer_data.c.data[i].material = material)
     }
 
     pub fn set_layers(&self, scene: &mut Scene, layers: i32) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.mrenderer_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                let data = &mut scene.mrenderer_data[i];
+                let data = &mut scene.mrenderer_data.c.data[i];
                 data.layers = layers;
             })
     }
 
     pub fn enabled(&self, scene: &mut Scene) -> Result<bool> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| scene.mrenderer_data[i].enabled)
+        let idx = scene.mrenderer_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| scene.mrenderer_data.c.data[i].enabled)
     }
 
     pub fn mesh<'a>(&self, scene: &'a mut Scene) -> Result<Option<&'a Rc<Mesh>>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(move |i| scene.mrenderer_data[i].mesh.as_ref())
+        let idx = scene.mrenderer_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(move |i| scene.mrenderer_data.c.data[i].mesh.as_ref())
     }
 
     pub fn material<'a>(&self, scene: &'a mut Scene) -> Result<Option<&'a Rc<Material>>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(move |i| scene.mrenderer_data[i].material.as_ref())
+        let idx = scene.mrenderer_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(move |i| scene.mrenderer_data.c.data[i].material.as_ref())
     }
 
     pub fn layers(&self, scene: &Scene) -> Result<i32> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.mrenderer_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                let data = &scene.mrenderer_data[i];
+                let data = &scene.mrenderer_data.c.data[i];
                 data.layers
             })
     }
 
-    pub fn is_valid(&self) -> bool {
-        self.idx.get().is_some()
+    pub fn is_valid(&self, scene: &Scene) -> bool {
+        scene.mrenderer_data.is_handle_valid(*self)
     }
 }
 
 impl Component for MeshRenderer {
-    fn init(scene: &mut Scene, object: &Object) -> Result<Rc<MeshRenderer>> {
+    fn init(scene: &mut Scene, object: &Object) -> Result<Handle<MeshRenderer>> {
         scene.create_mrenderer(object)
     }
 
-    fn marked(&self, scene: &Scene) -> Result<bool> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+    fn marked(component: Handle<MeshRenderer>, scene: &Scene) -> Result<bool> {
+        let idx = scene.mrenderer_data.data_idx_checked(component);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                scene.mrenderer_data[i].marked
+                scene.mrenderer_data.c.data[i].marked
             })
     }
 
-    fn destroy(&self, scene: &mut Scene) {
-        scene.destroy_mrenderer(self);
+    fn destroy(component: Handle<MeshRenderer>, scene: &mut Scene) {
+        scene.destroy_mrenderer(component);
     }
 }
 
-pub trait BehaviourMessages {
-    fn create(behaviour: Behaviour) -> Self where Self: Sized;
+pub trait BehaviourMessages: 'static {
+    fn start(&self, scene: &mut Scene);
 
-    fn start(&mut self, scene: &mut Scene);
+    fn update(&self, scene: &mut Scene);
 
-    fn update(&mut self, scene: &mut Scene);
-
-    fn destroy(&mut self, scene: &mut Scene);
-
-    fn behaviour(&self) -> &Behaviour;
+    fn destroy(&self, scene: &mut Scene);
 }
 
-trait AnyBehaviour: Any {
+trait AnyBehaviour: Any + BehaviourMessages {
     fn as_any(&self) -> &Any;
-    /// Same as `Any::get_type_id` but stable.
-    fn type_id(&self) -> TypeId;
-    fn borrow(&self) -> std::cell::Ref<BehaviourMessages>;
-    fn borrow_mut(&self) -> std::cell::RefMut<BehaviourMessages>;
 }
 
-trait AnyComponent: Any + Component {
-    fn as_any(&self) -> &Any;
-    fn type_id(&self) -> TypeId;
-}
-
-impl<T: Component + 'static> AnyComponent for T {
+impl<T: BehaviourMessages + 'static> AnyBehaviour for T {
     fn as_any(&self) -> &Any {
         self
-    }
-
-    fn type_id(&self) -> TypeId {
-        TypeId::of::<Self>()
-    }
-}
-
-impl<T: BehaviourMessages + 'static> AnyBehaviour for RefCell<T> {
-    fn as_any(&self) -> &Any {
-        self
-    }
-
-    fn type_id(&self) -> TypeId {
-        TypeId::of::<Self>()
-    }
-
-    fn borrow(&self) -> std::cell::Ref<BehaviourMessages> {
-        RefCell::borrow(self)
-    }
-
-    fn borrow_mut(&self) -> std::cell::RefMut<BehaviourMessages> {
-        RefCell::borrow_mut(self)
     }
 }
 
 struct BehaviourData {
     /// Reference to the behaviour implementation.
     behaviour: Rc<AnyBehaviour>,
-    /// Reference to the object we are a component of.
-    parent: Rc<Object>,
     /// True when the object has been marked for destruction at the end of the
     /// frame.
     marked: bool,
@@ -679,21 +670,59 @@ struct BehaviourData {
     is_new: bool
 }
 
-pub struct Behaviour {
-    idx: Cell<Option<usize>>,
+struct BehaviourContainer {
+    data: Vec<BehaviourData>,
 }
 
-impl Behaviour {
-    pub fn object<'a>(&self, scene: &'a Scene) -> Result<&'a Rc<Object>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe {
-                &scene.behaviour_data.get_unchecked(i).parent
+impl Container for BehaviourContainer {
+    type Item = BehaviourData;
+    type HandleType = Behaviour;
+
+    fn push(&mut self, value: Self::Item) {
+        self.data.push(value);
+    }
+
+    fn swap_remove(&mut self, idx: usize) {
+        self.data.swap_remove(idx);
+    }
+}
+
+impl BehaviourContainer {
+    fn new() -> BehaviourContainer {
+        BehaviourContainer {
+            data: Vec::new(),
+        }
+    }
+}
+
+/// A handle to a behaviour for a scene.
+#[derive(Copy, Clone)]
+pub struct Behaviour;
+
+// TODO: move use statements
+use std::any::Any;
+
+impl Handle<Behaviour> {
+    pub fn behaviour<'a, T: Any>(&self, scene: &Scene) -> Result<Rc<T>> {
+        let idx = scene.behaviour_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .and_then(|i| {
+                let behaviour = &scene.behaviour_data.c.data[i].behaviour;
+                if behaviour.as_any().is::<T>() {
+                    unsafe {
+                        let raw: *mut AnyBehaviour = &**behaviour as *const _ as *mut _;
+                        std::mem::forget(behaviour);
+                        Ok(Rc::from_raw(raw as *mut T))
+                    }
+                } else {
+                    // TODO: dedicated error variant
+                    Err(Error::Other)
+                }
             })
     }
 
-    pub fn is_valid(&self) -> bool {
-        self.idx.get().is_some()
+    pub fn is_valid(&self, scene: &Scene) -> bool {
+        scene.behaviour_data.is_handle_valid(*self)
     }
 }
 
@@ -701,7 +730,7 @@ struct ObjectData {
     /// Reference to the object.
     object: Rc<Object>,
     /// The components attached to this object.
-    components: HashMap<TypeId, Rc<AnyComponent>>,
+    components: HashMap<TypeId, GenericHandle>,
     /// True when the object has been marked for destruction at the end of the
     /// frame.
     marked: bool,
@@ -855,22 +884,22 @@ pub struct Scene {
     buggy_intel: bool,
     window: Option<Window>,
     event_pump: Option<EventPump>,
-    camera_data: Vec<CameraData>,
+    camera_data: ObjectManager<CameraContainer>,
     mesh_data: Vec<MeshData>,
     cubemap_data: Vec<CubemapData>,
     material_data: Vec<MaterialData>,
-    mrenderer_data: Vec<MeshRendererData>,
+    mrenderer_data: ObjectManager<MeshRendererContainer>,
     shader_data: Vec<ShaderData>,
-    behaviour_data: Vec<BehaviourData>,
+    behaviour_data: ObjectManager<BehaviourContainer>,
     object_data: Vec<ObjectData>,
     transform_data: Vec<TransformData>,
-    destroyed_cameras: Vec<usize>,
+    destroyed_cameras: Vec<Handle<Camera>>,
     destroyed_meshes: Vec<usize>,
     destroyed_cubemaps: Vec<usize>,
     destroyed_materials: Vec<usize>,
-    destroyed_mrenderers: Vec<usize>,
+    destroyed_mrenderers: Vec<Handle<MeshRenderer>>,
     destroyed_shaders: Vec<usize>,
-    destroyed_behaviours: Vec<usize>,
+    destroyed_behaviours: Vec<Handle<Behaviour>>,
     destroyed_objects: Vec<usize>,
 
     vertex_bufs: Vec<VertexBuffer>,
@@ -1005,13 +1034,13 @@ impl Scene {
             buggy_intel,
             window: Some(window),
             event_pump: Some(event_pump),
-            camera_data: Vec::new(),
+            camera_data: ObjectManager::new(CameraContainer::new()),
             mesh_data: Vec::new(),
             cubemap_data: Vec::new(),
             material_data: Vec::new(),
-            mrenderer_data: Vec::new(),
+            mrenderer_data: ObjectManager::new(MeshRendererContainer::new()),
             shader_data: Vec::new(),
-            behaviour_data: Vec::new(),
+            behaviour_data: ObjectManager::new(BehaviourContainer::new()),
             object_data: Vec::new(),
             transform_data: Vec::new(),
             destroyed_cameras: Vec::new(),
@@ -1051,13 +1080,13 @@ impl Scene {
             buggy_intel: false,
             window: None,
             event_pump: None,
-            camera_data: Vec::new(),
+            camera_data: ObjectManager::new(CameraContainer::new()),
             mesh_data: Vec::new(),
             cubemap_data: Vec::new(),
             material_data: Vec::new(),
-            mrenderer_data: Vec::new(),
+            mrenderer_data: ObjectManager::new(MeshRendererContainer::new()),
             shader_data: Vec::new(),
-            behaviour_data: Vec::new(),
+            behaviour_data: ObjectManager::new(BehaviourContainer::new()),
             object_data: Vec::new(),
             transform_data: Vec::new(),
             destroyed_cameras: Vec::new(),
@@ -1094,7 +1123,7 @@ impl Scene {
         index_bufs.push(index_buf);
     }
 
-    fn create_camera(&mut self, object: &Object) -> Result<Rc<Camera>> {
+    fn create_camera(&mut self, object: &Object) -> Result<Handle<Camera>> {
         let obj_idx = match object.idx.get() {
             Some(idx) => idx,
             None => {
@@ -1103,14 +1132,11 @@ impl Scene {
         };
         let obj_data = &mut self.object_data[obj_idx];
 
-        let rv = Rc::new(Camera { idx: Cell::new(None) });
-        let data = CameraData {
-            camera: rv.clone(),
+        let handle = self.camera_data.add(CameraData {
             parent: obj_data.object.clone(),
             enabled: true,
             marked: false,
             order: 0,
-            // By default, render the first layer only
             layers: 1,
             fovy: Deg(90.0),
             aspect: 1.0,
@@ -1119,10 +1145,9 @@ impl Scene {
             pos: Vector3::zero(),
             pv_matrix: Matrix4::one(),
             draw_cmds: Vec::new(),
-        };
-        self.camera_data.push(data);
-        rv.idx.set(Some(self.camera_data.len() - 1));
-        Ok(rv)
+        });
+
+        Ok(handle)
     }
 
     pub fn create_mesh(&mut self, vert_capacity: usize, indices_capacity: usize) -> Rc<Mesh> {
@@ -1230,7 +1255,7 @@ impl Scene {
         Ok(rv)
     }
 
-    fn create_mrenderer(&mut self, object: &Object) -> Result<Rc<MeshRenderer>> {
+    fn create_mrenderer(&mut self, object: &Object) -> Result<Handle<MeshRenderer>> {
         let obj_idx = match object.idx.get() {
             Some(idx) => idx,
             None => {
@@ -1239,9 +1264,7 @@ impl Scene {
         };
         let obj_data = &mut self.object_data[obj_idx];
 
-        let rv = Rc::new(MeshRenderer { idx: Cell::new(None) });
-        let data = MeshRendererData {
-            object: rv.clone(),
+        let handle = self.mrenderer_data.add(MeshRendererData {
             parent: obj_data.object.clone(),
             marked: false,
             enabled: true,
@@ -1249,10 +1272,9 @@ impl Scene {
             layers: 1,
             mesh: None,
             material: None,
-        };
-        self.mrenderer_data.push(data);
-        rv.idx.set(Some(self.mrenderer_data.len() - 1));
-        Ok(rv)
+        });
+
+        Ok(handle)
     }
 
     pub fn create_shader(&mut self, vs_src: &str, fs_src: &str, _gs_src: Option<&str>) -> Rc<Shader> {
@@ -1290,29 +1312,18 @@ impl Scene {
         rv
     }
 
-    fn create_behaviour<T: BehaviourMessages + 'static>(&mut self, object: &Object) -> Result<Rc<RefCell<T>>> {
-        let obj_idx = match object.idx.get() {
-            Some(idx) => idx,
-            None => {
-                return Err(Error::ObjectDestroyed)
-            }
-        };
-        let obj_data = &mut self.object_data[obj_idx];
-
-        let t = T::create(Behaviour { idx: Cell::new(None) });
-        let rv = Rc::new(RefCell::new(t));
-        let data = BehaviourData {
+    pub fn create_behaviour<T: BehaviourMessages>(&mut self, t: T) -> Result<Handle<Behaviour>> {
+        let rv = Rc::new(t);
+        let handle = self.behaviour_data.add(BehaviourData {
             behaviour: rv.clone(),
-            parent: obj_data.object.clone(),
             marked: false,
             is_new: true,
-        };
-        self.behaviour_data.push(data);
-        rv.borrow().behaviour().idx.set(Some(self.behaviour_data.len() - 1));
-        Ok(rv)
+        });
+
+        Ok(handle)
     }
 
-    pub fn add_component<T: Component + 'static>(&mut self, object: &Object) -> Result<Rc<T>> {
+    pub fn add_component<T: Component>(&mut self, object: &Object) -> Result<Handle<T>> {
         let obj_idx = match object.idx.get() {
             Some(idx) => idx,
             None => {
@@ -1324,28 +1335,43 @@ impl Scene {
 
         {
             let obj_data = &self.object_data[obj_idx];
-            // Only overwrite if it doesn't exist or is marked
-            let overwrite = obj_data.components.get(&id)
-                .map_or(Ok(true), |comp| comp.marked(self));
-            let overwrite = overwrite.expect("Destroyed component found still attached to object");
-            if !overwrite {
-                return Err(Error::Other);
-            }
+
             if obj_data.marked {
                 // TODO: dedicated error variant
                 return Err(Error::Other)
             }
+            // Only overwrite if it doesn't exist or is marked
+            let overwrite = match obj_data.components.get(&id) {
+                Some(&generic_handle) => {
+                    let handle = Handle::from_generic_handle(generic_handle)
+                        .expect("Conversion from generic handle failed.");
+                    T::marked(handle, self) != Ok(false)
+                }
+                None => {
+                    true
+                }
+            };
+            if !overwrite {
+                // TODO: dedicated error variant
+                return Err(Error::Other);
+            }
+
+            if obj_data.marked {
+                // TODO: dedicated error variant
+                return Err(Error::Other);
+            }
         }
 
         let comp = try!(T::init(self, object));
+        let generic_comp = Handle::into_generic_handle(comp);
 
         let obj_data = &mut self.object_data[obj_idx];
-        obj_data.components.insert(id, comp.clone());
+        obj_data.components.insert(id, generic_comp);
 
         Ok(comp)
     }
 
-    pub fn get_component<T: Component + 'static>(&self, object: &Object) -> Result<Rc<T>> {
+    pub fn get_component<T: Component>(&self, object: &Object) -> Result<Handle<T>> {
         let obj_idx = match object.idx.get() {
             Some(idx) => idx,
             None => {
@@ -1355,23 +1381,23 @@ impl Scene {
 
         let id = TypeId::of::<T>();
 
-        let comp = match self.object_data[obj_idx].components.get(&id) {
-            Some(comp) => comp.clone(),
+        let generic_comp = match self.object_data[obj_idx].components.get(&id) {
+            Some(&generic_comp) => generic_comp,
             None => {
                 // TODO: dedicated error variant
-                return Err(Error::Other)
+                // Component doesn't exist
+                return Err(Error::Other);
             }
         };
 
-        if comp.as_any().is::<T>() {
-            unsafe {
-                let raw: *mut AnyComponent = &*comp as *const _ as *mut _;
-                std::mem::forget(comp);
-                Ok(Rc::from_raw(raw as *mut T))
-            }
-        } else {
+        let comp = Handle::from_generic_handle(generic_comp)
+            .expect("Conversion from generic handle failed.");
+        if T::marked(comp, self).is_err() {
             // TODO: dedicated error variant
+            // Component doesn't exist
             Err(Error::Other)
+        } else {
+            Ok(comp)
         }
     }
 
@@ -1400,20 +1426,19 @@ impl Scene {
         rv
     }
 
-    pub fn destroy_camera(&mut self, camera: &Camera) {
-        let camera_idx = match camera.idx.get() {
-            Some(camera_idx) => camera_idx,
-            None => {
+    pub fn destroy_camera(&mut self, camera: Handle<Camera>) {
+        let camera_idx = match self.camera_data.data_idx_checked(camera) {
+            Ok(camera_idx) => camera_idx,
+            Err(_) => {
                 println!("[WARNING] destroy_camera called on a camera without a valid handle!");
-                return
+                return;
             }
         };
-        let camera_data = unsafe {
-            self.camera_data.get_unchecked_mut(camera_idx)
-        };
+
+        let camera_data = &mut self.camera_data.c.data[camera_idx];
 
         if !camera_data.marked {
-            self.destroyed_cameras.push(camera_idx);
+            self.destroyed_cameras.push(camera);
             camera_data.marked = true;
         }
     }
@@ -1472,18 +1497,18 @@ impl Scene {
         }
     }
 
-    pub fn destroy_mrenderer(&mut self, mrenderer: &MeshRenderer) {
-        let mrenderer_idx = match mrenderer.idx.get() {
-            Some(mrenderer_idx) => mrenderer_idx,
-            None => {
+    pub fn destroy_mrenderer(&mut self, mrenderer: Handle<MeshRenderer>) {
+        let mrenderer_idx = match self.mrenderer_data.data_idx_checked(mrenderer) {
+            Ok(mrenderer_idx) => mrenderer_idx,
+            Err(_) => {
                 println!("[WARNING] destroy_mrenderer called on a mesh renderer without a valid handle!");
-                return
+                return;
             }
         };
-        let mrenderer_data = &mut self.mrenderer_data[mrenderer_idx];
+        let mrenderer_data = &mut self.mrenderer_data.c.data[mrenderer_idx];
 
         if !mrenderer_data.marked {
-            self.destroyed_mrenderers.push(mrenderer_idx);
+            self.destroyed_mrenderers.push(mrenderer);
             mrenderer_data.marked = true;
         }
     }
@@ -1506,25 +1531,19 @@ impl Scene {
         }
     }
 
-    pub fn destroy_behaviour(&mut self, behaviour: &Behaviour) {
-        let bhav_idx = match behaviour.idx.get() {
-            Some(bhav_idx) => bhav_idx,
-            None => {
+    pub fn destroy_behaviour(&mut self, behaviour: Handle<Behaviour>) {
+        let bhav_idx = match self.behaviour_data.data_idx_checked(behaviour) {
+            Ok(bhav_idx) => bhav_idx,
+            Err(_) => {
                 println!("[WARNING] destroy_behaviour called on a behaviour without a valid handle!");
-                return
+                return;
             }
         };
 
-        self.destroy_behaviour_internal(bhav_idx);
-    }
-
-    fn destroy_behaviour_internal(&mut self, idx: usize) {
-        let bhav_data = unsafe {
-            self.behaviour_data.get_unchecked_mut(idx)
-        };
+        let bhav_data = &mut self.behaviour_data.c.data[bhav_idx];
 
         if !bhav_data.marked {
-            self.destroyed_behaviours.push(idx);
+            self.destroyed_behaviours.push(behaviour);
             bhav_data.marked = true;
         }
     }
@@ -1541,9 +1560,8 @@ impl Scene {
         self.destroy_object_internal(object_idx);
     }
 
-    fn destroy_behaviour2<T: BehaviourMessages>(&mut self, behaviour: &T) {
-        self.destroy_behaviour(behaviour.behaviour());
-    }
+    // TODO: Get Rc<T> from Handle<Behaviour>
+    // TODO: maybe reverse?
 
     fn destroy_object_internal(&mut self, idx: usize) {
         let (was_marked, mut components) = {
@@ -1551,7 +1569,7 @@ impl Scene {
             // borrow checker. If I understand correctly, non-lexically based
             // lifetimes based on liveness should help in most cases. Update the
             // code when NLL is implemented in Rust.
-            let obj_data = unsafe { self.object_data.get_unchecked_mut(idx) };
+            let obj_data = &mut self.object_data[idx];
             // Swap map to placate the borrow checker
             let mut components = HashMap::new();
             std::mem::swap(&mut components, &mut obj_data.components);
@@ -1560,8 +1578,20 @@ impl Scene {
             (was_marked, components)
         };
 
-        for v in components.values() {
-            v.destroy(self);
+        for (&k, &v) in &components {
+            // XXX: Every component type here needs to be handled otherwise a
+            // panic may occur.
+            match k {
+                t if t == TypeId::of::<Handle<Camera>>() => {
+                    let v = Handle::<Camera>::from_generic_handle(v).unwrap();
+                    Component::destroy(v, self);
+                }
+                t if t == TypeId::of::<Handle<MeshRenderer>>() => {
+                    let v = Handle::<Camera>::from_generic_handle(v).unwrap();
+                    Component::destroy(v, self);
+                }
+                t => panic!("Unhandled type: {:?}", t),
+            }
         }
 
         std::mem::swap(&mut components, &mut self.object_data[idx].components);
@@ -1584,12 +1614,13 @@ impl Scene {
         // For all objects, check the following:
         //   * The index is valid (i.e. `is_some()`)
         //   * The index corresponds to the correct data entry
-        for i in 0..self.camera_data.len() {
+        /*for i in 0..self.camera_data.len() {
             let data = unsafe { self.camera_data.get_unchecked(i) };
             let idx = data.camera.idx.get();
             assert!(idx.is_some(), "Invalid object handle found!");
             assert_eq!(idx.unwrap(), i);
-        }
+        }*/
+        // TODO: move to object manager
         for i in 0..self.object_data.len() {
             let data = unsafe { self.object_data.get_unchecked(i) };
             let idx = data.object.idx.get();
@@ -1606,32 +1637,32 @@ impl Scene {
         let start_time = Instant::now();
 
         let mut idx = 0;
-        while idx < self.behaviour_data.len() {
+        while idx < self.behaviour_data.c.data.len() {
             let idx = post_add(&mut idx, 1);
             unsafe {
-                let (is_new, cell) = {
-                    let data = self.behaviour_data.get_unchecked(idx);
+                let (is_new, obj) = {
+                    let data = &self.behaviour_data.c.data[idx];
                     // Don't run `update()` on destroyed behaviours
-                    if (*data).marked {
+                    if data.marked {
                         println!("Skipping behaviour {} because it's marked.", idx);
                         continue
                     }
-                    ((*data).is_new, (&*(*data).behaviour) as *const AnyBehaviour)
+                    (data.is_new, &*data.behaviour as *const AnyBehaviour)
                 };
-                let mut obj = (*cell).borrow_mut();
+
                 if is_new {
-                    obj.start(self);
+                    (*obj).start(self);
                     let marked = {
-                        let data = self.behaviour_data.get_unchecked_mut(idx);
-                        (*data).is_new = false;
-                        (*data).marked
+                        let data = &mut self.behaviour_data.c.data[idx];
+                        data.is_new = false;
+                        data.marked
                     };
                     // Check that the start function didn't immediately destroy the behaviour
                     if !marked {
-                        obj.update(self);
+                        (*obj).update(self);
                     }
                 } else {
-                    obj.update(self);
+                    (*obj).update(self);
                 }
             }
         }
@@ -1639,84 +1670,41 @@ impl Scene {
         let mut i = 0;
         while i < self.destroyed_behaviours.len() {
             let i = post_add(&mut i, 1);
+            let handle = self.destroyed_behaviours[i];
+            let idx = self.behaviour_data.data_idx_checked(handle)
+                .expect("Behaviour already destroyed");
             unsafe {
-                let idx = *self.destroyed_behaviours.get_unchecked(i);
-                let cell = {
-                    let data = self.behaviour_data.get_unchecked(idx);
-                    (&*(*data).behaviour) as *const AnyBehaviour
+                let obj = {
+                    let data = &self.behaviour_data.c.data[idx];
+                    &*data.behaviour as *const AnyBehaviour
                 };
-                (*cell).borrow_mut().destroy(self);
+                (*obj).destroy(self);
             }
         }
 
         let destroy_start_time = Instant::now();
 
         unsafe {
-            let mut behaviour_data = Vec::new();
             let mut destroyed_behaviours = Vec::new();
-            let mut camera_data = Vec::new();
             let mut destroyed_cameras = Vec::new();
-            let mut mrenderer_data = Vec::new();
             let mut destroyed_mrenderers = Vec::new();
 
-            std::mem::swap(&mut behaviour_data, &mut self.behaviour_data);
             std::mem::swap(&mut destroyed_behaviours, &mut self.destroyed_behaviours);
-            std::mem::swap(&mut camera_data, &mut self.camera_data);
             std::mem::swap(&mut destroyed_cameras, &mut self.destroyed_cameras);
-            std::mem::swap(&mut mrenderer_data, &mut self.mrenderer_data);
             std::mem::swap(&mut destroyed_mrenderers, &mut self.destroyed_mrenderers);
 
-            Scene::cleanup_destroyed(
-                &mut behaviour_data, &mut destroyed_behaviours,
-                |x| x.marked,
-                |x, idx| {
-                    x.behaviour.borrow().behaviour().idx.set(idx);
-                    if idx.is_none() {
-                        // The object should not have been destroyed yet, so `unwrap()`
-                        // is safe.
-                        let obj_data = &mut self.object_data[x.parent.idx.get().unwrap()];
-                        let id = x.behaviour.type_id();
-                        let should_remove = obj_data.components.get(&id)
-                            .map_or(false, |y| y.as_any() as *const _ == x.behaviour.as_any());
-                        if should_remove {
-                            obj_data.components.remove(&id);
-                        }
-                    }
-                });
-            Scene::cleanup_destroyed(
-                &mut camera_data, &mut destroyed_cameras,
-                |x| x.marked,
-                |x, idx| {
-                    x.camera.idx.set(idx);
-                    if idx.is_none() {
-                        // The object should not have been destroyed yet, so `unwrap()`
-                        // is safe.
-                        let obj_data = &mut self.object_data[x.parent.idx.get().unwrap()];
-                        let id = x.camera.type_id();
-                        let should_remove = obj_data.components.get(&id)
-                            .map_or(false, |y| y.as_any() as *const _ == x.camera.as_any());
-                        if should_remove {
-                            obj_data.components.remove(&id);
-                        }
-                    }
-                });
-            Scene::cleanup_destroyed(
-                &mut mrenderer_data, &mut destroyed_mrenderers,
-                |x| x.marked,
-                |x, idx| {
-                    x.object.idx.set(idx);
-                    if idx.is_none() {
-                        // The object should not have been destroyed yet, so `unwrap()`
-                        // is safe.
-                        let obj_data = &mut self.object_data[x.parent.idx.get().unwrap()];
-                        let id = x.object.type_id();
-                        let should_remove = obj_data.components.get(&id)
-                            .map_or(false, |y| y.as_any() as *const _ == x.object.as_any());
-                        if should_remove {
-                            obj_data.components.remove(&id);
-                        }
-                    }
-                });
+            for &handle in &self.destroyed_behaviours {
+                self.behaviour_data.remove(handle).expect("Double free");
+            }
+            for &handle in &self.destroyed_cameras {
+                self.camera_data.remove(handle).expect("Double free");;
+            }
+            for &handle in &self.destroyed_mrenderers {
+                self.mrenderer_data.remove(handle).expect("Double free");;
+            }
+            self.destroyed_behaviours.clear();
+            self.destroyed_cameras.clear();
+            self.destroyed_mrenderers.clear();
 
             self.cleanup_destroyed_objects();
             // FIXME: resource leak
@@ -1742,11 +1730,8 @@ impl Scene {
                 |x| x.marked,
                 |x, idx| x.object.idx.set(idx));
 
-            std::mem::swap(&mut behaviour_data, &mut self.behaviour_data);
             std::mem::swap(&mut destroyed_behaviours, &mut self.destroyed_behaviours);
-            std::mem::swap(&mut camera_data, &mut self.camera_data);
             std::mem::swap(&mut destroyed_cameras, &mut self.destroyed_cameras);
-            std::mem::swap(&mut mrenderer_data, &mut self.mrenderer_data);
             std::mem::swap(&mut destroyed_mrenderers, &mut self.destroyed_mrenderers);
         }
 
@@ -1999,7 +1984,7 @@ impl Scene {
         {
             let (width, height) = self.window.as_ref().unwrap().size();
             let aspect_ratio = width as f32 / height as f32;
-            for camera in &mut self.camera_data {
+            for camera in &mut self.camera_data.c.data {
                 camera.aspect = aspect_ratio;
             }
             gl::Viewport(0, 0, width as GLint, height as GLint);
@@ -2234,7 +2219,7 @@ impl Scene {
         // Calculate camera matrices and positions
         let mut camera_data = Vec::new();
 
-        std::mem::swap(&mut camera_data, &mut self.camera_data);
+        std::mem::swap(&mut camera_data, &mut self.camera_data.c.data);
         for camera in &mut camera_data {
             let trans_idx = camera.parent.idx.get()
                 .expect("Camera parent object destroyed, the camera should have been destroyed as well at this point");
@@ -2258,14 +2243,14 @@ impl Scene {
             camera.pos = cam_pos;
             camera.pv_matrix = pv_matrix;
         }
-        std::mem::swap(&mut camera_data, &mut self.camera_data);
+        std::mem::swap(&mut camera_data, &mut self.camera_data.c.data);
 
-        for camera in &mut self.camera_data {
+        for camera in &mut self.camera_data.c.data {
             camera.draw_cmds.clear();
         }
 
         // Generate draw commands
-        for data in &self.mrenderer_data {
+        for data in &self.mrenderer_data.c.data {
             if !data.enabled {
                 continue;
             }
@@ -2310,7 +2295,7 @@ impl Scene {
                 .map(|&(ref idx, _)| *idx)
                 .expect("Expected index buffer to be already allocated");
 
-            for camera in &mut self.camera_data {
+            for camera in &mut self.camera_data.c.data {
                 if !camera.enabled {
                     continue;
                 }
@@ -2340,7 +2325,7 @@ impl Scene {
         }
 
         // Sort draw commands for batching
-        for camera in &mut self.camera_data {
+        for camera in &mut self.camera_data.c.data {
             camera.draw_cmds.sort_by(|a, b| {
                 match a.shader_idx.cmp(&b.shader_idx) {
                     Ordering::Equal => (),
@@ -2371,12 +2356,12 @@ impl Scene {
         std::mem::swap(&mut self.camera_render_order, &mut camera_render_order);
 
         camera_render_order.clear();
-        camera_render_order.extend(0..self.camera_data.len());
+        camera_render_order.extend(0..self.camera_data.c.data.len());
 
         // Sort cameras into the order we want to render them in
         camera_render_order.sort_by(|&a, &b| {
-            let a_order = self.camera_data[a].order;
-            let b_order = self.camera_data[b].order;
+            let a_order = self.camera_data.c.data[a].order;
+            let b_order = self.camera_data.c.data[b].order;
             a_order.cmp(&b_order)
         });
 
@@ -2390,7 +2375,7 @@ impl Scene {
         gl::Clear(gl::COLOR_BUFFER_BIT);
         // Execute draw commands
         for &camera_idx in &self.camera_render_order {
-            let camera = &self.camera_data[camera_idx];
+            let camera = &self.camera_data.c.data[camera_idx];
             let pv_matrix: [[f32; 4]; 4] = camera.pv_matrix.into();
             let cam_pos: [f32; 3] = camera.pos.into();
 
@@ -2402,7 +2387,6 @@ impl Scene {
                     prev_shader_idx = Some(info.shader_idx);
                 }
                 if prev_material_idx != Some(info.material_idx) {
-                    // TODO: support custom uniform values again
                     prev_material_idx = Some(info.material_idx);
                 }
                 if prev_vertex_buf_idx != Some(info.vertex_buf_idx) {
@@ -2522,45 +2506,6 @@ impl Scene {
 
         true
     }
-
-    //fn to_glium_uniform_value<'a>(&self, value: &UniformValue) -> glium::uniforms::UniformValue<'a> {
-    //    match *value {
-    //        UniformValue::Int(x) => glium::uniforms::UniformValue::SignedInt(x),
-    //        UniformValue::UnsignedInt(x) => glium::uniforms::UniformValue::UnsignedInt(x),
-    //        UniformValue::Float(x) => glium::uniforms::UniformValue::Float(x),
-    //        UniformValue::Mat2(x) => glium::uniforms::UniformValue::Mat2(x),
-    //        UniformValue::Mat3(x) => glium::uniforms::UniformValue::Mat3(x),
-    //        UniformValue::Mat4(x) => glium::uniforms::UniformValue::Mat4(x),
-    //        UniformValue::Vec2(x) => glium::uniforms::UniformValue::Vec2(x),
-    //        UniformValue::Vec3(x) => glium::uniforms::UniformValue::Vec3(x),
-    //        UniformValue::Vec4(x) => glium::uniforms::UniformValue::Vec4(x),
-    //        UniformValue::IntVec2(x) => glium::uniforms::UniformValue::IntVec2(x),
-    //        UniformValue::IntVec3(x) => glium::uniforms::UniformValue::IntVec3(x),
-    //        UniformValue::IntVec4(x) => glium::uniforms::UniformValue::IntVec4(x),
-    //        UniformValue::UIntVec2(x) => glium::uniforms::UniformValue::UnsignedIntVec2(x),
-    //        UniformValue::UIntVec3(x) => glium::uniforms::UniformValue::UnsignedIntVec3(x),
-    //        UniformValue::UIntVec4(x) => glium::uniforms::UniformValue::UnsignedIntVec4(x),
-    //        UniformValue::Bool(x) => glium::uniforms::UniformValue::Bool(x),
-    //        UniformValue::BoolVec2(x) => glium::uniforms::UniformValue::BoolVec2(x),
-    //        UniformValue::BoolVec3(x) => glium::uniforms::UniformValue::BoolVec3(x),
-    //        UniformValue::BoolVec4(x) => glium::uniforms::UniformValue::BoolVec4(x),
-    //        UniformValue::Double(x) => glium::uniforms::UniformValue::Double(x),
-    //        UniformValue::DoubleVec2(x) => glium::uniforms::UniformValue::DoubleVec2(x),
-    //        UniformValue::DoubleVec3(x) => glium::uniforms::UniformValue::DoubleVec3(x),
-    //        UniformValue::DoubleVec4(x) => glium::uniforms::UniformValue::DoubleVec4(x),
-    //        UniformValue::DoubleMat2(x) => glium::uniforms::UniformValue::DoubleMat2(x),
-    //        UniformValue::DoubleMat3(x) => glium::uniforms::UniformValue::DoubleMat3(x),
-    //        UniformValue::DoubleMat4(x) => glium::uniforms::UniformValue::DoubleMat4(x),
-    //        UniformValue::Int64(x) => glium::uniforms::UniformValue::Int64(x),
-    //        UniformValue::Int64Vec2(x) => glium::uniforms::UniformValue::Int64Vec2(x),
-    //        UniformValue::Int64Vec3(x) => glium::uniforms::UniformValue::Int64Vec3(x),
-    //        UniformValue::Int64Vec4(x) => glium::uniforms::UniformValue::Int64Vec4(x),
-    //        UniformValue::UInt64(x) => glium::uniforms::UniformValue::UnsignedInt64(x),
-    //        UniformValue::UInt64Vec2(x) => glium::uniforms::UniformValue::UnsignedInt64Vec2(x),
-    //        UniformValue::UInt64Vec3(x) => glium::uniforms::UniformValue::UnsignedInt64Vec3(x),
-    //        UniformValue::UInt64Vec4(x) => glium::uniforms::UniformValue::UnsignedInt64Vec4(x)
-    //    }
-    //}
 
     fn local_to_world_pos_rot(&self,
                               parent_data: Option<&TransformData>,
@@ -2873,60 +2818,6 @@ mod test {
     use cgmath::{Deg, Euler, Quaternion, Vector3};
     use num::{Zero, One};
 
-    struct TestBehaviour {
-        behaviour: Behaviour,
-        id: u32
-    }
-
-    struct TestBehaviour2 {
-        behaviour: Behaviour,
-        id: u32,
-    }
-
-    impl BehaviourMessages for TestBehaviour {
-        fn create(behaviour: Behaviour) -> TestBehaviour {
-            TestBehaviour {
-                behaviour: behaviour,
-                id: 0
-            }
-        }
-
-        fn start(&mut self, _scene: &mut Scene) {
-        }
-
-        fn update(&mut self, _scene: &mut Scene) {
-        }
-
-        fn destroy(&mut self, _scene: &mut Scene) {
-        }
-
-        fn behaviour(&self) -> &Behaviour {
-            &self.behaviour
-        }
-    }
-
-    impl BehaviourMessages for TestBehaviour2 {
-        fn create(behaviour: Behaviour) -> TestBehaviour2 {
-            TestBehaviour2 {
-                behaviour: behaviour,
-                id: 0
-            }
-        }
-
-        fn start(&mut self, _scene: &mut Scene) {
-        }
-
-        fn update(&mut self, _scene: &mut Scene) {
-        }
-
-        fn destroy(&mut self, _scene: &mut Scene) {
-        }
-
-        fn behaviour(&self) -> &Behaviour {
-            &self.behaviour
-        }
-    }
-
     /// Determine if two borrowed pointers point to the same thing.
     #[inline]
     fn ref_eq<T: ?Sized>(a: &T, b: &T) -> bool {
@@ -3144,70 +3035,5 @@ mod test {
         assert_relative_eq!(up_world.z, 0.0);
     }
 
-    #[test]
-    fn test_add_component() {
-        let mut scene = Scene::new_headless();
-
-        let obj1 = scene.create_object();
-
-        // Test creating behaviour works
-        let bhav = scene.add_component::<RefCell<TestBehaviour>>(&obj1).ok().unwrap();
-        bhav.borrow_mut().id = 444;
-        // Test we can retrieve the behaviour
-        let bhav2 = scene.get_component::<RefCell<TestBehaviour>>(&obj1).ok().unwrap();
-        // These behaviours should be identical
-        assert_eq!(bhav.borrow().id, bhav2.borrow().id);
-
-        // Test we cannot overwrite the old behaviour
-        // TODO: check specific enum variant when added
-        assert!(scene.add_component::<RefCell<TestBehaviour>>(&obj1).is_err());
-        // Test we can add components of other types
-        assert!(scene.add_component::<RefCell<TestBehaviour2>>(&obj1).is_ok());
-
-        scene.destroy_behaviour(bhav.borrow().behaviour());
-
-        // It should still be possible to retrieve the behaviour after it has
-        // been marked for destruction
-        scene.get_component::<RefCell<TestBehaviour>>(&obj1).ok().unwrap();
-
-        // It should now be possible to overwrite the old behaviour
-        let bhav3 = scene.add_component::<RefCell<TestBehaviour>>(&obj1).ok().unwrap();
-        bhav3.borrow_mut().id = 555;
-
-        // This behaviour should be different from the old one
-        assert_ne!(bhav.borrow().id, bhav3.borrow().id);
-
-        scene.destroy_behaviour(bhav3.borrow().behaviour());
-
-        scene.do_frame();
-
-        // It should no longer be possible to retrieve the behaviour in the next
-        // frame
-        // TODO: check specific enum variant when added
-        assert!(scene.get_component::<RefCell<TestBehaviour>>(&obj1).is_err());
-
-        // Other components should not be affected by one other component being
-        // removed.
-        let bhav4 = scene.get_component::<RefCell<TestBehaviour2>>(&obj1).unwrap();
-        assert_eq!(bhav4.borrow().id, 0);
-
-        scene.destroy_object(&obj1);
-
-        // It should not be possible to add a new behaviour to a "marked"
-        // object.
-        // TODO: check specific enum variant when added
-        assert!(scene.add_component::<RefCell<TestBehaviour>>(&obj1).is_err());
-
-        let obj2 = scene.create_object();
-        let bhav5 = scene.add_component::<RefCell<TestBehaviour>>(&obj2).ok().unwrap();
-
-        scene.destroy_object(&obj2);
-
-        scene.do_frame();
-
-        // Destroying the object a component is attached to should destroy the
-        // component.
-        assert!(!bhav4.borrow().behaviour().is_valid());
-        assert!(!bhav5.borrow().behaviour().is_valid());
-    }
+    // FIXME: reimplement test `test_add_component`, add test for new behaviours
 }

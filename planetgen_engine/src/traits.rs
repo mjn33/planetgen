@@ -20,12 +20,12 @@
 
 use {Object, Scene};
 use error::Result;
-use std::rc::Rc;
+use obj_manager::Handle;
 
-pub trait Component {
-    fn init(scene: &mut Scene, object: &Object) -> Result<Rc<Self>> where Self: Sized ;
+pub trait Component: Copy + Sized {
+    fn init(scene: &mut Scene, object: &Object) -> Result<Handle<Self>>;
 
-    fn marked(&self, scene: &Scene) -> Result<bool>;
+    fn marked(component: Handle<Self>, scene: &Scene) -> Result<bool>;
 
-    fn destroy(&self, scene: &mut Scene);
+    fn destroy(component: Handle<Self>, scene: &mut Scene);
 }
