@@ -23,7 +23,7 @@ use error::Result;
 use obj_manager::Handle;
 
 pub trait Component: Copy + Sized {
-    fn init(scene: &mut Scene, object: &Object) -> Result<Handle<Self>>;
+    fn init(scene: &mut Scene, object: Handle<Object>) -> Result<Handle<Self>>;
 
     fn marked(component: Handle<Self>, scene: &Scene) -> Result<bool>;
 

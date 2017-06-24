@@ -45,6 +45,12 @@ pub struct Handle<T: Copy + 'static> {
     phantom: PhantomData<T>,
 }
 
+impl<T: Copy> PartialEq for Handle<T> {
+    fn eq(&self, other: &Handle<T>) -> bool {
+        self.id == other.id && self.gen == other.gen
+    }
+}
+
 impl<T: Copy> Handle<T> {
     pub fn from_generic_handle(handle: GenericHandle) -> Result<Handle<T>, ()> {
         let type_id = TypeId::of::<Self>();
@@ -98,15 +104,24 @@ impl<T: Container> ObjectManager<T> {
         if gen != handle.gen {
             return Err(());
         }
-        self.handle_tbl[handle.id as usize].gen += 1;
+        self.remove_internal(handle.id, data_idx as u32);
+        Ok(())
+    }
+
+    pub fn remove_idx(&mut self, data_idx: usize) {
+        let id = self.data_tbl[data_idx];
+        self.remove_internal(id, data_idx as u32);
+    }
+
+    fn remove_internal(&mut self, id: u32, data_idx: u32) {
+        self.handle_tbl[id as usize].gen += 1;
         self.data_tbl.swap_remove(data_idx as usize);
         self.c.swap_remove(data_idx as usize);
 
         if let Some(&v) = self.data_tbl.get(data_idx as usize) {
             self.handle_tbl[v as usize].data_idx = data_idx;
         }
-        self.free_list.push(handle.id);
-        Ok(())
+        self.free_list.push(id);
     }
 
     pub fn add(&mut self, value: T::Item) -> Handle<T::HandleType> {
@@ -135,6 +150,16 @@ impl<T: Container> ObjectManager<T> {
                 gen,
                 phantom: PhantomData,
             }
+        }
+    }
+
+    pub fn handle(&self, data_idx: usize) -> Handle<T::HandleType> {
+        let id = self.data_tbl[data_idx];
+        let HandleData { gen, .. } = self.handle_tbl[id as usize];
+        Handle {
+            id,
+            gen,
+            phantom: PhantomData,
         }
     }
 
@@ -192,7 +217,7 @@ mod test {
         assert_eq!(test.c.floats[test.data_idx_checked(h2).unwrap() as usize], v2);
         assert_eq!(test.c.floats[test.data_idx_checked(h3).unwrap() as usize], v3);
 
-        test.remove(h2);
+        test.remove(h2).unwrap();
 
         assert!(test.data_idx_checked(h2).is_err());
         assert!(test.remove(h2).is_err());
@@ -202,9 +227,9 @@ mod test {
 
         assert_eq!(test.c.floats[test.data_idx_checked(h4).unwrap() as usize], v4);
 
-        test.remove(h1);
-        test.remove(h3);
-        test.remove(h4);
+        test.remove(h1).unwrap();
+        test.remove(h3).unwrap();
+        test.remove(h4).unwrap();
 
         // TODO:
         // - double-free

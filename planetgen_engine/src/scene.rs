@@ -32,7 +32,7 @@ use sdl2::keyboard::KeyboardState;
 use sdl2::mouse::MouseState;
 use sdl2::video::{GLContext, GLProfile, Window};
 use std;
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::cell::{Cell, UnsafeCell};
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
@@ -131,7 +131,7 @@ pub fn intersects_frustum(mvp: Matrix4<f32>, aabb_x: [f32; 2], aabb_y: [f32; 2],
 
 struct CameraData {
     /// Reference to the object we are a component of.
-    parent: Rc<Object>,
+    parent: Handle<Object>,
     /// True when this camera should be used for rendering.
     enabled: bool,
     /// True when the camera has been marked for destruction at the end of the
@@ -257,7 +257,7 @@ impl Handle<Camera> {
 }
 
 impl Component for Camera {
-    fn init(scene: &mut Scene, object: &Object) -> Result<Handle<Camera>> {
+    fn init(scene: &mut Scene, object: Handle<Object>) -> Result<Handle<Camera>> {
         scene.create_camera(object)
     }
 
@@ -524,7 +524,7 @@ impl Material {
 
 struct MeshRendererData {
     /// Reference to the object we are a component of.
-    parent: Rc<Object>,
+    parent: Handle<Object>,
     /// True when the mesh renderer has been marked for destruction at the end
     /// of the frame.
     marked: bool,
@@ -625,7 +625,7 @@ impl Handle<MeshRenderer> {
 }
 
 impl Component for MeshRenderer {
-    fn init(scene: &mut Scene, object: &Object) -> Result<Handle<MeshRenderer>> {
+    fn init(scene: &mut Scene, object: Handle<Object>) -> Result<Handle<MeshRenderer>> {
         scene.create_mrenderer(object)
     }
 
@@ -699,9 +699,6 @@ impl BehaviourContainer {
 #[derive(Copy, Clone)]
 pub struct Behaviour;
 
-// TODO: move use statements
-use std::any::Any;
-
 impl Handle<Behaviour> {
     pub fn behaviour<'a, T: Any>(&self, scene: &Scene) -> Result<Rc<T>> {
         let idx = scene.behaviour_data.data_idx_checked(*self);
@@ -727,13 +724,13 @@ impl Handle<Behaviour> {
 }
 
 struct ObjectData {
-    /// Reference to the object.
-    object: Rc<Object>,
     /// The components attached to this object.
     components: HashMap<TypeId, GenericHandle>,
     /// True when the object has been marked for destruction at the end of the
     /// frame.
     marked: bool,
+    /// True if this object has had children marked for destruction.
+    destroyed_children: bool,
 }
 
 struct TransformData {
@@ -741,8 +738,8 @@ struct TransformData {
     rot: Quaternion<f32>,
     /// Local position.
     pos: Vector3<f32>,
-    /// List of indices of the children of this object.
-    children: Vec<usize>,
+    /// List of handles of the children of this object.
+    children: Vec<Handle<Object>>,
     /// Index of this object's parent.
     parent_idx: Option<usize>,
     /// Cached local-to-world matrix for this transform.
@@ -753,120 +750,135 @@ struct TransformData {
     ltw_valid: Cell<bool>,
 }
 
-pub struct Object {
-    idx: Cell<Option<usize>>
+struct ObjectContainer {
+    obj_data: Vec<ObjectData>,
+    trans_data: Vec<TransformData>,
 }
 
-impl Object {
-    pub fn num_children(&self, scene: &Scene) -> Result<usize> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe { scene.transform_data.get_unchecked(i).children.len() })
+impl Container for ObjectContainer {
+    type Item = (ObjectData, TransformData);
+    type HandleType = Object;
+
+    fn push(&mut self, value: Self::Item) {
+        self.obj_data.push(value.0);
+        self.trans_data.push(value.1);
     }
 
-    pub fn get_child<'a>(&self, scene: &'a Scene, n: usize) -> Result<&'a Rc<Object>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .and_then(|i| unsafe {
-                scene.transform_data.get_unchecked(i).children.get(n)
-                    .ok_or(Error::BadChildIdx)
-            })
-            .map(|&i| unsafe {
-                &scene.object_data.get_unchecked(i).object
+    fn swap_remove(&mut self, idx: usize) {
+        self.obj_data.swap_remove(idx);
+        self.trans_data.swap_remove(idx);
+    }
+}
+
+impl ObjectContainer {
+    fn new() -> ObjectContainer {
+        ObjectContainer {
+            obj_data: Vec::new(),
+            trans_data: Vec::new(),
+        }
+    }
+}
+
+/// A handle to a object for a scene.
+#[derive(Copy, Clone)]
+pub struct Object;
+
+impl Handle<Object> {
+    pub fn children<'a>(&self, scene: &'a Scene) -> Result<&'a [Handle<Object>]> {
+        let idx = scene.object_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| {
+                &scene.object_data.c.trans_data[i].children[..]
             })
     }
 
     pub fn set_local_pos(&self, scene: &mut Scene, pos: Vector3<f32>) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe {
-                let data = scene.transform_data.get_unchecked_mut(i);
+        let idx = scene.object_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| {
+                let data = &mut scene.object_data.c.trans_data[i];
                 data.pos = pos;
                 data.ltw_valid.set(false);
             })
     }
 
     pub fn local_pos(&self, scene: &Scene) -> Result<Vector3<f32>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe {
-                scene.transform_data.get_unchecked(i).pos
-            })
+        let idx = scene.object_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| scene.object_data.c.trans_data[i].pos)
     }
 
     pub fn set_local_rot(&self, scene: &mut Scene, rot: Quaternion<f32>) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe {
-                let data = scene.transform_data.get_unchecked_mut(i);
+        let idx = scene.object_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| {
+                let data = &mut scene.object_data.c.trans_data[i];
                 data.rot = rot;
                 data.ltw_valid.set(false);
             })
     }
 
     pub fn local_rot(&self, scene: &Scene) -> Result<Quaternion<f32>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe {
-                scene.transform_data.get_unchecked(i).rot
-            })
+        let idx = scene.object_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| scene.object_data.c.trans_data[i].rot)
     }
 
     pub fn set_world_pos(&self, scene: &mut Scene, pos: Vector3<f32>) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe {
+        let idx = scene.object_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| {
                 let local_pos = {
-                    let data = scene.transform_data.get_unchecked(i);
+                    let data = &scene.object_data.c.trans_data[i];
                     let parent_data = data.parent_idx
-                        .map(|idx| scene.transform_data.get_unchecked(idx));
+                        .map(|idx| &scene.object_data.c.trans_data[idx]);
                     scene.world_to_local_pos(parent_data, pos)
                 };
-                let data = scene.transform_data.get_unchecked_mut(i);
+                let data = &mut scene.object_data.c.trans_data[i];
                 data.pos = local_pos;
             })
     }
 
     pub fn world_pos(&self, scene: &Scene) -> Result<Vector3<f32>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe {
-                let data = scene.transform_data.get_unchecked(i);
+        let idx = scene.object_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| {
+                let data = &scene.object_data.c.trans_data[i];
                 let parent_data = data.parent_idx
-                    .map(|idx| scene.transform_data.get_unchecked(idx));
+                    .map(|idx| &scene.object_data.c.trans_data[idx]);
                 scene.local_to_world_pos(parent_data, data.pos)
             })
     }
 
     pub fn set_world_rot(&self, scene: &mut Scene, rot: Quaternion<f32>) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe {
+        let idx = scene.object_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| {
                 let local_rot = {
-                    let data = scene.transform_data.get_unchecked(i);
+                    let data = &scene.object_data.c.trans_data[i];
                     let parent_data = data.parent_idx
-                        .map(|idx| scene.transform_data.get_unchecked(idx));
+                        .map(|idx| &scene.object_data.c.trans_data[idx]);
                     scene.world_to_local_rot(parent_data, rot)
                 };
-                let data = scene.transform_data.get_unchecked_mut(i);
+                let data = &mut scene.object_data.c.trans_data[i];
                 data.rot = local_rot;
                 data.ltw_valid.set(false);
             })
     }
 
     pub fn world_rot(&self, scene: &Scene) -> Result<Quaternion<f32>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe {
-                let data = scene.transform_data.get_unchecked(i);
+        let idx = scene.object_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| {
+                let data = &scene.object_data.c.trans_data[i];
                 let parent_data = data.parent_idx
-                    .map(|idx| scene.transform_data.get_unchecked(idx));
+                    .map(|idx| &scene.object_data.c.trans_data[idx]);
                 scene.local_to_world_rot(parent_data, data.rot)
             })
     }
 
-    pub fn is_valid(&self) -> bool {
-        self.idx.get().is_some()
+    pub fn is_valid(&self, scene: &Scene) -> bool {
+        scene.object_data.is_handle_valid(*self)
     }
 }
 
@@ -891,8 +903,7 @@ pub struct Scene {
     mrenderer_data: ObjectManager<MeshRendererContainer>,
     shader_data: Vec<ShaderData>,
     behaviour_data: ObjectManager<BehaviourContainer>,
-    object_data: Vec<ObjectData>,
-    transform_data: Vec<TransformData>,
+    object_data: ObjectManager<ObjectContainer>,
     destroyed_cameras: Vec<Handle<Camera>>,
     destroyed_meshes: Vec<usize>,
     destroyed_cubemaps: Vec<usize>,
@@ -900,7 +911,8 @@ pub struct Scene {
     destroyed_mrenderers: Vec<Handle<MeshRenderer>>,
     destroyed_shaders: Vec<usize>,
     destroyed_behaviours: Vec<Handle<Behaviour>>,
-    destroyed_objects: Vec<usize>,
+    destroyed_objects: Vec<Handle<Object>>,
+    update_parents: Vec<usize>,
 
     vertex_bufs: Vec<VertexBuffer>,
     index_bufs: Vec<IndexBuffer>,
@@ -1041,8 +1053,7 @@ impl Scene {
             mrenderer_data: ObjectManager::new(MeshRendererContainer::new()),
             shader_data: Vec::new(),
             behaviour_data: ObjectManager::new(BehaviourContainer::new()),
-            object_data: Vec::new(),
-            transform_data: Vec::new(),
+            object_data: ObjectManager::new(ObjectContainer::new()),
             destroyed_cameras: Vec::new(),
             destroyed_meshes: Vec::new(),
             destroyed_cubemaps: Vec::new(),
@@ -1051,6 +1062,7 @@ impl Scene {
             destroyed_shaders: Vec::new(),
             destroyed_behaviours: Vec::new(),
             destroyed_objects: Vec::new(),
+            update_parents: Vec::new(),
 
             vertex_bufs: Vec::new(),
             index_bufs: Vec::new(),
@@ -1087,8 +1099,7 @@ impl Scene {
             mrenderer_data: ObjectManager::new(MeshRendererContainer::new()),
             shader_data: Vec::new(),
             behaviour_data: ObjectManager::new(BehaviourContainer::new()),
-            object_data: Vec::new(),
-            transform_data: Vec::new(),
+            object_data: ObjectManager::new(ObjectContainer::new()),
             destroyed_cameras: Vec::new(),
             destroyed_meshes: Vec::new(),
             destroyed_cubemaps: Vec::new(),
@@ -1097,6 +1108,7 @@ impl Scene {
             destroyed_shaders: Vec::new(),
             destroyed_behaviours: Vec::new(),
             destroyed_objects: Vec::new(),
+            update_parents: Vec::new(),
 
             index_bufs: Vec::new(),
             vertex_bufs: Vec::new(),
@@ -1123,17 +1135,13 @@ impl Scene {
         index_bufs.push(index_buf);
     }
 
-    fn create_camera(&mut self, object: &Object) -> Result<Handle<Camera>> {
-        let obj_idx = match object.idx.get() {
-            Some(idx) => idx,
-            None => {
-                return Err(Error::ObjectDestroyed)
-            }
-        };
-        let obj_data = &mut self.object_data[obj_idx];
+    fn create_camera(&mut self, object: Handle<Object>) -> Result<Handle<Camera>> {
+        if let Err(_) = self.object_data.data_idx_checked(object) {
+            return Err(Error::ObjectDestroyed);
+        }
 
         let handle = self.camera_data.add(CameraData {
-            parent: obj_data.object.clone(),
+            parent: object,
             enabled: true,
             marked: false,
             order: 0,
@@ -1255,17 +1263,13 @@ impl Scene {
         Ok(rv)
     }
 
-    fn create_mrenderer(&mut self, object: &Object) -> Result<Handle<MeshRenderer>> {
-        let obj_idx = match object.idx.get() {
-            Some(idx) => idx,
-            None => {
-                return Err(Error::ObjectDestroyed)
-            }
-        };
-        let obj_data = &mut self.object_data[obj_idx];
+    fn create_mrenderer(&mut self, object: Handle<Object>) -> Result<Handle<MeshRenderer>> {
+        if let Err(_) = self.object_data.data_idx_checked(object) {
+            return Err(Error::ObjectDestroyed);
+        }
 
         let handle = self.mrenderer_data.add(MeshRendererData {
-            parent: obj_data.object.clone(),
+            parent: object,
             marked: false,
             enabled: true,
             // By default, render on the first layer only
@@ -1323,18 +1327,16 @@ impl Scene {
         Ok(handle)
     }
 
-    pub fn add_component<T: Component>(&mut self, object: &Object) -> Result<Handle<T>> {
-        let obj_idx = match object.idx.get() {
-            Some(idx) => idx,
-            None => {
-                return Err(Error::ObjectDestroyed)
-            }
+    pub fn add_component<T: Component>(&mut self, object: Handle<Object>) -> Result<Handle<T>> {
+        let obj_idx = match self.object_data.data_idx_checked(object) {
+            Ok(obj_idx) => obj_idx,
+            Err(_) => return Err(Error::ObjectDestroyed),
         };
 
         let id = TypeId::of::<T>();
 
         {
-            let obj_data = &self.object_data[obj_idx];
+            let obj_data = &self.object_data.c.obj_data[obj_idx];
 
             if obj_data.marked {
                 // TODO: dedicated error variant
@@ -1365,23 +1367,21 @@ impl Scene {
         let comp = try!(T::init(self, object));
         let generic_comp = Handle::into_generic_handle(comp);
 
-        let obj_data = &mut self.object_data[obj_idx];
+        let obj_data = &mut self.object_data.c.obj_data[obj_idx];
         obj_data.components.insert(id, generic_comp);
 
         Ok(comp)
     }
 
-    pub fn get_component<T: Component>(&self, object: &Object) -> Result<Handle<T>> {
-        let obj_idx = match object.idx.get() {
-            Some(idx) => idx,
-            None => {
-                return Err(Error::ObjectDestroyed)
-            }
+    pub fn get_component<T: Component>(&self, object: Handle<Object>) -> Result<Handle<T>> {
+        let obj_idx = match self.object_data.data_idx_checked(object) {
+            Ok(obj_idx) => obj_idx,
+            Err(_) => return Err(Error::ObjectDestroyed),
         };
 
         let id = TypeId::of::<T>();
 
-        let generic_comp = match self.object_data[obj_idx].components.get(&id) {
+        let generic_comp = match self.object_data.c.obj_data[obj_idx].components.get(&id) {
             Some(&generic_comp) => generic_comp,
             None => {
                 // TODO: dedicated error variant
@@ -1401,12 +1401,11 @@ impl Scene {
         }
     }
 
-    pub fn create_object(&mut self) -> Rc<Object> {
-        let rv = Rc::new(Object { idx: Cell::new(None) });
+    pub fn create_object(&mut self) -> Handle<Object> {
         let obj_data = ObjectData {
-            object: rv.clone(),
             components: HashMap::new(),
             marked: false,
+            destroyed_children: false,
         };
         let trans_data = TransformData {
             rot: Quaternion::from(Euler {
@@ -1420,10 +1419,8 @@ impl Scene {
             ltw_matrix: Cell::new([[0.0; 4]; 4]),
             ltw_valid: Cell::new(false),
         };
-        self.object_data.push(obj_data);
-        self.transform_data.push(trans_data);
-        rv.idx.set(Some(self.object_data.len() - 1));
-        rv
+
+        self.object_data.add((obj_data, trans_data))
     }
 
     pub fn destroy_camera(&mut self, camera: Handle<Camera>) {
@@ -1548,20 +1545,25 @@ impl Scene {
         }
     }
 
-    pub fn destroy_object(&mut self, object: &Object) {
-        let object_idx = match object.idx.get() {
-            Some(object_idx) => object_idx,
-            None => {
+    pub fn destroy_object(&mut self, object: Handle<Object>) {
+        let obj_idx = match self.object_data.data_idx_checked(object) {
+            Ok(obj_idx) => obj_idx,
+            Err(_) => {
                 println!("[WARNING] destroy_object called on an object without a valid handle!");
-                return
+                return;
             }
         };
 
-        self.destroy_object_internal(object_idx);
-    }
+        let parent_idx = self.object_data.c.trans_data[obj_idx].parent_idx;
+        if let Some(parent_idx) = parent_idx {
+            if !self.object_data.c.obj_data[parent_idx].destroyed_children {
+                self.object_data.c.obj_data[parent_idx].destroyed_children = true;
+                self.update_parents.push(parent_idx);
+            }
+        }
 
-    // TODO: Get Rc<T> from Handle<Behaviour>
-    // TODO: maybe reverse?
+        self.destroy_object_internal(obj_idx);
+    }
 
     fn destroy_object_internal(&mut self, idx: usize) {
         let (was_marked, mut components) = {
@@ -1569,7 +1571,7 @@ impl Scene {
             // borrow checker. If I understand correctly, non-lexically based
             // lifetimes based on liveness should help in most cases. Update the
             // code when NLL is implemented in Rust.
-            let obj_data = &mut self.object_data[idx];
+            let obj_data = &mut self.object_data.c.obj_data[idx];
             // Swap map to placate the borrow checker
             let mut components = HashMap::new();
             std::mem::swap(&mut components, &mut obj_data.components);
@@ -1594,20 +1596,22 @@ impl Scene {
             }
         }
 
-        std::mem::swap(&mut components, &mut self.object_data[idx].components);
+        std::mem::swap(&mut components, &mut self.object_data.c.obj_data[idx].components);
 
         // Swap vectors to placate the borrow checker
         let mut tmp_children = Vec::new();
-        std::mem::swap(&mut tmp_children, &mut self.transform_data[idx].children);
+        std::mem::swap(&mut tmp_children, &mut self.object_data.c.trans_data[idx].children);
 
         if !was_marked {
-            self.destroyed_objects.push(idx);
-            for &i in &tmp_children {
-                Scene::destroy_object_internal(self, i);
+            self.destroyed_objects.push(self.object_data.handle(idx));
+            for &child in &tmp_children {
+                let child_idx = self.object_data.data_idx_checked(child)
+                    .expect("Destroyed object found in hierarchy");
+                Scene::destroy_object_internal(self, child_idx);
             }
         }
 
-        std::mem::swap(&mut tmp_children, &mut self.transform_data[idx].children);
+        std::mem::swap(&mut tmp_children, &mut self.object_data.c.trans_data[idx].children);
     }
 
     fn debug_check(&self) {
@@ -1621,12 +1625,12 @@ impl Scene {
             assert_eq!(idx.unwrap(), i);
         }*/
         // TODO: move to object manager
-        for i in 0..self.object_data.len() {
+        /*for i in 0..self.object_data.len() {
             let data = unsafe { self.object_data.get_unchecked(i) };
             let idx = data.object.idx.get();
             assert!(idx.is_some(), "Invalid object handle found!");
             assert_eq!(idx.unwrap(), i);
-        }
+        }*/
     }
 
     pub fn do_frame(&mut self) -> bool {
@@ -1705,6 +1709,30 @@ impl Scene {
             self.destroyed_behaviours.clear();
             self.destroyed_cameras.clear();
             self.destroyed_mrenderers.clear();
+
+            for &obj_idx in &self.update_parents {
+                {
+                    let obj_data = &self.object_data.c.obj_data;
+
+                    let mut tmp_children = Vec::new();
+                    std::mem::swap(&mut tmp_children, &mut self.object_data.c.trans_data[obj_idx].children);
+
+                    if obj_data[obj_idx].destroyed_children && !obj_data[obj_idx].marked {
+                        // Remove children marked for destruction, leaving all
+                        // marked objects separate from non-marked objects.
+                        tmp_children.retain(|&child| {
+                            let child_idx = self.object_data.data_idx_checked(child)
+                                .expect("Destroyed object found in hierarchy");
+                            let child_obj_data = &obj_data[child_idx];
+                            !child_obj_data.marked
+                        });
+                    }
+
+                    std::mem::swap(&mut tmp_children, &mut self.object_data.c.trans_data[obj_idx].children);
+                }
+                self.object_data.c.obj_data[obj_idx].destroyed_children = true;
+            }
+            self.update_parents.clear();
 
             self.cleanup_destroyed_objects();
             // FIXME: resource leak
@@ -2182,8 +2210,8 @@ impl Scene {
             self.cur_fence = 0;
         }
 
-        for i in 0..self.transform_data.len() {
-            let trans_data = &self.transform_data[i];
+        for i in 0..self.object_data.c.trans_data.len() {
+            let trans_data = &self.object_data.c.trans_data[i];
 
             // Check whether we need to recalculate the local-to-world matrix.
             let mut opt_data = Some(trans_data);
@@ -2194,13 +2222,13 @@ impl Scene {
                     break
                 }
                 opt_data = data.parent_idx
-                    .map(|idx| &self.transform_data[idx]);
+                    .map(|idx| &self.object_data.c.trans_data[idx]);
             }
 
             if recalc {
                 let (world_pos, world_rot) = {
                     let parent_data = trans_data.parent_idx
-                        .map(|idx| &self.transform_data[idx]);
+                        .map(|idx| &self.object_data.c.trans_data[idx]);
                     self.local_to_world_pos_rot(parent_data, trans_data.pos, trans_data.rot)
                 };
 
@@ -2212,7 +2240,7 @@ impl Scene {
 
         // All local-to-world matrices have been recomputed where necessary,
         // mark as valid going in to the next frame.
-        for trans_data in &self.transform_data {
+        for trans_data in &self.object_data.c.trans_data {
             trans_data.ltw_valid.set(true);
         }
 
@@ -2221,12 +2249,12 @@ impl Scene {
 
         std::mem::swap(&mut camera_data, &mut self.camera_data.c.data);
         for camera in &mut camera_data {
-            let trans_idx = camera.parent.idx.get()
-                .expect("Camera parent object destroyed, the camera should have been destroyed as well at this point");
-            let trans_data = &self.transform_data[trans_idx];
+            let trans_idx = self.object_data.data_idx_checked(camera.parent)
+                .expect("Camera not destroyed along with parent");
+            let trans_data = &self.object_data.c.trans_data[trans_idx];
             let (cam_pos, cam_rot) = {
                 let parent_data = trans_data.parent_idx
-                    .map(|idx| &self.transform_data[idx]);
+                    .map(|idx| &self.object_data.c.trans_data[idx]);
                 self.local_to_world_pos_rot(parent_data, trans_data.pos, trans_data.rot)
             };
 
@@ -2255,12 +2283,9 @@ impl Scene {
                 continue;
             }
 
-            let trans_idx = data.parent.idx.get();
-            let trans_idx = match trans_idx {
-                Some(trans_idx) => trans_idx,
-                None => continue,
-            };
-            let trans_data = &self.transform_data[trans_idx];
+            let trans_idx = self.object_data.data_idx_checked(data.parent)
+                .expect("MeshRenderer not destroyed along with parent");
+            let trans_data = &self.object_data.c.trans_data[trans_idx];
 
             let mesh_idx = data.mesh
                 .as_ref()
@@ -2401,7 +2426,7 @@ impl Scene {
                 }
 
                 let shader = &self.shader_data[info.shader_idx];
-                let trans_data = &self.transform_data[info.trans_idx];
+                let trans_data = &self.object_data.c.trans_data[info.trans_idx];
                 let mesh = &self.mesh_data[info.mesh_idx];
                 let material = &self.material_data[info.material_idx];
 
@@ -2518,7 +2543,7 @@ impl Scene {
         while let Some(data) = opt_data {
             tmp_vec.push((data.pos, data.rot));
             opt_data = data.parent_idx
-                .map(|idx| unsafe { self.transform_data.get_unchecked(idx) });
+                .map(|idx| unsafe { self.object_data.c.trans_data.get_unchecked(idx) });
         }
         let mut world_pos = Vector3::new(0.0, 0.0, 0.0);
         let mut c = Vector3::new(0.0, 0.0, 0.0);
@@ -2552,7 +2577,7 @@ impl Scene {
         while let Some(data) = opt_data {
             world_rot = data.rot * world_rot;
             opt_data = data.parent_idx
-                .map(|idx| unsafe { self.transform_data.get_unchecked(idx) });
+                .map(|idx| unsafe { self.object_data.c.trans_data.get_unchecked(idx) });
         }
         world_rot
     }
@@ -2615,62 +2640,63 @@ impl Scene {
         MouseState::new(self.event_pump.as_ref().unwrap())
     }
 
-    pub fn set_object_parent(&mut self, object: &Object, parent: Option<&Object>) {
-        let object_idx = object.idx.get();
-        let parent_idx = parent.map(|o| o.idx.get());
+    pub fn set_object_parent(&mut self, object: Handle<Object>, parent: Option<Handle<Object>>) {
+        let obj_idx = self.object_data.data_idx_checked(object);
+        let parent_idx = parent.map(|o| self.object_data.data_idx_checked(o));
 
-        if parent_idx == Some(object_idx) {
-            // Disallow parenting to self
-            return
-        }
-
-        let object_idx = match object_idx {
-            Some(idx) => idx,
-            None => {
+        let obj_idx = match obj_idx {
+            Ok(obj_idx) => obj_idx,
+            Err(_) => {
                 // The object doesn't have a valid handle, stop.
                 // TODO: maybe be less forgiving and just panic!()?
-                return
+                return;
             }
         };
 
         let parent_idx = match parent_idx {
-            Some(None) => {
+            Some(Ok(parent_idx)) => Some(parent_idx),
+            Some(Err(_)) => {
                 // The parent doesn't have a valid handle, stop.
                 // TODO: maybe be less forgiving and just panic!()?
-                return
-            },
-            Some(opt_idx) => opt_idx,
+                return;
+            }
             None => None,
         };
 
-        if self.check_nop(object_idx, parent_idx) {
-            // This parenting would be a no-op.
-            return
+        if parent_idx == Some(obj_idx) {
+            // Disallow parenting to self
+            // TODO: maybe be less forgiving and just panic!()?
+            return;
         }
 
-        if !self.check_parenting(object_idx, parent_idx) {
+        if self.check_nop(obj_idx, parent_idx) {
+            // This parenting would be a no-op.
+            return;
+        }
+
+        if !self.check_parenting(obj_idx, parent_idx) {
             // Performing this parenting is not allowed.
             // TODO: maybe be less forgiving and just panic!()?
-            return
+            return;
         }
 
-        self.unparent(object_idx);
-        self.reparent(object_idx, parent_idx);
+        self.unparent(obj_idx);
+        self.reparent(obj_idx, parent_idx);
 
         // Reparenting can change the local-to-world matrix in unpredictable
         // ways.
-        let trans_data = &self.transform_data[object_idx];
+        let trans_data = &self.object_data.c.trans_data[obj_idx];
         trans_data.ltw_valid.set(false);
     }
 
     fn check_nop(&self, object_idx: usize, parent_idx: Option<usize>) -> bool {
-        let obj_trans_data = &self.transform_data[object_idx];
+        let obj_trans_data = &self.object_data.c.trans_data[object_idx];
         obj_trans_data.parent_idx == parent_idx
     }
 
     fn check_parenting(&self, object_idx: usize, parent_idx: Option<usize>) -> bool {
-        let parent_obj_data = parent_idx.map(|idx| &self.object_data[idx]);
-        let parent_trans_data = parent_idx.map(|idx| &self.transform_data[idx]);
+        let parent_obj_data = parent_idx.map(|idx| &self.object_data.c.obj_data[idx]);
+        let parent_trans_data = parent_idx.map(|idx| &self.object_data.c.trans_data[idx]);
         if parent_obj_data.as_ref().map_or(false, |x| x.marked) {
             // Can't parent to something marked for destruction
             return false
@@ -2683,31 +2709,33 @@ impl Scene {
                 // Performing this parenting would create a loop.
                 return false
             }
-            opt_idx = self.transform_data[idx].parent_idx;
+            opt_idx = self.object_data.c.trans_data[idx].parent_idx;
         }
 
         true
     }
 
     fn unparent(&mut self, object_idx: usize) {
+        let handle = self.object_data.handle(object_idx);
         {
-            let old_parent_idx = self.transform_data[object_idx].parent_idx;
+            let old_parent_idx = self.object_data.c.trans_data[object_idx].parent_idx;
             let old_parent_trans_data =
-                old_parent_idx.map(|i| &mut self.transform_data[i]);
+                old_parent_idx.map(|i| &mut self.object_data.c.trans_data[i]);
 
             if let Some(old_parent_trans_data) = old_parent_trans_data {
                 old_parent_trans_data.children.iter()
-                    .position(|&idx| idx == object_idx)
+                    .position(|&handle2| handle == handle2)
                     .map(|e| old_parent_trans_data.children.remove(e))
                     .expect("parent should contain child index");
             }
         }
 
-        let trans_data = &mut self.transform_data[object_idx];
+        let trans_data = &mut self.object_data.c.trans_data[object_idx];
         trans_data.parent_idx = None;
     }
 
     fn reparent(&mut self, object_idx: usize, parent_idx: Option<usize>) {
+        let handle = self.object_data.handle(object_idx);
         // Assume we currently have no parent, if parent_idx is `None`, we can
         // return early.
         let parent_idx = match parent_idx {
@@ -2716,75 +2744,48 @@ impl Scene {
         };
 
         {
-            let parent_trans_data = &mut self.transform_data[parent_idx];
-            parent_trans_data.children.push(object_idx);
+            let parent_trans_data = &mut self.object_data.c.trans_data[parent_idx];
+            parent_trans_data.children.push(handle);
         }
 
-        let trans_data = &mut self.transform_data[object_idx];
+        let trans_data = &mut self.object_data.c.trans_data[object_idx];
         trans_data.parent_idx = Some(parent_idx);
     }
 
-    /// Fixes the object hierarchy while removing / moving an `ObjectData` entry
-    ///
-    ///   * `transform_data` - The `transform_data` field of the `Scene`
-    ///   * `object_data` - The `object_data` field of the `Scene`
-    ///   * `old_idx` - The old index of entry being removed / moved
-    ///   * `new_idx` - The new index for the entry being moved, or `None` if
-    ///      being removed
-    unsafe fn fix_hierarchy(transform_data: &mut [TransformData],
-                             object_data: &[ObjectData],
-                             old_idx: usize,
-                             new_idx: Option<usize>) {
-        // TODO: use get_unchecked more? Or less?
-        let obj_data = &object_data[old_idx];
-        obj_data.object.idx.set(new_idx);
-        // Update our parent's reference to us (if we have one)
-        transform_data[old_idx].parent_idx.map(|idx| {
-            let parent_data = transform_data.get_unchecked_mut(idx);
-            let pos = {
-                parent_data.children.iter()
-                    .position(|&idx| idx == old_idx)
-                    .expect("parent should contain child index")
-            };
-            match new_idx {
-                Some(new_idx) => *parent_data.children.get_unchecked_mut(pos) = new_idx,
-                None => { parent_data.children.remove(pos); }
-            }
-        });
-
-        // Swap vectors to placate the borrow checker
+    fn fixup_hierarchy(object_data: &mut ObjectManager<ObjectContainer>, old_idx: usize, new_idx: usize) {
         let mut tmp_children = Vec::new();
-        std::mem::swap(&mut tmp_children, &mut transform_data[old_idx].children);
+        std::mem::swap(&mut tmp_children, &mut object_data.c.trans_data[old_idx].children);
 
         // Update our children's reference to us
-        for &idx in &tmp_children {
-            let child_data = transform_data.get_unchecked_mut(idx);
-            child_data.parent_idx = new_idx;
+        for &child in &tmp_children {
+            let child_idx = object_data.data_idx_checked(child)
+                .expect("Destroyed object found in hierarchy");
+            let child_data = &mut object_data.c.trans_data[child_idx];
+            child_data.parent_idx = Some(new_idx);
         }
-
-        std::mem::swap(&mut tmp_children, &mut transform_data[old_idx].children);
+        std::mem::swap(&mut tmp_children, &mut object_data.c.trans_data[old_idx].children);
     }
 
-    unsafe fn cleanup_destroyed_objects(&mut self) {
-        for &idx in &self.destroyed_objects {
+    fn cleanup_destroyed_objects(&mut self) {
+        for &handle in &self.destroyed_objects {
             // Remove destroyed objects at the back of the list
-            while self.object_data.last().map_or(false, |x| x.marked) {
-                let old_idx = self.transform_data.len() - 1;
-                Scene::fix_hierarchy(&mut self.transform_data, &self.object_data, old_idx, None);
-                self.object_data.pop();
-                self.transform_data.pop();
-            }
-            if idx >= self.transform_data.len() {
-                continue
+            while self.object_data.c.obj_data.last().map_or(false, |x| x.marked) {
+                let old_idx = self.object_data.c.trans_data.len() - 1;
+
+                // No need to fix up hierarchy since this doesn't change the
+                // index of any non-marked objects.
+                self.object_data.remove_idx(old_idx);
             }
 
-            {
-                let swapped_idx = self.transform_data.len() - 1;
-                Scene::fix_hierarchy(&mut self.transform_data, &self.object_data, idx, None);
-                Scene::fix_hierarchy(&mut self.transform_data, &self.object_data, swapped_idx, Some(idx));
-            }
-            self.object_data.swap_remove(idx);
-            self.transform_data.swap_remove(idx);
+            let idx = match self.object_data.data_idx_checked(handle) {
+                Ok(idx) => idx,
+                Err(_) => continue, // This object has already been removed in the loop above.
+            };
+
+            let swapped_idx = self.object_data.c.trans_data.len() - 1;
+            Self::fixup_hierarchy(&mut self.object_data, swapped_idx, idx);
+            self.object_data.remove(handle)
+                .expect("Destroyed object found in hierarchy");
         }
         self.destroyed_objects.clear();
     }
@@ -2818,12 +2819,6 @@ mod test {
     use cgmath::{Deg, Euler, Quaternion, Vector3};
     use num::{Zero, One};
 
-    /// Determine if two borrowed pointers point to the same thing.
-    #[inline]
-    fn ref_eq<T: ?Sized>(a: &T, b: &T) -> bool {
-        (a as *const T) == (b as *const T)
-    }
-
     /// Tests integrity of the Scene hierarchy after destroying objects.
     #[test]
     fn test_hierarchy_integrity() {
@@ -2833,86 +2828,76 @@ mod test {
         let root_obj = scene.create_object();
 
         let child1 = scene.create_object();
-        scene.set_object_parent(&child1, Some(&root_obj));
+        scene.set_object_parent(child1, Some(root_obj));
 
         let child2 = scene.create_object();
-        scene.set_object_parent(&child2, Some(&root_obj));
+        scene.set_object_parent(child2, Some(root_obj));
 
         let child11 = scene.create_object();
-        scene.set_object_parent(&child11, Some(&child1));
+        scene.set_object_parent(child11, Some(child1));
         let child12 = scene.create_object();
-        scene.set_object_parent(&child12, Some(&child1));
+        scene.set_object_parent(child12, Some(child1));
         let child13 = scene.create_object();
-        scene.set_object_parent(&child13, Some(&child1));
+        scene.set_object_parent(child13, Some(child1));
 
         let child21 = scene.create_object();
-        scene.set_object_parent(&child21, Some(&child2));
+        scene.set_object_parent(child21, Some(child2));
         let child22 = scene.create_object();
-        scene.set_object_parent(&child22, Some(&child2));
+        scene.set_object_parent(child22, Some(child2));
         let child23 = scene.create_object();
-        scene.set_object_parent(&child23, Some(&child2));
+        scene.set_object_parent(child23, Some(child2));
 
         scene.do_frame();
 
         // Verify it is what we expect
-        assert_eq!(root_obj.get_child(&scene, 0)
-                   .map(|x| ref_eq(&**x, &*child1)).ok(),
+        assert_eq!(root_obj.children(&scene)
+                   .map(|x| x[0] == child1).ok(),
                    Some(true));
-        assert_eq!(root_obj.get_child(&scene, 1)
-                   .map(|x| ref_eq(&**x, &*child2)).ok(),
-                   Some(true));
-
-        assert_eq!(child1.get_child(&scene, 0)
-                   .map(|x| ref_eq(&**x, &*child11)).ok(),
-                   Some(true));
-        assert_eq!(child1.get_child(&scene, 1)
-                   .map(|x| ref_eq(&**x, &*child12)).ok(),
-                   Some(true));
-        assert_eq!(child1.get_child(&scene, 2)
-                   .map(|x| ref_eq(&**x, &*child13)).ok(),
+        assert_eq!(root_obj.children(&scene)
+                   .map(|x| x[1] == child2).ok(),
                    Some(true));
 
-        assert_eq!(child2.get_child(&scene, 0)
-                   .map(|x| ref_eq(&**x, &*child21)).ok(),
+        assert_eq!(child1.children(&scene)
+                   .map(|x| x[0] == child11).ok(),
                    Some(true));
-        assert_eq!(child2.get_child(&scene, 1)
-                   .map(|x| ref_eq(&**x, &*child22)).ok(),
+        assert_eq!(child1.children(&scene)
+                   .map(|x| x[1] == child12).ok(),
                    Some(true));
-        assert_eq!(child2.get_child(&scene, 2)
-                   .map(|x| ref_eq(&**x, &*child23)).ok(),
+        assert_eq!(child1.children(&scene)
+                   .map(|x| x[2] == child13).ok(),
+                   Some(true));
+
+        assert_eq!(child2.children(&scene)
+                   .map(|x| x[0] == child21).ok(),
+                   Some(true));
+        assert_eq!(child2.children(&scene)
+                   .map(|x| x[1] == child22).ok(),
+                   Some(true));
+        assert_eq!(child2.children(&scene)
+                   .map(|x| x[2] == child23).ok(),
                    Some(true));
 
         // Destroy the objects and run a frame so the hierarchy is changed
-        scene.destroy_object(&child2);
-        scene.destroy_object(&child12);
+        scene.destroy_object(child2);
+        scene.destroy_object(child12);
         scene.do_frame();
 
-        assert_eq!(root_obj.num_children(&scene).ok(), Some(1));
-        assert_eq!(root_obj.get_child(&scene, 0)
-                   .map(|x| ref_eq(&**x, &*child1)).ok(),
-                   Some(true));
-        assert_eq!(root_obj.get_child(&scene, 1)
-                   .map(|x| ref_eq(&**x, &*child2)).ok(),
-                   None);
-
-        assert_eq!(child1.num_children(&scene).ok(), Some(2));
-        assert_eq!(child1.get_child(&scene, 0)
-                   .map(|x| ref_eq(&**x, &*child11)).ok(),
-                   Some(true));
-        assert_eq!(child1.get_child(&scene, 1)
-                   .map(|x| ref_eq(&**x, &*child13)).ok(),
+        assert_eq!(root_obj.children(&scene)
+                   .map(|x| x.len()).ok(), Some(1));
+        assert_eq!(root_obj.children(&scene)
+                   .map(|x| x[0] == child1).ok(),
                    Some(true));
 
-        assert_eq!(child2.num_children(&scene).ok(), None);
-        assert_eq!(child2.get_child(&scene, 0)
-                   .map(|x| ref_eq(&**x, &*child21)).ok(),
-                   None);
-        assert_eq!(child2.get_child(&scene, 1)
-                   .map(|x| ref_eq(&**x, &*child22)).ok(),
-                   None);
-        assert_eq!(child2.get_child(&scene, 2)
-                   .map(|x| ref_eq(&**x, &*child23)).ok(),
-                   None);
+        assert_eq!(child1.children(&scene)
+                   .map(|x| x.len()).ok(), Some(2));
+        assert_eq!(child1.children(&scene)
+                   .map(|x| x[0] == child11).ok(),
+                   Some(true));
+        assert_eq!(child1.children(&scene)
+                   .map(|x| x[1] == child13).ok(),
+                   Some(true));
+
+        assert!(child2.children(&scene).is_err());
     }
 
     /// Test to verify we cannot create cycles in the hierarchy.
@@ -2925,16 +2910,18 @@ mod test {
 
         let child_obj = scene.create_object();
 
-        scene.set_object_parent(&child_obj, Some(&root_obj));
+        scene.set_object_parent(child_obj, Some(root_obj));
         // This should fail and do nothing
-        scene.set_object_parent(&root_obj, Some(&child_obj));
+        scene.set_object_parent(root_obj, Some(child_obj));
 
-        assert_eq!(root_obj.num_children(&scene).ok(), Some(1));
-        assert_eq!(root_obj.get_child(&scene, 0)
-                   .map(|x| ref_eq(&**x, &*child_obj)).ok(),
+        assert_eq!(root_obj.children(&scene)
+                   .map(|x| x.len()).ok(), Some(1));
+        assert_eq!(root_obj.children(&scene)
+                   .map(|x| x[0] == child_obj).ok(),
                    Some(true));
 
-        assert_eq!(child_obj.num_children(&scene).ok(), Some(0));
+        assert_eq!(child_obj.children(&scene)
+                   .map(|x| x.len()).ok(), Some(0));
 
         // Set up the hierarchy
         let obj1 = scene.create_object();
@@ -2942,14 +2929,15 @@ mod test {
         let obj3 = scene.create_object();
         let obj4 = scene.create_object();
         let obj5 = scene.create_object();
-        scene.set_object_parent(&obj2, Some(&obj1));
-        scene.set_object_parent(&obj3, Some(&obj2));
-        scene.set_object_parent(&obj4, Some(&obj3));
-        scene.set_object_parent(&obj5, Some(&obj4));
+        scene.set_object_parent(obj2, Some(obj1));
+        scene.set_object_parent(obj3, Some(obj2));
+        scene.set_object_parent(obj4, Some(obj3));
+        scene.set_object_parent(obj5, Some(obj4));
         // This should fail and do nothing
-        scene.set_object_parent(&obj1, Some(&obj5));
+        scene.set_object_parent(obj1, Some(obj5));
 
-        assert_eq!(obj5.num_children(&scene).ok(), Some(0));
+        assert_eq!(obj5.children(&scene)
+                   .map(|x| x.len()).ok(), Some(0));
     }
 
     fn angles(x: f32, y: f32, z: f32) -> Quaternion<f32> {
@@ -2966,10 +2954,10 @@ mod test {
         let obj3 = scene.create_object();
         let obj4 = scene.create_object();
         let obj5 = scene.create_object();
-        scene.set_object_parent(&obj2, Some(&obj1));
-        scene.set_object_parent(&obj3, Some(&obj2));
-        scene.set_object_parent(&obj4, Some(&obj3));
-        scene.set_object_parent(&obj5, Some(&obj4));
+        scene.set_object_parent(obj2, Some(obj1));
+        scene.set_object_parent(obj3, Some(obj2));
+        scene.set_object_parent(obj4, Some(obj3));
+        scene.set_object_parent(obj5, Some(obj4));
 
         obj1.set_local_pos(&mut scene, Vector3::new(10.0, 0.0, 0.0)).unwrap();
         obj1.set_local_rot(&mut scene, angles(0.0, 0.0, 45.0)).unwrap();
@@ -3022,7 +3010,7 @@ mod test {
 
         let obj1 = scene.create_object();
         let obj2 = scene.create_object();
-        scene.set_object_parent(&obj2, Some(&obj1));
+        scene.set_object_parent(obj2, Some(obj1));
 
         obj1.set_local_rot(&mut scene, angles(-90.0, 0.0, 0.0)).unwrap();
         obj2.set_local_rot(&mut scene, angles(0.0, 0.0, -90.0)).unwrap();
