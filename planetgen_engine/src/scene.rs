@@ -392,17 +392,40 @@ impl Mesh {
 }
 
 struct CubemapData {
-    /// Reference to the cubemap object.
-    object: Rc<Cubemap>,
     /// True when the cubemap has been marked for destruction at the end of the
     /// frame.
     marked: bool,
     texture_id: GLuint,
 }
 
-pub struct Cubemap {
-    idx: Cell<Option<usize>>
+struct CubemapContainer {
+    data: Vec<CubemapData>,
 }
+
+impl Container for CubemapContainer {
+    type Item = CubemapData;
+    type HandleType = Cubemap;
+
+    fn push(&mut self, value: Self::Item) {
+        self.data.push(value);
+    }
+
+    fn swap_remove(&mut self, idx: usize) {
+        self.data.swap_remove(idx);
+    }
+}
+
+impl CubemapContainer {
+    fn new() -> CubemapContainer {
+        CubemapContainer {
+            data: Vec::new(),
+        }
+    }
+}
+
+/// A handle to a cubemap object for a scene.
+#[derive(Copy, Clone)]
+pub struct Cubemap;
 
 struct DrawInfo {
     shader_idx: usize,
@@ -452,7 +475,7 @@ pub enum UniformValue {
     UIntVec2([u32; 2]),
     UIntVec3([u32; 3]),
     UIntVec4([u32; 4]),
-    Cubemap(Rc<Cubemap>),
+    Cubemap(Handle<Cubemap>),
     //Bool(bool),
     //BoolVec2([bool; 2]),
     //BoolVec3([bool; 3]),
@@ -898,7 +921,7 @@ pub struct Scene {
     event_pump: Option<EventPump>,
     camera_data: ObjectManager<CameraContainer>,
     mesh_data: Vec<MeshData>,
-    cubemap_data: Vec<CubemapData>,
+    cubemap_data: ObjectManager<CubemapContainer>,
     material_data: Vec<MaterialData>,
     mrenderer_data: ObjectManager<MeshRendererContainer>,
     shader_data: Vec<ShaderData>,
@@ -906,7 +929,7 @@ pub struct Scene {
     object_data: ObjectManager<ObjectContainer>,
     destroyed_cameras: Vec<Handle<Camera>>,
     destroyed_meshes: Vec<usize>,
-    destroyed_cubemaps: Vec<usize>,
+    destroyed_cubemaps: Vec<Handle<Cubemap>>,
     destroyed_materials: Vec<usize>,
     destroyed_mrenderers: Vec<Handle<MeshRenderer>>,
     destroyed_shaders: Vec<usize>,
@@ -1048,7 +1071,7 @@ impl Scene {
             event_pump: Some(event_pump),
             camera_data: ObjectManager::new(CameraContainer::new()),
             mesh_data: Vec::new(),
-            cubemap_data: Vec::new(),
+            cubemap_data: ObjectManager::new(CubemapContainer::new()),
             material_data: Vec::new(),
             mrenderer_data: ObjectManager::new(MeshRendererContainer::new()),
             shader_data: Vec::new(),
@@ -1094,7 +1117,7 @@ impl Scene {
             event_pump: None,
             camera_data: ObjectManager::new(CameraContainer::new()),
             mesh_data: Vec::new(),
-            cubemap_data: Vec::new(),
+            cubemap_data: ObjectManager::new(CubemapContainer::new()),
             material_data: Vec::new(),
             mrenderer_data: ObjectManager::new(MeshRendererContainer::new()),
             shader_data: Vec::new(),
@@ -1191,7 +1214,7 @@ impl Scene {
         rv
     }
 
-    pub fn create_cubemap(&mut self, width: usize, height: usize, faces: [&[u8]; 6]) -> Rc<Cubemap> {
+    pub fn create_cubemap(&mut self, width: usize, height: usize, faces: [&[u8]; 6]) -> Handle<Cubemap> {
         for f in &faces {
             let size = width.checked_mul(height).and_then(|x| x.checked_mul(3)).unwrap();
             assert_eq!(size, f.len());
@@ -1216,15 +1239,10 @@ impl Scene {
             gl::TexParameteri(gl::TEXTURE_CUBE_MAP, gl::TEXTURE_WRAP_R, gl::CLAMP_TO_EDGE as GLint);
         }
 
-        let rv = Rc::new(Cubemap { idx: Cell::new(None) });
-        let data = CubemapData {
-            object: rv.clone(),
+        self.cubemap_data.add(CubemapData {
             marked: false,
             texture_id,
-        };
-        self.cubemap_data.push(data);
-        rv.idx.set(Some(self.cubemap_data.len() - 1));
-        rv
+        })
     }
 
     pub fn create_material(&mut self, shader: Rc<Shader>) -> Result<Rc<Material>> {
@@ -1458,20 +1476,19 @@ impl Scene {
         }
     }
 
-    pub fn destroy_cubemap(&mut self, cubemap: &Cubemap) {
-        let cubemap_idx = match cubemap.idx.get() {
-            Some(cubemap_idx) => cubemap_idx,
-            None => {
+    pub fn destroy_cubemap(&mut self, cubemap: Handle<Cubemap>) {
+        let cubemap_idx = match self.cubemap_data.data_idx_checked(cubemap) {
+            Ok(cubemap_idx) => cubemap_idx,
+            Err(_) => {
                 println!("[WARNING] destroy_cubemap called on a cubemap without a valid handle!");
-                return
+                return;
             }
         };
-        let cubemap_data = unsafe {
-            self.cubemap_data.get_unchecked_mut(cubemap_idx)
-        };
+
+        let cubemap_data = &mut self.cubemap_data.c.data[cubemap_idx];
 
         if !cubemap_data.marked {
-            self.destroyed_cubemaps.push(cubemap_idx);
+            self.destroyed_cubemaps.push(cubemap);
             cubemap_data.marked = true;
         }
     }
@@ -1689,22 +1706,14 @@ impl Scene {
         let destroy_start_time = Instant::now();
 
         unsafe {
-            let mut destroyed_behaviours = Vec::new();
-            let mut destroyed_cameras = Vec::new();
-            let mut destroyed_mrenderers = Vec::new();
-
-            std::mem::swap(&mut destroyed_behaviours, &mut self.destroyed_behaviours);
-            std::mem::swap(&mut destroyed_cameras, &mut self.destroyed_cameras);
-            std::mem::swap(&mut destroyed_mrenderers, &mut self.destroyed_mrenderers);
-
             for &handle in &self.destroyed_behaviours {
                 self.behaviour_data.remove(handle).expect("Double free");
             }
             for &handle in &self.destroyed_cameras {
-                self.camera_data.remove(handle).expect("Double free");;
+                self.camera_data.remove(handle).expect("Double free");
             }
             for &handle in &self.destroyed_mrenderers {
-                self.mrenderer_data.remove(handle).expect("Double free");;
+                self.mrenderer_data.remove(handle).expect("Double free");
             }
             self.destroyed_behaviours.clear();
             self.destroyed_cameras.clear();
@@ -1740,15 +1749,13 @@ impl Scene {
                 &mut self.mesh_data, &mut self.destroyed_meshes,
                 |x| x.marked,
                 |x, idx| x.object.idx.set(idx));
-            Scene::cleanup_destroyed(
-                &mut self.cubemap_data, &mut self.destroyed_cubemaps,
-                |x| x.marked,
-                |x, idx| {
-                    x.object.idx.set(idx);
-                    if idx.is_none() {
-                        gl::DeleteTextures(1, &x.texture_id);
-                    }
-                });
+            for &handle in &self.destroyed_cubemaps {
+                let idx = self.cubemap_data.data_idx_checked(handle)
+                    .expect("Double free");
+                gl::DeleteTextures(1, &self.cubemap_data.c.data[idx].texture_id);
+                self.cubemap_data.remove_idx(idx);
+            }
+            self.destroyed_cubemaps.clear();
             Scene::cleanup_destroyed(
                 &mut self.material_data, &mut self.destroyed_materials,
                 |x| x.marked,
@@ -1757,10 +1764,6 @@ impl Scene {
                 &mut self.shader_data, &mut self.destroyed_shaders,
                 |x| x.marked,
                 |x, idx| x.object.idx.set(idx));
-
-            std::mem::swap(&mut destroyed_behaviours, &mut self.destroyed_behaviours);
-            std::mem::swap(&mut destroyed_cameras, &mut self.destroyed_cameras);
-            std::mem::swap(&mut destroyed_mrenderers, &mut self.destroyed_mrenderers);
         }
 
         let draw_start_time = Instant::now();
@@ -2497,9 +2500,10 @@ impl Scene {
                         UniformValue::UIntVec4(x) => {
                             gl::Uniform4uiv(location, 1, x.as_ptr());
                         }
-                        UniformValue::Cubemap(ref x) => {
-                            let idx = x.idx.get().unwrap();
-                            let texture_id = self.cubemap_data[idx].texture_id;
+                        UniformValue::Cubemap(x) => {
+                            let idx = self.cubemap_data.data_idx_checked(x)
+                                .expect("Cubemap in use while destroyed");
+                            let texture_id = self.cubemap_data.c.data[idx].texture_id;
                             // FIXME: massive hack
                             gl::ActiveTexture(gl::TEXTURE0 + 0);
                             gl::BindTexture(gl::TEXTURE_CUBE_MAP, texture_id);
