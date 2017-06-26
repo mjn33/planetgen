@@ -2736,7 +2736,7 @@ impl Quad {
 }
 
 struct QuadPool {
-    shader: Rc<Shader>,
+    shader: Handle<Shader>,
     quad_material: Handle<Material>,
     indices_configs: Vec<Vec<u16>>,
     vertices_cap: usize,
@@ -2866,7 +2866,7 @@ impl QuadPool {
     /// Perform cleanup in preparation for being destroyed.
     fn cleanup(&self, scene: &mut Scene) {
         scene.destroy_material(self.quad_material);
-        scene.destroy_shader(&*self.shader);
+        scene.destroy_shader(self.shader);
         for q in &*self.pool.borrow() {
             scene.destroy_object(q.borrow().object);
         }

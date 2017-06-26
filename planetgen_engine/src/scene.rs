@@ -437,8 +437,6 @@ struct DrawInfo {
 }
 
 struct ShaderData {
-    /// Reference to the shader object.
-    object: Rc<Shader>,
     /// True when the shader has been marked for destruction at the end of the
     /// frame.
     marked: bool,
@@ -449,13 +447,38 @@ struct ShaderData {
     colour_uniform: GLint,
 }
 
-pub struct Shader {
-    idx: Cell<Option<usize>>
+struct ShaderContainer {
+    data: Vec<ShaderData>,
 }
 
-impl Shader {
-    pub fn is_valid(&self) -> bool {
-        self.idx.get().is_some()
+impl Container for ShaderContainer {
+    type Item = ShaderData;
+    type HandleType = Shader;
+
+    fn push(&mut self, value: Self::Item) {
+        self.data.push(value);
+    }
+
+    fn swap_remove(&mut self, idx: usize) {
+        self.data.swap_remove(idx);
+    }
+}
+
+impl ShaderContainer {
+    fn new() -> ShaderContainer {
+        ShaderContainer {
+            data: Vec::new(),
+        }
+    }
+}
+
+/// A handle to a shader object for a scene.
+#[derive(Copy, Clone)]
+pub struct Shader;
+
+impl Handle<Shader> {
+    pub fn is_valid(&self, scene: &Scene) -> bool {
+        scene.shader_data.is_handle_valid(*self)
     }
 }
 
@@ -503,7 +526,7 @@ struct MaterialData {
     marked: bool,
     uniforms: HashMap<String, usize>,
     uniform_values: Vec<(GLint, Option<UniformValue>)>,
-    shader: Rc<Shader>,
+    shader: Handle<Shader>,
     colour: (f32, f32, f32)
 }
 
@@ -948,7 +971,7 @@ pub struct Scene {
     cubemap_data: ObjectManager<CubemapContainer>,
     material_data: ObjectManager<MaterialContainer>,
     mrenderer_data: ObjectManager<MeshRendererContainer>,
-    shader_data: Vec<ShaderData>,
+    shader_data: ObjectManager<ShaderContainer>,
     behaviour_data: ObjectManager<BehaviourContainer>,
     object_data: ObjectManager<ObjectContainer>,
     destroyed_cameras: Vec<Handle<Camera>>,
@@ -956,7 +979,7 @@ pub struct Scene {
     destroyed_cubemaps: Vec<Handle<Cubemap>>,
     destroyed_materials: Vec<Handle<Material>>,
     destroyed_mrenderers: Vec<Handle<MeshRenderer>>,
-    destroyed_shaders: Vec<usize>,
+    destroyed_shaders: Vec<Handle<Shader>>,
     destroyed_behaviours: Vec<Handle<Behaviour>>,
     destroyed_objects: Vec<Handle<Object>>,
     update_parents: Vec<usize>,
@@ -1098,7 +1121,7 @@ impl Scene {
             cubemap_data: ObjectManager::new(CubemapContainer::new()),
             material_data: ObjectManager::new(MaterialContainer::new()),
             mrenderer_data: ObjectManager::new(MeshRendererContainer::new()),
-            shader_data: Vec::new(),
+            shader_data: ObjectManager::new(ShaderContainer::new()),
             behaviour_data: ObjectManager::new(BehaviourContainer::new()),
             object_data: ObjectManager::new(ObjectContainer::new()),
             destroyed_cameras: Vec::new(),
@@ -1144,7 +1167,7 @@ impl Scene {
             cubemap_data: ObjectManager::new(CubemapContainer::new()),
             material_data: ObjectManager::new(MaterialContainer::new()),
             mrenderer_data: ObjectManager::new(MeshRendererContainer::new()),
-            shader_data: Vec::new(),
+            shader_data: ObjectManager::new(ShaderContainer::new()),
             behaviour_data: ObjectManager::new(BehaviourContainer::new()),
             object_data: ObjectManager::new(ObjectContainer::new()),
             destroyed_cameras: Vec::new(),
@@ -1269,11 +1292,12 @@ impl Scene {
         })
     }
 
-    pub fn create_material(&mut self, shader: Rc<Shader>) -> Result<Handle<Material>> {
+    pub fn create_material(&mut self, shader: Handle<Shader>) -> Result<Handle<Material>> {
         let (map, uniform_values) = {
-            let shader_data = try!(shader.idx.get()
-                .ok_or(Error::ObjectDestroyed)
-                .map(|i| unsafe { self.shader_data.get_unchecked(i) }));
+            let shader_data = try!(
+                self.shader_data.data_idx_checked(shader)
+                    .or(Err(Error::ObjectDestroyed))
+                    .map(|i| &self.shader_data.c.data[i]));
 
             let mut map = HashMap::new();
             let mut uniform_values = Vec::new();
@@ -1295,7 +1319,7 @@ impl Scene {
             marked: false,
             uniforms: map,
             uniform_values,
-            shader: shader.clone(),
+            shader: shader,
             colour: (1.0, 1.0, 1.0)
         });
         Ok(handle)
@@ -1319,13 +1343,12 @@ impl Scene {
         Ok(handle)
     }
 
-    pub fn create_shader(&mut self, vs_src: &str, fs_src: &str, _gs_src: Option<&str>) -> Rc<Shader> {
+    pub fn create_shader(&mut self, vs_src: &str, fs_src: &str, _gs_src: Option<&str>) -> Handle<Shader> {
         if self.ctx.is_none() {
             // TODO: In the future implement some kind of dummy shader?
             panic!("Tried to create shader in headless mode.");
         }
 
-        let rv = Rc::new(Shader { idx: Cell::new(None) });
         let program = Program::new(vs_src, fs_src).unwrap();
         let obj_matrix_uniform = unsafe {
             gl::GetUniformLocation(program.program, "_obj_matrix\0".as_ptr() as *const GLchar)
@@ -1340,18 +1363,14 @@ impl Scene {
             gl::GetUniformLocation(program.program, "_colour\0".as_ptr() as *const GLchar)
         };
 
-        let data = ShaderData {
-            object: rv.clone(),
+        self.shader_data.add(ShaderData {
             marked: false,
             program: program,
             obj_matrix_uniform: obj_matrix_uniform,
             cam_pos_uniform: cam_pos_uniform,
             cam_matrix_uniform: cam_matrix_uniform,
             colour_uniform: colour_uniform,
-        };
-        self.shader_data.push(data);
-        rv.idx.set(Some(self.shader_data.len() - 1));
-        rv
+        })
     }
 
     pub fn create_behaviour<T: BehaviourMessages>(&mut self, t: T) -> Result<Handle<Behaviour>> {
@@ -1546,20 +1565,18 @@ impl Scene {
         }
     }
 
-    pub fn destroy_shader(&mut self, shader: &Shader) {
-        let shader_idx = match shader.idx.get() {
-            Some(shader_idx) => shader_idx,
-            None => {
-                println!("[WARNING] destroy_shader called on a shader without a valid handle!");
-                return
+    pub fn destroy_shader(&mut self, shader: Handle<Shader>) {
+        let shader_idx = match self.shader_data.data_idx_checked(shader) {
+            Ok(shader_idx) => shader_idx,
+            Err(_) => {
+                println!("[WARNING] destroy_shader called on a mesh renderer without a valid handle!");
+                return;
             }
         };
-        let shader_data = unsafe {
-            self.shader_data.get_unchecked_mut(shader_idx)
-        };
+        let shader_data = &mut self.shader_data.c.data[shader_idx];
 
         if !shader_data.marked {
-            self.destroyed_shaders.push(shader_idx);
+            self.destroyed_shaders.push(shader);
             shader_data.marked = true;
         }
     }
@@ -1779,10 +1796,10 @@ impl Scene {
                 self.material_data.remove(handle).expect("Double free");
             }
             self.destroyed_materials.clear();
-            Scene::cleanup_destroyed(
-                &mut self.shader_data, &mut self.destroyed_shaders,
-                |x| x.marked,
-                |x, idx| x.object.idx.set(idx));
+            // FIXME: resource leak
+            for &handle in &self.destroyed_shaders {
+                self.shader_data.remove(handle).expect("Double free");
+            }
         }
 
         let draw_start_time = Instant::now();
@@ -2325,10 +2342,10 @@ impl Scene {
             };
             let material = &self.material_data.c.data[material_idx];
 
-            let shader_idx = material.shader.idx.get();
+            let shader_idx = self.shader_data.data_idx_checked(material.shader);
             let shader_idx = match shader_idx {
-                Some(shader_idx) => shader_idx,
-                None => continue
+                Ok(shader_idx) => shader_idx,
+                Err(_) => continue,
             };
 
             let vertex_buf_idx = mesh.vertex_buf_alloc
@@ -2427,7 +2444,7 @@ impl Scene {
             gl::Clear(gl::DEPTH_BUFFER_BIT);
             for info in &camera.draw_cmds {
                 if prev_shader_idx != Some(info.shader_idx) {
-                    let shader = &self.shader_data[info.shader_idx];
+                    let shader = &self.shader_data.c.data[info.shader_idx];
                     gl::UseProgram(shader.program.program);
                     prev_shader_idx = Some(info.shader_idx);
                 }
@@ -2445,7 +2462,7 @@ impl Scene {
                     prev_index_buf_idx = Some(info.index_buf_idx);
                 }
 
-                let shader = &self.shader_data[info.shader_idx];
+                let shader = &self.shader_data.c.data[info.shader_idx];
                 let trans_data = &self.object_data.c.trans_data[info.trans_idx];
                 let mesh = &self.mesh_data[info.mesh_idx];
                 let material = &self.material_data.c.data[info.material_idx];
