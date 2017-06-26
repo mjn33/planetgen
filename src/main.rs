@@ -2076,7 +2076,7 @@ struct SunController {
     /// Whether the decrease speed key was pressed last frame
     was_dec_key_down: bool,
     sun_obj: Handle<Object>,
-    sun_material: Rc<Material>,
+    sun_material: Handle<Material>,
     sun_cam_obj: Handle<Object>,
 }
 
@@ -2737,7 +2737,7 @@ impl Quad {
 
 struct QuadPool {
     shader: Rc<Shader>,
-    quad_material: Rc<Material>,
+    quad_material: Handle<Material>,
     indices_configs: Vec<Vec<u16>>,
     vertices_cap: usize,
     indices_cap: usize,
@@ -2865,7 +2865,7 @@ impl QuadPool {
 
     /// Perform cleanup in preparation for being destroyed.
     fn cleanup(&self, scene: &mut Scene) {
-        scene.destroy_material(&*self.quad_material);
+        scene.destroy_material(self.quad_material);
         scene.destroy_shader(&*self.shader);
         for q in &*self.pool.borrow() {
             scene.destroy_object(q.borrow().object);

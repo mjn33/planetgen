@@ -498,8 +498,6 @@ pub enum UniformValue {
 }
 
 struct MaterialData {
-    /// Reference to the material object.
-    object: Rc<Material>,
     /// True when the material has been marked for destruction at the end of the
     /// frame.
     marked: bool,
@@ -509,27 +507,53 @@ struct MaterialData {
     colour: (f32, f32, f32)
 }
 
-pub struct Material {
-    idx: Cell<Option<usize>>
+struct MaterialContainer {
+    data: Vec<MaterialData>,
 }
 
-impl Material {
+impl Container for MaterialContainer {
+    type Item = MaterialData;
+    type HandleType = Material;
+
+    fn push(&mut self, value: Self::Item) {
+        self.data.push(value);
+    }
+
+    fn swap_remove(&mut self, idx: usize) {
+        self.data.swap_remove(idx);
+    }
+}
+
+impl MaterialContainer {
+    fn new() -> MaterialContainer {
+        MaterialContainer {
+            data: Vec::new(),
+        }
+    }
+}
+
+/// A handle to a camera object for a scene.
+#[derive(Copy, Clone)]
+pub struct Material;
+
+impl Handle<Material> {
     pub fn set_colour(&self, scene: &mut Scene, colour: (f32, f32, f32)) -> Result<()> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe { scene.material_data.get_unchecked_mut(i).colour = colour; })
+        let idx = scene.material_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| { scene.material_data.c.data[i].colour = colour; })
     }
 
     pub fn colour(&self, scene: &Scene) -> Result<(f32, f32, f32)> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| unsafe { scene.material_data.get_unchecked(i).colour })
+        let idx = scene.material_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
+            .map(|i| { scene.material_data.c.data[i].colour })
     }
 
     pub fn set_uniform(&self, scene: &mut Scene, name: &str, v: UniformValue) -> Result<()> {
-        let material_data = try!(self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
-            .map(|i| &mut scene.material_data[i]));
+        let material_data = try!(
+            scene.material_data.data_idx_checked(*self)
+                .or(Err(Error::ObjectDestroyed))
+                .map(|i| &mut scene.material_data.c.data[i]));
 
         match material_data.uniforms.get(name) {
             Some(&idx) => {
@@ -540,8 +564,8 @@ impl Material {
         }
     }
 
-    pub fn is_valid(&self) -> bool {
-        self.idx.get().is_some()
+    pub fn is_valid(&self, scene: &Scene) -> bool {
+        scene.material_data.is_handle_valid(*self)
     }
 }
 
@@ -555,7 +579,7 @@ struct MeshRendererData {
     /// Bitmask containing the layers this mesh is rendered on.
     layers: i32,
     mesh: Option<Rc<Mesh>>,
-    material: Option<Rc<Material>>,
+    material: Option<Handle<Material>>,
 }
 
 struct MeshRendererContainer {
@@ -600,7 +624,7 @@ impl Handle<MeshRenderer> {
             .map(|i| scene.mrenderer_data.c.data[i].mesh = mesh)
     }
 
-    pub fn set_material(&self, scene: &mut Scene, material: Option<Rc<Material>>) -> Result<()> {
+    pub fn set_material(&self, scene: &mut Scene, material: Option<Handle<Material>>) -> Result<()> {
         let idx = scene.mrenderer_data.data_idx_checked(*self);
         idx.or(Err(Error::ObjectDestroyed))
             .map(|i| scene.mrenderer_data.c.data[i].material = material)
@@ -627,10 +651,10 @@ impl Handle<MeshRenderer> {
             .map(move |i| scene.mrenderer_data.c.data[i].mesh.as_ref())
     }
 
-    pub fn material<'a>(&self, scene: &'a mut Scene) -> Result<Option<&'a Rc<Material>>> {
+    pub fn material(&self, scene: &mut Scene) -> Result<Option<Handle<Material>>> {
         let idx = scene.mrenderer_data.data_idx_checked(*self);
         idx.or(Err(Error::ObjectDestroyed))
-            .map(move |i| scene.mrenderer_data.c.data[i].material.as_ref())
+            .map(|i| scene.mrenderer_data.c.data[i].material)
     }
 
     pub fn layers(&self, scene: &Scene) -> Result<i32> {
@@ -922,7 +946,7 @@ pub struct Scene {
     camera_data: ObjectManager<CameraContainer>,
     mesh_data: Vec<MeshData>,
     cubemap_data: ObjectManager<CubemapContainer>,
-    material_data: Vec<MaterialData>,
+    material_data: ObjectManager<MaterialContainer>,
     mrenderer_data: ObjectManager<MeshRendererContainer>,
     shader_data: Vec<ShaderData>,
     behaviour_data: ObjectManager<BehaviourContainer>,
@@ -930,7 +954,7 @@ pub struct Scene {
     destroyed_cameras: Vec<Handle<Camera>>,
     destroyed_meshes: Vec<usize>,
     destroyed_cubemaps: Vec<Handle<Cubemap>>,
-    destroyed_materials: Vec<usize>,
+    destroyed_materials: Vec<Handle<Material>>,
     destroyed_mrenderers: Vec<Handle<MeshRenderer>>,
     destroyed_shaders: Vec<usize>,
     destroyed_behaviours: Vec<Handle<Behaviour>>,
@@ -1072,7 +1096,7 @@ impl Scene {
             camera_data: ObjectManager::new(CameraContainer::new()),
             mesh_data: Vec::new(),
             cubemap_data: ObjectManager::new(CubemapContainer::new()),
-            material_data: Vec::new(),
+            material_data: ObjectManager::new(MaterialContainer::new()),
             mrenderer_data: ObjectManager::new(MeshRendererContainer::new()),
             shader_data: Vec::new(),
             behaviour_data: ObjectManager::new(BehaviourContainer::new()),
@@ -1118,7 +1142,7 @@ impl Scene {
             camera_data: ObjectManager::new(CameraContainer::new()),
             mesh_data: Vec::new(),
             cubemap_data: ObjectManager::new(CubemapContainer::new()),
-            material_data: Vec::new(),
+            material_data: ObjectManager::new(MaterialContainer::new()),
             mrenderer_data: ObjectManager::new(MeshRendererContainer::new()),
             shader_data: Vec::new(),
             behaviour_data: ObjectManager::new(BehaviourContainer::new()),
@@ -1245,8 +1269,7 @@ impl Scene {
         })
     }
 
-    pub fn create_material(&mut self, shader: Rc<Shader>) -> Result<Rc<Material>> {
-        let rv = Rc::new(Material { idx: Cell::new(None) });
+    pub fn create_material(&mut self, shader: Rc<Shader>) -> Result<Handle<Material>> {
         let (map, uniform_values) = {
             let shader_data = try!(shader.idx.get()
                 .ok_or(Error::ObjectDestroyed)
@@ -1268,17 +1291,14 @@ impl Scene {
             (map, uniform_values)
         };
 
-        let data = MaterialData {
-            object: rv.clone(),
+        let handle = self.material_data.add(MaterialData {
             marked: false,
             uniforms: map,
             uniform_values,
             shader: shader.clone(),
             colour: (1.0, 1.0, 1.0)
-        };
-        self.material_data.push(data);
-        rv.idx.set(Some(self.material_data.len() - 1));
-        Ok(rv)
+        });
+        Ok(handle)
     }
 
     fn create_mrenderer(&mut self, object: Handle<Object>) -> Result<Handle<MeshRenderer>> {
@@ -1493,20 +1513,19 @@ impl Scene {
         }
     }
 
-    pub fn destroy_material(&mut self, material: &Material) {
-        let material_idx = match material.idx.get() {
-            Some(material_idx) => material_idx,
-            None => {
+    pub fn destroy_material(&mut self, material: Handle<Material>) {
+        let material_idx = match self.material_data.data_idx_checked(material) {
+            Ok(material_idx) => material_idx,
+            Err(_) => {
                 println!("[WARNING] destroy_material called on a material without a valid handle!");
-                return
+                return;
             }
         };
-        let material_data = unsafe {
-            self.material_data.get_unchecked_mut(material_idx)
-        };
+
+        let material_data = &mut self.material_data.c.data[material_idx];
 
         if !material_data.marked {
-            self.destroyed_materials.push(material_idx);
+            self.destroyed_materials.push(material);
             material_data.marked = true;
         }
     }
@@ -1756,10 +1775,10 @@ impl Scene {
                 self.cubemap_data.remove_idx(idx);
             }
             self.destroyed_cubemaps.clear();
-            Scene::cleanup_destroyed(
-                &mut self.material_data, &mut self.destroyed_materials,
-                |x| x.marked,
-                |x, idx| x.object.idx.set(idx));
+            for &handle in &self.destroyed_materials {
+                self.material_data.remove(handle).expect("Double free");
+            }
+            self.destroyed_materials.clear();
             Scene::cleanup_destroyed(
                 &mut self.shader_data, &mut self.destroyed_shaders,
                 |x| x.marked,
@@ -2299,14 +2318,12 @@ impl Scene {
             };
             let mesh = &self.mesh_data[mesh_idx];
 
-            let material_idx = data.material
-                .as_ref()
-                .and_then(|x| x.idx.get());
+            let material_idx = data.material.map(|handle| self.material_data.data_idx_checked(handle));
             let material_idx = match material_idx {
-                Some(material_idx) => material_idx,
-                None => continue,
+                Some(Ok(material_idx)) => material_idx,
+                _ => continue,
             };
-            let material = &self.material_data[material_idx];
+            let material = &self.material_data.c.data[material_idx];
 
             let shader_idx = material.shader.idx.get();
             let shader_idx = match shader_idx {
@@ -2431,7 +2448,7 @@ impl Scene {
                 let shader = &self.shader_data[info.shader_idx];
                 let trans_data = &self.object_data.c.trans_data[info.trans_idx];
                 let mesh = &self.mesh_data[info.mesh_idx];
-                let material = &self.material_data[info.material_idx];
+                let material = &self.material_data.c.data[info.material_idx];
 
                 let vertex_base = mesh.vertex_buf_alloc
                     .as_ref()
