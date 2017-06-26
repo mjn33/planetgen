@@ -54,8 +54,8 @@ use noise::noisegen::NoiseQuality;
 
 use num::{Zero, One};
 
-use planetgen_engine::{Behaviour, BehaviourMessages, Camera, Handle, Material, Mesh, MeshRenderer,
-                       Object, Scene, Shader, UniformValue};
+use planetgen_engine::{BehaviourMessages, Camera, Handle, Material, Mesh, MeshRenderer, Object,
+                       Scene, Shader, UniformValue};
 
 use common::{map_quad_pos, map_quad_side, map_vec_pos, Plane, QuadPos, QuadSide, QuadSideFlags,
              QUAD_SIDE_FLAGS_NONE, QUAD_SIDE_FLAGS_NORTH, QUAD_SIDE_FLAGS_SOUTH,
@@ -2899,16 +2899,6 @@ impl BehaviourMessages for MainDriverBehaviour {
 }
 
 impl MainDriver {
-    fn create(behaviour: Behaviour) -> MainDriver {
-        MainDriver {
-            camera_controller: None,
-            sun_controller: None,
-            quad_sphere: None,
-            skybox_obj: None,
-            skybox_cam_obj: None,
-        }
-    }
-
     fn start(&mut self, scene: &mut Scene) {
         self.camera_controller = Some(CameraController::new(scene));
         self.sun_controller = Some(SunController::new(scene));
@@ -3059,7 +3049,6 @@ fn main() {
     let title = format!("PlanetGen {}", env!("CARGO_PKG_VERSION"));
 
     let mut scene = Scene::new(sdl, &title);
-    // TODO: tidy up
     scene.create_behaviour(MainDriverBehaviour(RefCell::new(MainDriver {
         camera_controller: None,
         sun_controller: None,
@@ -3067,8 +3056,6 @@ fn main() {
         skybox_obj: None,
         skybox_cam_obj: None,
     })));
-    //let main_obj = scene.create_object();
-    //scene.add_component::<RefCell<MainDriver>>(&main_obj).unwrap();
 
     loop {
         if !scene.do_frame() {

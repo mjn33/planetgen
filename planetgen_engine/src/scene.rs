@@ -1391,15 +1391,13 @@ impl Scene {
         })
     }
 
-    pub fn create_behaviour<T: BehaviourMessages>(&mut self, t: T) -> Result<Handle<Behaviour>> {
+    pub fn create_behaviour<T: BehaviourMessages>(&mut self, t: T) -> Handle<Behaviour> {
         let rv = Rc::new(t);
-        let handle = self.behaviour_data.add(BehaviourData {
+        self.behaviour_data.add(BehaviourData {
             behaviour: rv.clone(),
             marked: false,
             is_new: true,
-        });
-
-        Ok(handle)
+        })
     }
 
     pub fn add_component<T: Component>(&mut self, object: Handle<Object>) -> Result<Handle<T>> {
@@ -2836,28 +2834,6 @@ impl Scene {
                 .expect("Destroyed object found in hierarchy");
         }
         self.destroyed_objects.clear();
-    }
-
-    unsafe fn cleanup_destroyed<T, F, G>(items: &mut Vec<T>,
-                                         destroyed_items: &mut Vec<usize>,
-                                         is_destroyed: F,
-                                         mut set_idx: G)
-        where F: Fn(&T) -> bool, G: FnMut(&T, Option<usize>) {
-        for &idx in destroyed_items.iter() {
-            // Remove destroyed objects at the back of the list
-            while items.last().map_or(false, |x| is_destroyed(x)) {
-                let removed = items.pop().unwrap();
-                set_idx(&removed, None);
-            }
-            if idx >= items.len() {
-                continue
-            }
-            let removed = items.swap_remove(idx);
-            set_idx(&removed, None);
-            let swapped = items.get_unchecked(idx);
-            set_idx(swapped, Some(idx));
-        }
-        destroyed_items.clear();
     }
 }
 
