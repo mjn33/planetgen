@@ -276,8 +276,6 @@ impl Component for Camera {
 
 // TODO: this structure is getting quite large, consider splitting it up?
 struct MeshData {
-    /// Reference to the mesh object.
-    object: Rc<Mesh>,
     /// True when the mesh has been marked for destruction at the end of the
     /// frame.
     marked: bool,
@@ -312,24 +310,49 @@ impl MeshData {
     }
 }
 
-pub struct Mesh {
-    idx: Cell<Option<usize>>
+struct MeshContainer {
+    data: Vec<MeshData>,
 }
 
-impl Mesh {
+impl Container for MeshContainer {
+    type Item = MeshData;
+    type HandleType = Mesh;
+
+    fn push(&mut self, value: Self::Item) {
+        self.data.push(value);
+    }
+
+    fn swap_remove(&mut self, idx: usize) {
+        self.data.swap_remove(idx);
+    }
+}
+
+impl MeshContainer {
+    fn new() -> MeshContainer {
+        MeshContainer {
+            data: Vec::new(),
+        }
+    }
+}
+
+/// A handle to a camera object for a scene.
+#[derive(Copy, Clone)]
+pub struct Mesh;
+
+impl Handle<Mesh> {
     pub fn vpos<'a>(&self, scene: &'a Scene) -> Result<&'a Vec<Vector3<f32>>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.mesh_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                &scene.mesh_data[i].vpos_vec
+                &scene.mesh_data.c.data[i].vpos_vec
             })
     }
 
     pub fn vpos_mut<'a>(&self, scene: &'a mut Scene) -> Result<&'a mut Vec<Vector3<f32>>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.mesh_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(move |i| {
-                let data = &mut scene.mesh_data[i];
+                let data = &mut scene.mesh_data.c.data[i];
                 data.vertex_buf_dirty = true;
                 data.aabb_dirty = true;
                 &mut data.vpos_vec
@@ -337,54 +360,54 @@ impl Mesh {
     }
 
     pub fn vnorm<'a>(&self, scene: &'a Scene) -> Result<&'a Vec<Vector3<f32>>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.mesh_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                &scene.mesh_data[i].vnorm_vec
+                &scene.mesh_data.c.data[i].vnorm_vec
             })
     }
 
     pub fn vnorm_mut<'a>(&self, scene: &'a mut Scene) -> Result<&'a mut Vec<Vector3<f32>>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.mesh_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(move |i| {
-                let data = &mut scene.mesh_data[i];
+                let data = &mut scene.mesh_data.c.data[i];
                 data.vertex_buf_dirty = true;
                 &mut data.vnorm_vec
             })
     }
 
     pub fn vcolour<'a>(&self, scene: &'a Scene) -> Result<&'a Vec<Vector3<f32>>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.mesh_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                &scene.mesh_data[i].vcolour_vec
+                &scene.mesh_data.c.data[i].vcolour_vec
             })
     }
 
     pub fn vcolour_mut<'a>(&self, scene: &'a mut Scene) -> Result<&'a mut Vec<Vector3<f32>>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.mesh_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(move |i| {
-                let data = &mut scene.mesh_data[i];
+                let data = &mut scene.mesh_data.c.data[i];
                 data.vertex_buf_dirty = true;
                 &mut data.vcolour_vec
             })
     }
 
     pub fn indices<'a>(&self, scene: &'a Scene) -> Result<&'a Vec<u16>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.mesh_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(|i| {
-                &scene.mesh_data[i].indices_vec
+                &scene.mesh_data.c.data[i].indices_vec
             })
     }
 
     pub fn indices_mut<'a>(&self, scene: &'a mut Scene) -> Result<&'a mut Vec<u16>> {
-        self.idx.get()
-            .ok_or(Error::ObjectDestroyed)
+        let idx = scene.mesh_data.data_idx_checked(*self);
+        idx.or(Err(Error::ObjectDestroyed))
             .map(move |i| {
-                let data = &mut scene.mesh_data[i];
+                let data = &mut scene.mesh_data.c.data[i];
                 data.index_buf_dirty = true;
                 &mut data.indices_vec
             })
@@ -601,7 +624,7 @@ struct MeshRendererData {
     enabled: bool,
     /// Bitmask containing the layers this mesh is rendered on.
     layers: i32,
-    mesh: Option<Rc<Mesh>>,
+    mesh: Option<Handle<Mesh>>,
     material: Option<Handle<Material>>,
 }
 
@@ -641,7 +664,7 @@ impl Handle<MeshRenderer> {
             .map(|i| scene.mrenderer_data.c.data[i].enabled = enabled)
     }
 
-    pub fn set_mesh(&self, scene: &mut Scene, mesh: Option<Rc<Mesh>>) -> Result<()> {
+    pub fn set_mesh(&self, scene: &mut Scene, mesh: Option<Handle<Mesh>>) -> Result<()> {
         let idx = scene.mrenderer_data.data_idx_checked(*self);
         idx.or(Err(Error::ObjectDestroyed))
             .map(|i| scene.mrenderer_data.c.data[i].mesh = mesh)
@@ -668,10 +691,10 @@ impl Handle<MeshRenderer> {
             .map(|i| scene.mrenderer_data.c.data[i].enabled)
     }
 
-    pub fn mesh<'a>(&self, scene: &'a mut Scene) -> Result<Option<&'a Rc<Mesh>>> {
+    pub fn mesh(&self, scene: &mut Scene) -> Result<Option<Handle<Mesh>>> {
         let idx = scene.mrenderer_data.data_idx_checked(*self);
         idx.or(Err(Error::ObjectDestroyed))
-            .map(move |i| scene.mrenderer_data.c.data[i].mesh.as_ref())
+            .map(|i| scene.mrenderer_data.c.data[i].mesh)
     }
 
     pub fn material(&self, scene: &mut Scene) -> Result<Option<Handle<Material>>> {
@@ -967,7 +990,7 @@ pub struct Scene {
     window: Option<Window>,
     event_pump: Option<EventPump>,
     camera_data: ObjectManager<CameraContainer>,
-    mesh_data: Vec<MeshData>,
+    mesh_data: ObjectManager<MeshContainer>,
     cubemap_data: ObjectManager<CubemapContainer>,
     material_data: ObjectManager<MaterialContainer>,
     mrenderer_data: ObjectManager<MeshRendererContainer>,
@@ -975,7 +998,7 @@ pub struct Scene {
     behaviour_data: ObjectManager<BehaviourContainer>,
     object_data: ObjectManager<ObjectContainer>,
     destroyed_cameras: Vec<Handle<Camera>>,
-    destroyed_meshes: Vec<usize>,
+    destroyed_meshes: Vec<Handle<Mesh>>,
     destroyed_cubemaps: Vec<Handle<Cubemap>>,
     destroyed_materials: Vec<Handle<Material>>,
     destroyed_mrenderers: Vec<Handle<MeshRenderer>>,
@@ -1117,7 +1140,7 @@ impl Scene {
             window: Some(window),
             event_pump: Some(event_pump),
             camera_data: ObjectManager::new(CameraContainer::new()),
-            mesh_data: Vec::new(),
+            mesh_data: ObjectManager::new(MeshContainer::new()),
             cubemap_data: ObjectManager::new(CubemapContainer::new()),
             material_data: ObjectManager::new(MaterialContainer::new()),
             mrenderer_data: ObjectManager::new(MeshRendererContainer::new()),
@@ -1163,7 +1186,7 @@ impl Scene {
             window: None,
             event_pump: None,
             camera_data: ObjectManager::new(CameraContainer::new()),
-            mesh_data: Vec::new(),
+            mesh_data: ObjectManager::new(MeshContainer::new()),
             cubemap_data: ObjectManager::new(CubemapContainer::new()),
             material_data: ObjectManager::new(MaterialContainer::new()),
             mrenderer_data: ObjectManager::new(MeshRendererContainer::new()),
@@ -1228,7 +1251,7 @@ impl Scene {
         Ok(handle)
     }
 
-    pub fn create_mesh(&mut self, vert_capacity: usize, indices_capacity: usize) -> Rc<Mesh> {
+    pub fn create_mesh(&mut self, vert_capacity: usize, indices_capacity: usize) -> Handle<Mesh> {
         if self.ctx.is_none() {
             // TODO: In the future implement some kind of dummy mesh?
             panic!("Tried to create mesh in headless mode.");
@@ -1237,9 +1260,7 @@ impl Scene {
         let vert_capacity = std::cmp::max(vert_capacity, MESH_MIN_VERT_CAPACITY);
         let indices_capacity = std::cmp::max(indices_capacity, MESH_MIN_INDICES_CAPACITY);
 
-        let rv = Rc::new(Mesh { idx: Cell::new(None) });
-        let data = MeshData {
-            object: rv.clone(),
+        self.mesh_data.add(MeshData {
             marked: false,
             vpos_vec: Vec::new(),
             vnorm_vec: Vec::new(),
@@ -1255,10 +1276,7 @@ impl Scene {
             aabb_x: [0.0, 0.0],
             aabb_y: [0.0, 0.0],
             aabb_z: [0.0, 0.0],
-        };
-        self.mesh_data.push(data);
-        rv.idx.set(Some(self.mesh_data.len() - 1));
-        rv
+        })
     }
 
     pub fn create_cubemap(&mut self, width: usize, height: usize, faces: [&[u8]; 6]) -> Handle<Cubemap> {
@@ -1497,20 +1515,19 @@ impl Scene {
         }
     }
 
-    pub fn destroy_mesh(&mut self, mesh: &Mesh) {
-        let mesh_idx = match mesh.idx.get() {
-            Some(mesh_idx) => mesh_idx,
-            None => {
+    pub fn destroy_mesh(&mut self, mesh: Handle<Mesh>) {
+        let mesh_idx = match self.mesh_data.data_idx_checked(mesh) {
+            Ok(mesh_idx) => mesh_idx,
+            Err(_) => {
                 println!("[WARNING] destroy_mesh called on a mesh without a valid handle!");
-                return
+                return;
             }
         };
-        let mesh_data = unsafe {
-            self.mesh_data.get_unchecked_mut(mesh_idx)
-        };
+
+        let mesh_data = &mut self.mesh_data.c.data[mesh_idx];
 
         if !mesh_data.marked {
-            self.destroyed_meshes.push(mesh_idx);
+            self.destroyed_meshes.push(mesh);
             mesh_data.marked = true;
         }
     }
@@ -1781,10 +1798,6 @@ impl Scene {
 
             self.cleanup_destroyed_objects();
             // FIXME: resource leak
-            Scene::cleanup_destroyed(
-                &mut self.mesh_data, &mut self.destroyed_meshes,
-                |x| x.marked,
-                |x, idx| x.object.idx.set(idx));
             for &handle in &self.destroyed_cubemaps {
                 let idx = self.cubemap_data.data_idx_checked(handle)
                     .expect("Double free");
@@ -1882,7 +1895,7 @@ impl Scene {
     }
 
     fn get_alloc_buffers(&mut self, idx: usize) -> (Option<(usize, usize)>, Option<(usize, usize)>) {
-        let data = &self.mesh_data[idx];
+        let data = &self.mesh_data.c.data[idx];
         let vertex_buf_len = data.vertex_buf_len();
         let indices_buf_len = data.indices_vec.len();
 
@@ -2084,9 +2097,9 @@ impl Scene {
         std::mem::swap(&mut index_free_list, &mut self.index_free_lists[self.cur_fence]);
 
         // Reallocate mesh buffers if necessary
-        for i in 0..self.mesh_data.len() {
+        for i in 0..self.mesh_data.c.data.len() {
             let (vb_alloc, ib_alloc) = self.get_alloc_buffers(i);
-            let data = &mut self.mesh_data[i];
+            let data = &mut self.mesh_data.c.data[i];
 
             if let Some((vb_idx, vert_capacity)) = vb_alloc {
                 // Free a previous allocation if there was one
@@ -2116,7 +2129,7 @@ impl Scene {
         std::mem::swap(&mut vertex_free_list, &mut self.vertex_free_lists[self.cur_fence]);
         std::mem::swap(&mut index_free_list, &mut self.index_free_lists[self.cur_fence]);
 
-        for (i, data) in self.mesh_data.iter().enumerate() {
+        for (i, data) in self.mesh_data.c.data.iter().enumerate() {
             if data.vertex_buf_dirty {
                 let vertex_buf_idx = data.vertex_buf_alloc
                     .as_ref()
@@ -2136,7 +2149,7 @@ impl Scene {
         }
 
         // Recalculate bounding boxes
-        for data in &mut self.mesh_data {
+        for data in &mut self.mesh_data.c.data {
             if !data.aabb_dirty {
                 continue;
             }
@@ -2156,7 +2169,7 @@ impl Scene {
             gl::BindBuffer(gl::ARRAY_BUFFER, vb.buf_id);
 
             for &mesh_idx in &vb.update_tasks {
-                let mesh = &mut self.mesh_data[mesh_idx];
+                let mesh = &mut self.mesh_data.c.data[mesh_idx];
                 let vertex_buf_len = mesh.vertex_buf_len();
 
                 let range_start = mesh.vertex_buf_alloc
@@ -2205,7 +2218,7 @@ impl Scene {
             gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ib.buf_id);
 
             for &mesh_idx in &ib.update_tasks {
-                let mesh = &mut self.mesh_data[mesh_idx];
+                let mesh = &mut self.mesh_data.c.data[mesh_idx];
                 let indices_buf_len = mesh.indices_vec.len();
 
                 let range_start = mesh.index_buf_alloc
@@ -2326,14 +2339,11 @@ impl Scene {
                 .expect("MeshRenderer not destroyed along with parent");
             let trans_data = &self.object_data.c.trans_data[trans_idx];
 
-            let mesh_idx = data.mesh
-                .as_ref()
-                .and_then(|x| x.idx.get());
-            let mesh_idx = match mesh_idx {
-                Some(mesh_idx) => mesh_idx,
-                None => continue,
+            let mesh_idx = match data.mesh.map(|handle| self.mesh_data.data_idx_checked(handle)) {
+                Some(Ok(mesh_idx)) => mesh_idx,
+                _ => continue,
             };
-            let mesh = &self.mesh_data[mesh_idx];
+            let mesh = &self.mesh_data.c.data[mesh_idx];
 
             let material_idx = data.material.map(|handle| self.material_data.data_idx_checked(handle));
             let material_idx = match material_idx {
@@ -2464,8 +2474,8 @@ impl Scene {
 
                 let shader = &self.shader_data.c.data[info.shader_idx];
                 let trans_data = &self.object_data.c.trans_data[info.trans_idx];
-                let mesh = &self.mesh_data[info.mesh_idx];
                 let material = &self.material_data.c.data[info.material_idx];
+                let mesh = &self.mesh_data.c.data[info.mesh_idx];
 
                 let vertex_base = mesh.vertex_buf_alloc
                     .as_ref()

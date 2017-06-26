@@ -107,7 +107,7 @@ struct Quad {
     plane: Plane,
     pos: QuadPos,
     mrenderer: Option<Handle<MeshRenderer>>,
-    mesh: Option<Rc<Mesh>>,
+    mesh: Option<Handle<Mesh>>,
     base_coord: (i32, i32),
     cur_subdivision: i32,
     mid_coord_pos: Vector3<f64>,
