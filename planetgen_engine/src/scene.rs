@@ -1020,6 +1020,11 @@ pub struct Scene {
     /// Temporary vectors used when freeing unused index buffer ranges.
     index_free_lists: [Vec<(usize, AllocRange)>; 2],
 
+    /// The list of destroyed vertex buffer allocations this frame.
+    destroyed_vertex_allocs: Vec<(usize, AllocRange)>,
+    /// The list of destroyed index buffer allocations this frame.
+    destroyed_index_allocs: Vec<(usize, AllocRange)>,
+
     /// Times spent on rendering a frame, first value is in behaviour updates,
     /// second value is in drawing, third value is in object destruction
     frame_times: VecDeque<(f32, f32, f32)>,
@@ -1164,6 +1169,8 @@ impl Scene {
             fences: [None, None],
             vertex_free_lists: [Vec::new(), Vec::new()],
             index_free_lists: [Vec::new(), Vec::new()],
+            destroyed_vertex_allocs: Vec::new(),
+            destroyed_index_allocs: Vec::new(),
 
             tmp_vec: UnsafeCell::new(Vec::new()),
             frame_times: VecDeque::with_capacity(FRAME_TIME_MAX_SAMPLES),
@@ -1210,6 +1217,8 @@ impl Scene {
             fences: [None, None],
             vertex_free_lists: [Vec::new(), Vec::new()],
             index_free_lists: [Vec::new(), Vec::new()],
+            destroyed_vertex_allocs: Vec::new(),
+            destroyed_index_allocs: Vec::new(),
 
             tmp_vec: UnsafeCell::new(Vec::new()),
             frame_times: VecDeque::with_capacity(FRAME_TIME_MAX_SAMPLES),
@@ -1795,7 +1804,18 @@ impl Scene {
             self.update_parents.clear();
 
             self.cleanup_destroyed_objects();
-            // FIXME: resource leak
+            for &handle in &self.destroyed_meshes {
+                let idx = self.mesh_data.data_idx_checked(handle)
+                    .expect("Double free");
+
+                if let Some(alloc) = self.mesh_data.c.data[idx].vertex_buf_alloc.take() {
+                    self.destroyed_vertex_allocs.push(alloc);
+                }
+                if let Some(alloc) = self.mesh_data.c.data[idx].index_buf_alloc.take() {
+                    self.destroyed_index_allocs.push(alloc);
+                }
+                self.mesh_data.remove_idx(idx);
+            }
             for &handle in &self.destroyed_cubemaps {
                 let idx = self.cubemap_data.data_idx_checked(handle)
                     .expect("Double free");
@@ -2093,6 +2113,14 @@ impl Scene {
 
         std::mem::swap(&mut vertex_free_list, &mut self.vertex_free_lists[self.cur_fence]);
         std::mem::swap(&mut index_free_list, &mut self.index_free_lists[self.cur_fence]);
+
+        // Free destroyed allocations
+        for alloc in self.destroyed_vertex_allocs.drain(..) {
+            vertex_free_list.push(alloc);
+        }
+        for alloc in self.destroyed_index_allocs.drain(..) {
+            index_free_list.push(alloc);
+        }
 
         // Reallocate mesh buffers if necessary
         for i in 0..self.mesh_data.c.data.len() {
