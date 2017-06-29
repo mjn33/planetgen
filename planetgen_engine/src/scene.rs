@@ -1652,12 +1652,12 @@ impl Scene {
             // XXX: Every component type here needs to be handled otherwise a
             // panic may occur.
             match k {
-                t if t == TypeId::of::<Handle<Camera>>() => {
+                t if t == TypeId::of::<Camera>() => {
                     let v = Handle::<Camera>::from_generic_handle(v).unwrap();
                     Component::destroy(v, self);
                 }
-                t if t == TypeId::of::<Handle<MeshRenderer>>() => {
-                    let v = Handle::<Camera>::from_generic_handle(v).unwrap();
+                t if t == TypeId::of::<MeshRenderer>() => {
+                    let v = Handle::<MeshRenderer>::from_generic_handle(v).unwrap();
                     Component::destroy(v, self);
                 }
                 t => panic!("Unhandled type: {:?}", t),
